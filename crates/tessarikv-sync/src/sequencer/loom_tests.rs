@@ -91,3 +91,33 @@ fn an_advance_by_another_thread_publishes_the_batch() {
         advancer.join().unwrap();
     });
 }
+
+/// A writer whose claim lands in the epoch a switch started sees everything the switcher did
+/// before switching: the read view naming that epoch's table is published first, so the writer
+/// always finds the table its sequences belong to.
+#[test]
+fn a_claim_in_a_new_epoch_sees_what_preceded_the_switch() {
+    loom::model(|| {
+        let sequencer = Arc::new(Sequencer::new(0, 4));
+        let published = Arc::new(loom::sync::atomic::AtomicU64::new(0));
+        let (switcher_sequencer, switcher_published) =
+            (Arc::clone(&sequencer), Arc::clone(&published));
+        let switcher = loom::thread::spawn(move || {
+            // Relaxed on purpose: only the switch and the claim may order this store.
+            switcher_published.store(1, loom::sync::atomic::Ordering::Relaxed);
+            switcher_sequencer.switch()
+        });
+        let claim = sequencer.claim(1).unwrap();
+        if claim.epoch() == 1 {
+            assert_eq!(
+                published.load(loom::sync::atomic::Ordering::Relaxed),
+                1,
+                "a claim in the new epoch found the old view"
+            );
+        }
+        let switch = switcher.join().unwrap();
+        let in_new_epoch = claim.epoch() == switch.epoch();
+        assert_eq!(in_new_epoch, claim.first() >= switch.boundary());
+        sequencer.complete(claim);
+    });
+}

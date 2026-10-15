@@ -57,7 +57,9 @@ impl Db {
         )?;
         Ok(Self {
             sequencer: Sequencer::new(recovered.last_sequence, COMMIT_RING_SLOTS),
-            table,
+            view: arc_swap::ArcSwap::from_pointee(super::view::View::new(0, table)),
+            #[cfg(test)]
+            switching: std::sync::atomic::AtomicBool::new(false),
             log: Some(log),
             _lock: Some(lock),
         })

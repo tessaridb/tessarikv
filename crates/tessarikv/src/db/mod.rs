@@ -6,12 +6,17 @@
 //! snapshot. Writes from many tasks run concurrently, the log syncs once for every write waiting
 //! on it, and reads never wait for writes. Opening a database on storage replays its log.
 //!
+//! Writes land in the in-memory table of the epoch their claim carries, and reads consult every
+//! table of the current read view, newest first (see `view`).
+//!
 //! This version serves the default keyspace and keeps every batch in memory: tables are not yet
 //! flushed to storage, so the log grows until the database is reopened.
 
+mod merge;
 mod open;
 mod read;
 mod recover;
+mod view;
 mod write;
 
 #[cfg(test)]
@@ -19,19 +24,26 @@ mod kill_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
+mod switch_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::Path;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
+
 use tessarikv_constants::COMMIT_RING_SLOTS;
 use tessarikv_sync::Sequencer;
+#[cfg(test)]
+use tessarikv_sync::Switch;
 use tessarikv_types::{KeyspaceId, SequenceNumber};
 
 use crate::log::LogWriter;
 use crate::memtable::Memtable;
 use crate::storage::{OsStorage, Storage, StorageLock};
 use crate::{DbOptions, Error, Result, StorageMode};
+use view::View;
 
 pub use read::ScanPage;
 
@@ -55,7 +67,11 @@ pub use read::ScanPage;
 /// ```
 pub struct Db {
     sequencer: Sequencer,
-    table: Memtable,
+    /// The in-memory tables reads consult and writes land in.
+    view: ArcSwap<View>,
+    /// Set while a switch runs, so switches never overlap.
+    #[cfg(test)]
+    switching: std::sync::atomic::AtomicBool,
     /// The write-ahead log; none for a database in memory.
     log: Option<LogWriter>,
     /// Held for as long as the database is open.
@@ -83,7 +99,9 @@ impl Db {
         match options.storage() {
             StorageMode::Memory => Ok(Self {
                 sequencer: Sequencer::new(0, COMMIT_RING_SLOTS),
-                table: Memtable::new(),
+                view: ArcSwap::from_pointee(View::new(0, Memtable::new())),
+                #[cfg(test)]
+                switching: std::sync::atomic::AtomicBool::new(false),
                 log: None,
                 _lock: None,
             }),
@@ -128,6 +146,36 @@ impl Db {
                 keyspace: keyspace.get(),
             })
         }
+    }
+
+    /// Starts a new in-memory table: later claims carry the next epoch and land in it, while
+    /// the table it replaces stays readable. Returns `None` when another switch is running.
+    ///
+    /// The view naming the new table is published BEFORE the sequencer starts its epoch, so a
+    /// claim carrying that epoch always finds it (see [`Sequencer::switch`]).
+    #[cfg(test)]
+    pub(crate) fn switch_memtable(&self) -> Option<Switch> {
+        use std::sync::atomic::Ordering;
+        // Acquire: orders this switch after the previous one, whose Release clears the flag.
+        if self
+            .switching
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        let next = self.view.load().with_next_table();
+        let epoch = next.newest_epoch();
+        self.view.store(Arc::new(next));
+        let switch = self.sequencer.switch();
+        debug_assert_eq!(
+            switch.epoch(),
+            epoch,
+            "the view and the sequencer agree on epochs"
+        );
+        // Release: publishes this switch's view to the next switcher.
+        self.switching.store(false, Ordering::Release);
+        Some(switch)
     }
 
     /// The snapshot a read takes: the highest sequence covering only completed batches.

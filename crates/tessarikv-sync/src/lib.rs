@@ -28,5 +28,5 @@ mod slot_directory;
 
 pub use append_buffer::{AppendReader, AppendWriter, append_buffer};
 pub use error::{ArenaError, BufferError};
-pub use sequencer::{Claim, Sequencer};
+pub use sequencer::{Claim, Sequencer, Switch, next_epoch};
 pub use skiplist::{BytewiseComparator, Cursor, Insert, KeyComparator, SkipList};

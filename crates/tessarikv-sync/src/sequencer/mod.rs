@@ -28,6 +28,7 @@ use crate::shim::{AtomicU64, Ordering};
 /// | Operation | Linearization point | Progress |
 /// |---|---|---|
 /// | `claim` | the `fetch_add` on the next sequence | wait-free |
+/// | `switch` | the `fetch_add` that starts the next epoch | wait-free |
 /// | `complete` | the store marking the batch's ring slot ready; the batch becomes visible at the compare-and-swap on `visible` that passes it, by this thread or a later completer | lock-free once the slot is free |
 /// | `visible` | the Acquire load of `visible` | wait-free |
 ///
@@ -35,6 +36,16 @@ use crate::shim::{AtomicU64, Ordering};
 /// least `capacity` sequences earlier and is not yet visible (backpressure on a writer far ahead).
 /// And visibility is a prefix: a writer stalled between claiming and completing holds back every
 /// later batch until it completes.
+///
+/// Epochs: the counter carries an epoch next to the next sequence, so a claim learns in the same
+/// read-modify-write which epoch its sequences belong to. [`Sequencer::switch`] starts the next
+/// epoch: every claim before it in the counter's order has the old epoch and sequences below the
+/// switch's boundary, every claim after it has the new epoch and sequences from the boundary on.
+/// Epochs count modulo 128, so no more than 128 epochs may be in use at once. The switch is
+/// Release and a claim is Acquire; claims are read-modify-writes, so they continue the switch's
+/// release sequence, and a writer whose claim carries the new epoch sees everything the switcher
+/// did before switching. The sequence field is one bit wider than the largest sequence, so the
+/// claims refused after exhaustion cannot carry into the epoch for another 2^56 sequences.
 ///
 /// Ordering: a completer stores its slot (Release) and then reads `visible` with a
 /// read-modify-write, which always reads the newest value. An advancer moves `visible` with a
@@ -67,11 +78,57 @@ struct Slot {
 #[derive(Debug, PartialEq, Eq)]
 #[must_use = "a claim that is never completed holds back every later commit"]
 pub struct Claim {
+    epoch: u8,
     first: u64,
     last: u64,
 }
 
+/// The start of an epoch, as returned by [`Sequencer::switch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Switch {
+    epoch: u8,
+    boundary: u64,
+}
+
+impl Switch {
+    /// The epoch the switch started.
+    pub fn epoch(&self) -> u8 {
+        self.epoch
+    }
+
+    /// The first sequence number of the new epoch; above the largest sequence number once the
+    /// sequence space is exhausted.
+    pub fn boundary(&self) -> u64 {
+        self.boundary
+    }
+}
+
+/// Bits of the counter below the epoch.
+const SEQUENCE_FIELD_BITS: u32 = 57;
+/// Masks the next sequence out of the counter.
+const SEQUENCE_FIELD: u64 = (1 << SEQUENCE_FIELD_BITS) - 1;
+/// Adds one to the counter's epoch; the epoch wraps with the counter.
+const EPOCH_STEP: u64 = 1 << SEQUENCE_FIELD_BITS;
+/// Keeps an epoch inside the counter's seven epoch bits.
+const EPOCH_MASK: u8 = 0x7f;
+
+/// The epoch a switch out of `epoch` starts; epochs count modulo 128.
+pub fn next_epoch(epoch: u8) -> u8 {
+    epoch.wrapping_add(1) & EPOCH_MASK
+}
+
+/// The epoch and the next sequence held in one counter value.
+fn unpack(word: u64) -> (u8, u64) {
+    let epoch = u8::try_from(word >> SEQUENCE_FIELD_BITS).unwrap_or(u8::MAX);
+    (epoch, word & SEQUENCE_FIELD)
+}
+
 impl Claim {
+    /// The epoch the batch's sequences belong to.
+    pub fn epoch(&self) -> u8 {
+        self.epoch
+    }
+
     /// The batch's first sequence number.
     pub fn first(&self) -> u64 {
         self.first
@@ -107,10 +164,24 @@ impl Sequencer {
         if count == 0 {
             return None;
         }
-        // Relaxed: hands out a disjoint range; completion publishes it.
-        let first = self.next.fetch_add(count, Ordering::Relaxed);
+        // Acquire: continues the release sequence of the latest switch, so a claim in its epoch
+        // sees what the switcher did before switching. The range itself is disjoint by the RMW.
+        let (epoch, first) = unpack(self.next.fetch_add(count, Ordering::Acquire));
         let last = first.checked_add(count.wrapping_sub(1))?;
-        (last <= MAX_SEQUENCE).then_some(Claim { first, last })
+        (last <= MAX_SEQUENCE).then_some(Claim { epoch, first, last })
+    }
+
+    /// Starts the next epoch at the next unclaimed sequence. One caller at a time: the epoch it
+    /// returns is the one later claims carry, so whatever must exist for that epoch is published
+    /// before the call.
+    pub fn switch(&self) -> Switch {
+        // Release: publishes what the switcher did before switching to every claim of the new
+        // epoch (their Acquire RMWs read this value or a later one in its release sequence).
+        let (epoch, boundary) = unpack(self.next.fetch_add(EPOCH_STEP, Ordering::Release));
+        Switch {
+            epoch: next_epoch(epoch),
+            boundary,
+        }
     }
 
     /// The largest sequence number every earlier sequence of which is in a completed batch.

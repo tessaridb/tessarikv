@@ -42,6 +42,45 @@ fn claiming_past_the_last_sequence_is_refused() {
 }
 
 #[test]
+fn a_switch_starts_a_new_epoch_at_the_next_sequence() {
+    let sequencer = Sequencer::new(41, 8);
+    let before = sequencer.claim(3).unwrap();
+    let switch = sequencer.switch();
+    let after = sequencer.claim(1).unwrap();
+    assert_eq!((before.epoch(), before.first(), before.last()), (0, 42, 44));
+    assert_eq!((switch.epoch(), switch.boundary()), (1, 45));
+    assert_eq!((after.epoch(), after.first(), after.last()), (1, 45, 45));
+}
+
+#[test]
+fn epochs_wrap_and_sequences_keep_counting() {
+    let sequencer = Sequencer::new(0, 8);
+    for _ in 0..127 {
+        let _ = sequencer.switch();
+    }
+    let last = sequencer.switch();
+    let claim = sequencer.claim(2).unwrap();
+    assert_eq!(
+        (last.epoch(), last.boundary()),
+        (0, 1),
+        "128 switches wrap to epoch 0"
+    );
+    assert_eq!((claim.epoch(), claim.first(), claim.last()), (0, 1, 2));
+}
+
+#[test]
+fn claiming_past_the_last_sequence_is_refused_in_a_later_epoch() {
+    let sequencer = Sequencer::new(tessarikv_constants::MAX_SEQUENCE - 1, 8);
+    let _ = sequencer.switch();
+    let claim = sequencer.claim(1).unwrap();
+    assert_eq!(
+        (claim.epoch(), claim.first()),
+        (1, tessarikv_constants::MAX_SEQUENCE)
+    );
+    assert!(sequencer.claim(1).is_none());
+}
+
+#[test]
 fn every_visible_sequence_belongs_to_a_completed_batch() {
     let total: u64 = if cfg!(miri) { 60 } else { 60_000 };
     let sequencer = Arc::new(Sequencer::new(0, 16));

@@ -19,6 +19,7 @@ tessarikv-sync.workspace = true
 tessarikv-format.workspace = true
 thiserror.workspace = true
 papaya.workspace = true
+arc-swap = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]

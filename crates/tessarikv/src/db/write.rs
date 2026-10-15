@@ -43,7 +43,7 @@ impl Db {
         }
         let Some(log) = &self.log else {
             let claim = Completion::new(&self.sequencer, self.claim(batch)?);
-            let applied = apply(&self.table, claim.first(), batch);
+            let applied = self.apply(claim.epoch(), claim.first(), batch);
             return claim.complete(applied);
         };
         let logged = match options.durability {
@@ -67,8 +67,14 @@ impl Db {
         if let Some(wait) = wait {
             log.wait(last, wait).await?;
         }
-        let applied = apply(&self.table, first, batch);
+        let applied = self.apply(claim.epoch(), first, batch);
         claim.complete(applied)
+    }
+
+    /// Inserts `batch` from sequence `first` into the in-memory table of `epoch`.
+    fn apply(&self, epoch: u8, first: u64, batch: &WriteBatch) -> Result<()> {
+        let view = self.view.load();
+        apply(view.table(epoch)?, first, batch)
     }
 
     /// Claims one sequence number per entry of `batch`.
@@ -148,6 +154,10 @@ impl<'a> Completion<'a> {
             sequencer,
             claim: Some(claim),
         }
+    }
+
+    fn epoch(&self) -> u8 {
+        self.claim.as_ref().map_or(0, Claim::epoch)
     }
 
     fn first(&self) -> u64 {

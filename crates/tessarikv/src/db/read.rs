@@ -3,6 +3,7 @@
 use tessarikv_types::{KeyspaceId, ValueKind};
 
 use super::Db;
+use super::merge::MergedVersions;
 use crate::memtable::Lookup;
 use crate::{ReadOptions, Result};
 
@@ -29,10 +30,16 @@ impl Db {
     ) -> Result<Option<Vec<u8>>> {
         Self::check_keyspace(keyspace)?;
         let snapshot = self.snapshot()?;
-        Ok(match self.table.get(key, snapshot) {
-            Lookup::Value(value) => Some(value.to_vec()),
-            Lookup::Deleted | Lookup::Absent => None,
-        })
+        let view = self.view.load();
+        // Newest table first: the first table that decides the key answers for it.
+        for table in view.tables() {
+            match table.get(key, snapshot) {
+                Lookup::Value(value) => return Ok(Some(value.to_vec())),
+                Lookup::Deleted => return Ok(None),
+                Lookup::Absent => {}
+            }
+        }
+        Ok(None)
     }
 
     /// Up to `limit` live entries of `keyspace` with keys in `[start, end)` (unbounded above
@@ -53,7 +60,8 @@ impl Db {
         Self::check_keyspace(keyspace)?;
         let snapshot = self.snapshot()?;
         let mut page = ScanPage::default();
-        let mut versions = self.table.iter();
+        let view = self.view.load();
+        let mut versions = MergedVersions::new(view.tables().map(|table| table.iter()).collect());
         versions.seek(start, snapshot);
         let mut previous: Option<&[u8]> = None;
         while let Some(version) = versions.entry() {
