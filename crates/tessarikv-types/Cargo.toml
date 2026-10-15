@@ -1,0 +1,22 @@
+[package]
+name = "tessarikv-types"
+description = "Shared value types of TessariKV: sequence numbers, keyspaces, internal keys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tessarikv-constants.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

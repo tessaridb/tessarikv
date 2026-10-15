@@ -1,0 +1,20 @@
+[package]
+name = "tessarikv-format"
+description = "On-disk formats of TessariKV: log records and table blocks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tessarikv-constants.workspace = true
+tessarikv-types.workspace = true
+thiserror.workspace = true
