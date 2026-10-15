@@ -97,6 +97,10 @@ pub const MAX_VALUE_BYTES: usize = 1024 * 1024 * 1024;
 /// It bounds what one atomic commit may carry and what a decoder of a logged batch will accept.
 pub const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
+/// Slots in the commit sequencer's ring: how many sequence numbers a writer may run ahead of
+/// the oldest commit still being applied before its completion waits.
+pub const COMMIT_RING_SLOTS: usize = 4096;
+
 /// The largest number of keyspaces one database may hold.
 ///
 /// A keyspace id is a `u32` on disk; this bound is what the engine sizes per-keyspace state for.

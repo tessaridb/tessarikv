@@ -31,6 +31,12 @@ fn samples() -> Vec<Error> {
             requested_end: 10,
             available: 5,
         },
+        Error::Memtable {
+            reason: "internal arena error",
+        },
+        Error::UnknownKeyspace { keyspace: 9 },
+        Error::Unsupported { what: "x" },
+        Error::SequenceExhausted,
     ]
 }
 
@@ -47,6 +53,10 @@ fn every_variant_maps_to_its_category() {
             ErrorCategory::Validation,
             ErrorCategory::Corruption,
             ErrorCategory::Corruption,
+            ErrorCategory::Internal,
+            ErrorCategory::Validation,
+            ErrorCategory::Validation,
+            ErrorCategory::Internal,
         ]
     );
 }
@@ -63,7 +73,11 @@ fn codes_are_stable_strings() {
             "locked",
             "invalid_options",
             "corruption",
-            "short_read"
+            "short_read",
+            "memtable",
+            "unknown_keyspace",
+            "unsupported",
+            "sequence_exhausted"
         ]
     );
 }
@@ -71,7 +85,12 @@ fn codes_are_stable_strings() {
 #[test]
 fn only_transient_failures_are_retryable() {
     let retryable: Vec<_> = samples().iter().map(Error::is_retryable).collect();
-    assert_eq!(retryable, [false, false, true, false, false, false]);
+    assert_eq!(
+        retryable,
+        [
+            false, false, true, false, false, false, false, false, false, false
+        ]
+    );
     let interrupted = Error::Io {
         operation: "write",
         path: PathBuf::from("x"),

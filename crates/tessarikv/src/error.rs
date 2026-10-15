@@ -97,6 +97,28 @@ pub enum Error {
         /// Bytes in the file.
         available: u64,
     },
+    /// A batch or a read names a keyspace the database does not hold.
+    #[error("unknown keyspace {keyspace}")]
+    UnknownKeyspace {
+        /// The keyspace id.
+        keyspace: u32,
+    },
+    /// The operation needs something this version of the engine does not provide.
+    #[error("not supported: {what}")]
+    Unsupported {
+        /// What was asked for.
+        what: &'static str,
+    },
+    /// Every sequence number has been used; the database accepts no more writes.
+    #[error("sequence numbers exhausted")]
+    SequenceExhausted,
+    /// An in-memory table refused an entry: an engine invariant was broken or its arena is
+    /// exhausted.
+    #[error("in-memory table refused an entry: {reason}")]
+    Memtable {
+        /// Why.
+        reason: &'static str,
+    },
 }
 
 /// Result of an engine operation.
@@ -112,6 +134,8 @@ impl Error {
             Self::Locked { .. } => ErrorCategory::Unavailable,
             Self::InvalidOptions { .. } => ErrorCategory::Validation,
             Self::Corruption { .. } | Self::ShortRead { .. } => ErrorCategory::Corruption,
+            Self::UnknownKeyspace { .. } | Self::Unsupported { .. } => ErrorCategory::Validation,
+            Self::Memtable { .. } | Self::SequenceExhausted => ErrorCategory::Internal,
         }
     }
 
@@ -125,6 +149,10 @@ impl Error {
             Self::InvalidOptions { .. } => "invalid_options",
             Self::Corruption { .. } => "corruption",
             Self::ShortRead { .. } => "short_read",
+            Self::UnknownKeyspace { .. } => "unknown_keyspace",
+            Self::Unsupported { .. } => "unsupported",
+            Self::SequenceExhausted => "sequence_exhausted",
+            Self::Memtable { .. } => "memtable",
         }
     }
 
@@ -140,7 +168,11 @@ impl Error {
             Self::NotFound { .. }
             | Self::InvalidOptions { .. }
             | Self::Corruption { .. }
-            | Self::ShortRead { .. } => false,
+            | Self::ShortRead { .. }
+            | Self::UnknownKeyspace { .. }
+            | Self::Unsupported { .. }
+            | Self::SequenceExhausted
+            | Self::Memtable { .. } => false,
         }
     }
 

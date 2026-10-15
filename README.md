@@ -4,8 +4,9 @@ An embedded key-value storage engine written in pure Rust: an LSM tree whose sha
 are lock-free or wait-free wherever a non-blocking form exists. It is being built as the storage
 layer for [TessariDB](https://github.com/tessaridb/tessaridb), with no C or C++ dependency.
 
-**Status: early development.** There is no database API yet. What exists today is the
-foundation the engine is built on:
+**Status: early development.** The database runs in memory only: `Db` opens, writes batches
+atomically, and answers point reads and paged scans at a consistent snapshot, from any number of
+concurrent tasks. Nothing is persisted yet. Underneath it:
 
 - the internal-key encoding and its ordering (`tessarikv-types`);
 - an append-only byte buffer with one writer and any number of concurrent readers, and an
