@@ -37,6 +37,11 @@ fn samples() -> Vec<Error> {
         Error::UnknownKeyspace { keyspace: 9 },
         Error::Unsupported { what: "x" },
         Error::SequenceExhausted,
+        Error::LogFailed,
+        Error::AlreadyExists {
+            path: PathBuf::from("db"),
+        },
+        Error::Closed,
     ]
 }
 
@@ -57,6 +62,9 @@ fn every_variant_maps_to_its_category() {
             ErrorCategory::Validation,
             ErrorCategory::Validation,
             ErrorCategory::Internal,
+            ErrorCategory::Io,
+            ErrorCategory::Conflict,
+            ErrorCategory::ShutDown,
         ]
     );
 }
@@ -77,7 +85,10 @@ fn codes_are_stable_strings() {
             "memtable",
             "unknown_keyspace",
             "unsupported",
-            "sequence_exhausted"
+            "sequence_exhausted",
+            "log_failed",
+            "already_exists",
+            "closed"
         ]
     );
 }
@@ -88,7 +99,8 @@ fn only_transient_failures_are_retryable() {
     assert_eq!(
         retryable,
         [
-            false, false, true, false, false, false, false, false, false, false
+            false, false, true, false, false, false, false, false, false, false, false, false,
+            false
         ]
     );
     let interrupted = Error::Io {

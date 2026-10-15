@@ -64,14 +64,54 @@ pub fn encode_frame(log_number: u64, payload: &[u8], destination: &mut [u8]) -> 
             reason: "destination is not exactly one frame long",
         });
     }
-    let payload_len = u32::try_from(payload.len()).map_err(|_| too_large(payload.len()))?;
     let (header, body) = destination.split_at_mut(FRAME_HEADER_BYTES);
-    header[4..8].copy_from_slice(&payload_len.to_le_bytes());
-    header[8..16].copy_from_slice(&log_number.to_le_bytes());
     body.copy_from_slice(payload);
-    let checksum = checksum(&header[4..16], body);
-    header[0..4].copy_from_slice(&checksum.to_le_bytes());
+    header.copy_from_slice(&frame_header(
+        log_number,
+        payload.len(),
+        payload_checksum(payload),
+    )?);
     Ok(())
+}
+
+/// The checksum of a payload alone, from which [`frame_header`] derives the frame's checksum.
+///
+/// It lets the expensive pass over the payload run wherever the payload was built, while the
+/// header, which names the log the frame lands in, is written later.
+pub fn payload_checksum(payload: &[u8]) -> u32 {
+    crc32c::crc32c(payload)
+}
+
+/// The [`payload_checksum`] of two byte strings laid end to end, from the checksum of each and
+/// the length of the second: a payload's checksum can be taken in parts, in any order.
+pub fn concat_checksum(front: u32, back: u32, back_len: usize) -> u32 {
+    crc32c::crc32c_combine(front, back, back_len)
+}
+
+/// The header of a frame for log `log_number` whose payload is `payload_len` bytes with
+/// [`payload_checksum`] `payload_checksum`.
+///
+/// # Errors
+///
+/// [`Error::TooLarge`] for an oversized payload.
+pub fn frame_header(
+    log_number: u64,
+    payload_len: usize,
+    payload_checksum: u32,
+) -> Result<[u8; FRAME_HEADER_BYTES]> {
+    frame_bytes(payload_len)?;
+    let length = u32::try_from(payload_len).map_err(|_| too_large(payload_len))?;
+    let mut header = [0; FRAME_HEADER_BYTES];
+    header[4..8].copy_from_slice(&length.to_le_bytes());
+    header[8..16].copy_from_slice(&log_number.to_le_bytes());
+    // The CRC of the fields followed by the payload, combined from the two parts' CRCs.
+    let checksum = crc32c::crc32c_combine(
+        crc32c::crc32c(&header[4..16]),
+        payload_checksum,
+        payload_len,
+    );
+    header[0..4].copy_from_slice(&checksum.to_le_bytes());
+    Ok(header)
 }
 
 /// CRC-32C over the header fields after the checksum, then the payload.

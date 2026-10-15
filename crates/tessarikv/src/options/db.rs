@@ -15,6 +15,23 @@ pub enum StorageMode {
     Memory,
 }
 
+/// What opening a database does with a log whose end is damaged.
+///
+/// A crash can leave the last frame of the log half written; after a power loss everything not
+/// yet synced may be missing or torn. Which response is right depends on whether something
+/// outside this database can supply what a damaged log lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum WalRecovery {
+    /// Recover every batch up to the first damaged frame, discard the rest of the log, and open:
+    /// the database is as it was at some moment before the crash, and every write acknowledged at
+    /// the level that survives that crash is in it. The default.
+    #[default]
+    PointInTime,
+    /// Refuse to open when any frame is damaged, leaving the files untouched for an operator.
+    Absolute,
+}
+
 /// Validated database-wide options. Built through [`DbOptions::builder`] or a preset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbOptions {
@@ -22,6 +39,7 @@ pub struct DbOptions {
     error_if_exists: bool,
     storage: StorageMode,
     wal_segment_bytes: u64,
+    wal_recovery: WalRecovery,
     block_cache_bytes: u64,
     background_threads: u32,
 }
@@ -33,6 +51,7 @@ impl Default for DbOptions {
             error_if_exists: false,
             storage: StorageMode::Os,
             wal_segment_bytes: limits::DEFAULT_WAL_SEGMENT_BYTES,
+            wal_recovery: WalRecovery::PointInTime,
             block_cache_bytes: limits::DEFAULT_BLOCK_CACHE_BYTES,
             background_threads: limits::DEFAULT_BACKGROUND_THREADS,
         }
@@ -85,6 +104,11 @@ impl DbOptions {
         self.wal_segment_bytes
     }
 
+    /// What opening does with a damaged log (default [`WalRecovery::PointInTime`]).
+    pub const fn wal_recovery(&self) -> WalRecovery {
+        self.wal_recovery
+    }
+
     /// Block cache capacity shared by every keyspace, in bytes; zero disables the cache.
     #[must_use]
     pub const fn block_cache_bytes(&self) -> u64 {
@@ -127,6 +151,12 @@ impl DbOptionsBuilder {
     /// Sets [`DbOptions::wal_segment_bytes`].
     pub const fn wal_segment_bytes(mut self, value: u64) -> Self {
         self.options.wal_segment_bytes = value;
+        self
+    }
+
+    /// Sets [`DbOptions::wal_recovery`].
+    pub const fn wal_recovery(mut self, value: WalRecovery) -> Self {
+        self.options.wal_recovery = value;
         self
     }
 

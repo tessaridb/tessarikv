@@ -22,5 +22,6 @@ mod log;
 pub use batch::{BatchEntry, WriteBatch};
 pub use error::{Error, Result};
 pub use log::{
-    EndKind, FRAME_HEADER_BYTES, FrameReader, LogEnd, LogRead, encode_frame, frame_bytes,
+    EndKind, FRAME_HEADER_BYTES, FrameReader, LogEnd, LogRead, concat_checksum, encode_frame,
+    frame_bytes, frame_header, payload_checksum,
 };

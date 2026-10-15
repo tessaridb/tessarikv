@@ -119,6 +119,20 @@ pub enum Error {
         /// Why.
         reason: &'static str,
     },
+    /// The write-ahead log stopped after a write or a sync failed. Writes acknowledged before the
+    /// failure are as durable as they were acknowledged; nothing else is written until the
+    /// database is reopened, which recovers from the log on storage.
+    #[error("the write-ahead log stopped after a failed write or sync; reopen the database")]
+    LogFailed,
+    /// Opening was told to fail when a database already exists, and one does.
+    #[error("a database already exists at {path}")]
+    AlreadyExists {
+        /// The database's path.
+        path: PathBuf,
+    },
+    /// The database was closed.
+    #[error("the database is closed")]
+    Closed,
 }
 
 /// Result of an engine operation.
@@ -136,6 +150,9 @@ impl Error {
             Self::Corruption { .. } | Self::ShortRead { .. } => ErrorCategory::Corruption,
             Self::UnknownKeyspace { .. } | Self::Unsupported { .. } => ErrorCategory::Validation,
             Self::Memtable { .. } | Self::SequenceExhausted => ErrorCategory::Internal,
+            Self::LogFailed => ErrorCategory::Io,
+            Self::AlreadyExists { .. } => ErrorCategory::Conflict,
+            Self::Closed => ErrorCategory::ShutDown,
         }
     }
 
@@ -153,6 +170,9 @@ impl Error {
             Self::Unsupported { .. } => "unsupported",
             Self::SequenceExhausted => "sequence_exhausted",
             Self::Memtable { .. } => "memtable",
+            Self::LogFailed => "log_failed",
+            Self::AlreadyExists { .. } => "already_exists",
+            Self::Closed => "closed",
         }
     }
 
@@ -172,7 +192,10 @@ impl Error {
             | Self::UnknownKeyspace { .. }
             | Self::Unsupported { .. }
             | Self::SequenceExhausted
-            | Self::Memtable { .. } => false,
+            | Self::Memtable { .. }
+            | Self::LogFailed
+            | Self::AlreadyExists { .. }
+            | Self::Closed => false,
         }
     }
 

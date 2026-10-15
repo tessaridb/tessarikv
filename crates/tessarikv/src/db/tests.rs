@@ -7,7 +7,7 @@ use crate::{
 };
 
 async fn memory_db() -> Db {
-    Db::open(DbOptions::in_memory()).await.unwrap()
+    Db::open("memory", DbOptions::in_memory()).await.unwrap()
 }
 
 fn batch(entries: &[(&[u8], Option<&[u8]>)]) -> WriteBatch {
@@ -75,16 +75,25 @@ async fn a_batch_naming_an_unknown_keyspace_is_refused_whole() {
     );
 }
 
-#[tokio::test]
-async fn a_storage_backed_database_is_refused_until_the_log_exists() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_database_on_the_file_system_keeps_its_writes_across_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
     let options = DbOptions::builder()
         .storage(StorageMode::Os)
         .build()
         .unwrap();
+    let db = Db::open(dir.path(), options.clone()).await.unwrap();
+    db.write(&batch(&[(b"k", Some(b"v"))]), &WriteOptions::default())
+        .await
+        .unwrap();
     assert!(matches!(
-        Db::open(options).await,
-        Err(Error::Unsupported { .. })
+        Db::open(dir.path(), options.clone()).await,
+        Err(Error::Locked { .. })
     ));
+    db.close().await.unwrap();
+    let reopened = Db::open(dir.path(), options).await.unwrap();
+    assert_eq!(get(&reopened, b"k").await.as_deref(), Some(&b"v"[..]));
+    reopened.close().await.unwrap();
 }
 
 #[tokio::test]

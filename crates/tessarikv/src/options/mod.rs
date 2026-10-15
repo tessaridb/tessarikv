@@ -14,7 +14,7 @@ mod write;
 #[cfg(test)]
 mod tests;
 
-pub use db::{DbOptions, DbOptionsBuilder, StorageMode};
+pub use db::{DbOptions, DbOptionsBuilder, StorageMode, WalRecovery};
 pub use keyspace::{KeyspaceOptions, KeyspaceOptionsBuilder};
 pub use read::ReadOptions;
 pub use write::{Durability, WriteOptions};

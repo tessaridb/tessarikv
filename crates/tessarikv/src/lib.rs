@@ -14,6 +14,7 @@
 
 mod db;
 mod error;
+mod log;
 mod memtable;
 mod options;
 mod storage;
@@ -22,7 +23,7 @@ pub use db::{Db, ScanPage};
 pub use error::{Error, ErrorCategory, Result};
 pub use options::{
     DbOptions, DbOptionsBuilder, Durability, KeyspaceOptions, KeyspaceOptionsBuilder, ReadOptions,
-    StorageMode, WriteOptions,
+    StorageMode, WalRecovery, WriteOptions,
 };
 pub use storage::{MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile};
 pub use tessarikv_format::{BatchEntry, WriteBatch};

@@ -147,3 +147,23 @@ fn encoding_refuses_a_wrong_sized_destination_and_an_oversized_payload() {
     ));
     assert_eq!(size(0), FRAME_HEADER_BYTES);
 }
+
+#[test]
+fn a_header_stamped_from_the_payload_checksum_matches_a_whole_frame() {
+    let payload = b"stamped later by the log writer";
+    let mut whole = vec![0; size(payload.len())];
+    encode_frame(LOG, payload, &mut whole).expect("destination is exactly one frame");
+    let header = frame_header(LOG, payload.len(), payload_checksum(payload))
+        .expect("test payloads are within the limit");
+    assert_eq!(&whole[..FRAME_HEADER_BYTES], &header[..]);
+}
+
+#[test]
+fn a_payload_checksum_can_be_taken_in_parts() {
+    let (front, back) = (b"first sequence", b"then the batch");
+    let whole = [&front[..], &back[..]].concat();
+    assert_eq!(
+        concat_checksum(payload_checksum(front), payload_checksum(back), back.len()),
+        payload_checksum(&whole)
+    );
+}
