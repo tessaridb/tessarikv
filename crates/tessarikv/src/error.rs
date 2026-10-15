@@ -1,4 +1,4 @@
-//! The engine's error type and its categories (ADR-0005).
+//! The engine's error type and its categories.
 //!
 //! Every failure is a typed variant carrying the context needed to act on it, belongs to one
 //! [`ErrorCategory`], and has a stable [`Error::code`]. Callers branch on the category or the

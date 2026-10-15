@@ -1,6 +1,6 @@
 //! The operating system's file system.
 //!
-//! Platform differences (ADR-0006) live in `flush` (durable data and directory flushes) and
+//! Platform differences live in `flush` (durable data and directory flushes) and
 //! `positional` (positional reads); everything else is portable `std`.
 
 use std::fs::{self, File, OpenOptions};

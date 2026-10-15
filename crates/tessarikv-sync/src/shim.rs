@@ -59,6 +59,54 @@ impl ByteCells {
         Some(())
     }
 
+    /// Runs `visit` over the bytes `offset..offset + len`; `None` if the range does not fit.
+    ///
+    /// Under `loom` the bytes are copied first, so every byte read is checked; otherwise `visit`
+    /// borrows them in place.
+    ///
+    /// # Safety
+    ///
+    /// As for [`ByteCells::read`]: every write to the range happens-before this call, and none
+    /// runs concurrently with it or with `visit`.
+    pub(crate) unsafe fn with_slice<R>(
+        &self,
+        offset: usize,
+        len: usize,
+        visit: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        #[cfg(not(loom))]
+        {
+            let cells = self.cells.get(offset..offset.checked_add(len)?)?;
+            let start = std::cell::UnsafeCell::raw_get(cells.as_ptr()).cast_const();
+            // SAFETY: the range lies inside one allocation and, per the caller's contract, is not
+            // written while the borrow lives; `UnsafeCell<u8>` has the layout of `u8`.
+            let bytes = unsafe { std::slice::from_raw_parts(start, len) };
+            Some(visit(bytes))
+        }
+        #[cfg(loom)]
+        {
+            let mut copy = vec![0; len];
+            // SAFETY: the caller's contract is this function's contract.
+            unsafe { self.read(offset, &mut copy) }?;
+            Some(visit(&copy))
+        }
+    }
+
+    /// The bytes `offset..offset + len`, borrowed in place; `None` if the range does not fit.
+    ///
+    /// # Safety
+    ///
+    /// Every write to the range happens-before this call and no write to it ever follows.
+    #[cfg(not(loom))]
+    pub(crate) unsafe fn slice(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        let end = offset.checked_add(len)?;
+        let cells = self.cells.get(offset..end)?;
+        let start = std::cell::UnsafeCell::raw_get(cells.as_ptr()).cast_const();
+        // SAFETY: inside one allocation, never written again per the caller's contract, and
+        // `UnsafeCell<u8>` has the layout of `u8`.
+        Some(unsafe { std::slice::from_raw_parts(start, len) })
+    }
+
     /// Copies the bytes starting at `offset` into `dst`; `None` if the range does not fit.
     ///
     /// # Safety

@@ -8,8 +8,9 @@ layer for [TessariDB](https://github.com/tessaridb/tessaridb), with no C or C++ 
 foundation the engine is built on:
 
 - the internal-key encoding and its ordering (`tessarikv-types`);
-- an append-only byte buffer with one writer and any number of concurrent readers, model-checked
-  with `loom` (`tessarikv-sync`);
+- an append-only byte buffer with one writer and any number of concurrent readers, and an
+  insert-only lock-free skiplist for the in-memory table, both model-checked with `loom`
+  (`tessarikv-sync`);
 - typed, validated options for the database, for each keyspace, and for each read and write;
 - a file-system abstraction with an operating-system backend and a fully in-memory one;
 - the engine's error type, with stable codes and categories.

@@ -45,7 +45,7 @@ impl AppendWriter {
                 .ok_or(BufferError::Overflow)?;
             rest = tail;
         }
-        // Release: the linearization point; publishes the bytes and pointers above (ledger #3).
+        // Release: the linearization point; publishes the bytes and pointers above.
         self.shared.published.store(end, Ordering::Release);
         self.len = end;
         Ok(())

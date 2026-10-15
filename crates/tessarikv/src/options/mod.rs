@@ -1,4 +1,4 @@
-//! The engine's configuration surface (ADR-0004).
+//! The engine's configuration surface.
 //!
 //! Database-wide and per-keyspace options are validated values: they are built only through a
 //! builder whose `build()` checks every field against the bounds in `tessarikv-constants`, so an

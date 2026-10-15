@@ -1,4 +1,4 @@
-//! Durable flushes, per platform (ADR-0006).
+//! Durable flushes, per platform.
 
 use std::fs::File;
 use std::path::Path;

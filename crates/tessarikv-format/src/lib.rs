@@ -1,6 +1,7 @@
 //! On-disk formats of TessariKV: log records and table blocks.
 //!
-//! Filled by the log and table subgoals; every format here carries a version and a checksum.
+//! Every format here carries a version and a checksum, and every decoder treats its input as
+//! untrusted: a malformed input is an error, never a panic or an unbounded allocation.
 
 mod error;
 

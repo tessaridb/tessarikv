@@ -96,3 +96,19 @@ pub const MAX_VALUE_BYTES: usize = 1024 * 1024 * 1024;
 ///
 /// A keyspace id is a `u32` on disk; this bound is what the engine sizes per-keyspace state for.
 pub const MAX_KEYSPACES: u32 = 4096;
+
+/// Bytes in one chunk of a memtable's arena (128 KiB).
+///
+/// An allocation larger than a quarter chunk gets its own allocation, so the bytes wasted at a
+/// chunk's end are at most a quarter chunk per crossing.
+pub const ARENA_CHUNK_BYTES: usize = 128 * 1024;
+
+/// Link slots in one chunk of a memtable's link arena (4096 slots, 32 KiB).
+pub const LINK_CHUNK_SLOTS: usize = 4096;
+
+/// Tallest tower in a memtable skiplist: with branching 4, enough for 4^12 = 16.7 million
+/// entries before searches lengthen.
+pub const SKIPLIST_MAX_HEIGHT: usize = 12;
+
+/// Each skiplist level holds about one in this many of the level below.
+pub const SKIPLIST_BRANCHING: u32 = 4;

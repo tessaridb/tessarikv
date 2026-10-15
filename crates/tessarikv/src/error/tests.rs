@@ -34,7 +34,7 @@ fn samples() -> Vec<Error> {
     ]
 }
 
-/// Each variant lands in exactly the category the error model (ADR-0005) assigns it.
+/// Each variant lands in exactly the category the error model assigns it.
 #[test]
 fn every_variant_maps_to_its_category() {
     let categories: Vec<_> = samples().iter().map(Error::category).collect();
