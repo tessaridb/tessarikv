@@ -19,6 +19,9 @@ struct State {
     /// Bytes of each file the last successful sync covered.
     synced: papaya::HashMap<PathBuf, u64>,
     fail_sync: AtomicBool,
+    /// While set, syncs wait.
+    paused: std::sync::Mutex<bool>,
+    resumed: std::sync::Condvar,
 }
 
 impl FaultStorage {
@@ -26,6 +29,17 @@ impl FaultStorage {
     pub(crate) fn fail_syncs(&self) {
         // SeqCst: a test flag, read by the log writer on another thread.
         self.state.fail_sync.store(true, Ordering::SeqCst);
+    }
+
+    /// Every later sync waits until [`FaultStorage::resume_syncs`].
+    pub(crate) fn pause_syncs(&self) {
+        *self.state.paused.lock().expect("the gate") = true;
+    }
+
+    /// Lets waiting and later syncs through.
+    pub(crate) fn resume_syncs(&self) {
+        *self.state.paused.lock().expect("the gate") = false;
+        self.state.resumed.notify_all();
     }
 
     /// Everything appended to `path`.
@@ -142,6 +156,11 @@ impl WritableFile for FaultFile {
     }
 
     fn sync(&mut self) -> Result<()> {
+        let mut paused = self.state.paused.lock().expect("the gate");
+        while *paused {
+            paused = self.state.resumed.wait(paused).expect("the gate");
+        }
+        drop(paused);
         if self.state.fail_sync.load(Ordering::SeqCst) {
             return Err(Error::Io {
                 operation: "sync",

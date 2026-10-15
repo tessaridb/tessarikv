@@ -12,6 +12,8 @@
 //! This version serves the default keyspace. On storage, a full in-memory table is flushed to a
 //! table file in the background (see `installer`); in memory, every batch stays in memory.
 
+mod flush_job;
+mod flush_signals;
 mod installer;
 mod merge;
 mod open;
@@ -30,6 +32,8 @@ mod kill_tests;
 mod read_tests;
 #[cfg(test)]
 mod recovery_tests;
+#[cfg(test)]
+mod stall_tests;
 #[cfg(test)]
 mod switch_tests;
 #[cfg(test)]

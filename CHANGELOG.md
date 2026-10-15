@@ -44,6 +44,8 @@ All notable changes to this project are documented here. The format follows
   are removed. Opening reads the tables the manifest names, removes unnamed ones, and replays the log above them.
   `DbOptions::default_keyspace` sets the default keyspace's options. A failed flush stops writes with
   `Error::FlushFailed`.
+- Write stall: full in-memory tables queue for their flushes, up to `KeyspaceOptions::max_immutable_memtables`; past
+  that a write waits for the next flush, or returns `Error::WriteStalled` when `WriteOptions::no_slowdown` is set.
 - Options: `DbOptions`, `KeyspaceOptions` with the `point_lookup`, `write_heavy` and `bulk_load`
   presets, `ReadOptions` and `WriteOptions` with three durability levels.
 - `Storage` abstraction with an operating-system backend and an in-memory backend.

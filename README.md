@@ -11,7 +11,8 @@ reads return to. A write returns once it is as durable as it asks:
 synced (survives a power loss), handed to the operating system (survives a process crash), or not
 logged. On storage, a full in-memory table is flushed in the background to a table file named by
 a synced manifest, and the log segments it covers are removed; opening reads the manifest and its
-table files and replays only the log above them. Underneath it:
+table files and replays only the log above them. Writes wait while the in-memory tables
+awaiting flushes reach the keyspace's limit. Underneath it:
 
 - the internal-key encoding and its ordering (`tessarikv-types`);
 - an append-only byte buffer with one writer and any number of concurrent readers, and an

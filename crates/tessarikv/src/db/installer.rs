@@ -1,32 +1,36 @@
-//! Flushing in-memory tables to table files in the background.
+//! Freezing full in-memory tables and flushing them to table files in the background.
 //!
 //! One installer task per database on storage owns the manifest and is the only writer of the
-//! read view. A writer whose batch leaves the newest in-memory table at or past its size asks
-//! for a flush; the installer then, in this order, each step durable before the next:
+//! read view. A writer whose batch leaves the newest in-memory table at or past its size asks for
+//! a switch: the installer publishes a view with a new table in front, then starts its epoch, so
+//! later batches land in the new table and every earlier one in the frozen table. Frozen tables
+//! wait in order; one flush at a time takes the oldest and, each step durable before the next:
 //!
-//! 1. switches: publishes a view with a new table in front, then starts its epoch, so later
-//!    batches land in the new table and every earlier one in the old;
-//! 2. waits until every batch of the old epoch has completed (`visible` reaches the boundary);
-//! 3. writes the old table's versions to a table file, syncs it and its directory;
-//! 4. appends a manifest edit naming the file and the flushed sequence, synced;
-//! 5. publishes a view in which the file replaces the old table;
-//! 6. lets the log remove the segments the flushed sequence covers.
+//! 1. waits until every batch of the frozen table's epoch has completed;
+//! 2. writes its versions to a table file, syncs it and its directory;
+//! 3. appends a manifest edit naming the file and the flushed sequence, synced;
 //!
-//! A crash before step 4 leaves an unnamed table file, removed when the database opens, and the
+//! then the installer publishes a view in which the file replaces the frozen table, and lets the
+//! log remove the segments the flushed sequence covers.
+//!
+//! A crash before step 3 leaves an unnamed table file, removed when the database opens, and the
 //! batches still in the log; after it, opening reads the file and skips those batches in the
 //! log. A failed table or manifest write stops writes ([`Error::FlushFailed`]).
+//!
+//! Writes stall while the newest table is full and as many tables are frozen as the keyspace
+//! allows: memory stays bounded by that many tables plus one.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use arc_swap::ArcSwap;
-use tessarikv_format::{Compression, ManifestEdit, TableMeta, TableOptions};
 use tessarikv_sync::Sequencer;
-use tokio::sync::{Notify, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use super::tables::{build, open};
+use super::flush_job::{Job, table_options};
+use super::flush_signals::FlushSignals;
 use super::view::{TableFile, View};
 use crate::log::LogRelease;
 use crate::memtable::Memtable;
@@ -34,49 +38,28 @@ use crate::storage::Storage;
 use crate::version::manifest::ManifestStore;
 use crate::{Error, KeyspaceOptions, Result};
 
-/// What writers and the installer tell each other.
-pub(super) struct FlushSignals {
-    /// A flush is asked for or running; later requests fold into it.
-    pending: AtomicBool,
-    /// Wakes the installer for a flush.
-    wake: Notify,
-    /// Wakes the installer when the batches it waits for have completed.
-    pub(super) visible: Notify,
-    /// A flush failed: writes are refused until the database is reopened.
-    failed: AtomicBool,
-    /// Bytes the newest in-memory table holds before a flush is asked for.
-    memtable_bytes: u64,
-}
-
-impl FlushSignals {
-    /// Asks for a flush when `newest` has reached its size.
-    pub(super) fn check(&self, newest: &Memtable) {
-        if newest.approximate_bytes() >= self.memtable_bytes
-            // AcqRel: one requester wins; pairs with the installer clearing the flag.
-            && !self.pending.swap(true, Ordering::AcqRel)
-        {
-            self.wake.notify_one();
-        }
-    }
-
-    /// Whether a flush failed, so writes must stop.
-    pub(super) fn failed(&self) -> bool {
-        // Acquire: pairs with the Release store when the installer gives up.
-        self.failed.load(Ordering::Acquire)
-    }
-}
-
-/// What a flush works with.
+/// What the installer works with.
 pub(super) struct Flusher {
     pub(super) storage: Arc<dyn Storage>,
     pub(super) dir: PathBuf,
     pub(super) sequencer: Arc<Sequencer>,
     pub(super) view: Arc<ArcSwap<View>>,
-    /// Lent to a blocking thread while a flush writes it.
+    /// Lent to the running flush.
     pub(super) manifest: Option<ManifestStore>,
     pub(super) log: LogRelease,
     pub(super) keyspace: KeyspaceOptions,
 }
+
+/// A frozen table waiting for its flush.
+struct Frozen {
+    epoch: u8,
+    table: Arc<Memtable>,
+    /// The last sequence of its epoch.
+    flushed: u64,
+}
+
+/// What a finished flush hands back: the manifest, and the table file or why there is none.
+type Flushed = (ManifestStore, Result<Option<TableFile>>);
 
 /// The installer task and the handles that steer it.
 pub(super) struct Installer {
@@ -88,13 +71,7 @@ pub(super) struct Installer {
 impl Installer {
     /// Starts the installer task on the current tokio runtime.
     pub(super) fn start(flusher: Flusher) -> Self {
-        let signals = Arc::new(FlushSignals {
-            pending: AtomicBool::new(false),
-            wake: Notify::new(),
-            visible: Notify::new(),
-            failed: AtomicBool::new(false),
-            memtable_bytes: flusher.keyspace.memtable_bytes(),
-        });
+        let signals = Arc::new(FlushSignals::new(&flusher.keyspace));
         let (shutdown, stop) = watch::channel(false);
         let task = tokio::spawn(run(flusher, Arc::clone(&signals), stop));
         Self {
@@ -104,11 +81,12 @@ impl Installer {
         }
     }
 
-    /// Lets a running flush finish, then stops the task.
+    /// Lets a running flush finish, then stops the task; frozen tables not yet flushed stay in
+    /// the log.
     ///
     /// # Errors
     ///
-    /// The error that stopped an earlier flush.
+    /// The error that stopped a flush.
     pub(super) async fn close(self) -> Result<()> {
         // A send fails only when the task has already ended, which the join reports.
         let _ = self.shutdown.send(true);
@@ -116,145 +94,123 @@ impl Installer {
     }
 }
 
-/// Serves flush requests until shutdown; a failure is published before it is returned.
+/// Serves switch requests and runs flushes until shutdown; a failure is published, and stalled
+/// writers woken, before it is returned.
 async fn run(
     mut flusher: Flusher,
     signals: Arc<FlushSignals>,
     mut stop: watch::Receiver<bool>,
 ) -> Result<()> {
+    let mut frozen = VecDeque::new();
+    let mut running: Option<JoinHandle<Result<Flushed>>> = None;
+    let mut stopping = false;
     loop {
         tokio::select! {
-            // Shutdown first: a close never waits behind another flush.
+            // Shutdown first: no new flush starts after it, the running one finishes.
             biased;
-            _ = stop.changed() => return Ok(()),
-            () = signals.wake.notified() => {}
+            _ = stop.changed(), if !stopping => stopping = true,
+            finished = wait(&mut running), if running.is_some() => {
+                running = None;
+                let installed = finished.and_then(|flushed| flusher.install(&mut frozen, flushed));
+                if let Err(error) = installed {
+                    signals.fail();
+                    return Err(error);
+                }
+                signals.installed();
+            }
+            () = signals.requested(), if !stopping => {}
         }
-        if let Err(error) = flusher.flush(&signals).await {
-            // Release: writers that see the flag see the failure's effects.
-            signals.failed.store(true, Ordering::Release);
-            return Err(error);
+        if stopping {
+            if running.is_none() {
+                return Ok(());
+            }
+            continue;
         }
-        // Release: pairs with a requester's swap. A writer that found the flag set while this
-        // flush ran asked for nothing, so the size is checked again here.
-        signals.pending.store(false, Ordering::Release);
-        if let Some(newest) = flusher.view.load().memtables().next() {
-            signals.check(newest);
+        signals.take_request();
+        flusher.switch_if_full(&signals, &mut frozen);
+        if running.is_none()
+            && let Some(oldest) = frozen.front()
+        {
+            running = Some(flusher.start_flush(oldest, &signals)?);
         }
+    }
+}
+
+/// The running flush's result; a flush whose task or blocking thread died stops flushing.
+async fn wait(running: &mut Option<JoinHandle<Result<Flushed>>>) -> Result<Flushed> {
+    match running.as_mut() {
+        Some(flush) => flush.await.map_err(|_| Error::FlushFailed)?,
+        None => std::future::pending().await,
     }
 }
 
 impl Flusher {
-    /// Flushes the newest in-memory table (see the module documentation).
-    async fn flush(&mut self, signals: &FlushSignals) -> Result<()> {
+    /// Freezes the newest table when it is full and another may be frozen.
+    fn switch_if_full(&mut self, signals: &FlushSignals, frozen: &mut VecDeque<Frozen>) {
         let current = self.view.load_full();
+        if !signals.should_switch(&current, frozen.len()) {
+            return;
+        }
         let epoch = current.newest_epoch();
-        let table = current.shared_table(epoch)?;
-        // Step 1: the view naming the next table is published before its epoch starts.
+        let Ok(table) = current.shared_table(epoch) else {
+            return;
+        };
+        // The view naming the next table is published before its epoch starts.
         self.view.store(Arc::new(current.with_next_table()));
         let flushed = self.sequencer.switch().boundary().saturating_sub(1);
-        // Step 2: every claim below the boundary has completed.
-        loop {
-            let completed = signals.visible.notified();
-            if self.sequencer.watch(flushed) {
-                break;
-            }
-            completed.await;
-        }
-        self.sequencer.unwatch();
-        // Steps 3 and 4, on a blocking thread.
+        frozen.push_back(Frozen {
+            epoch,
+            table,
+            flushed,
+        });
+    }
+
+    /// Starts flushing `oldest` (steps 1 to 3 of the module documentation).
+    fn start_flush(
+        &mut self,
+        oldest: &Frozen,
+        signals: &Arc<FlushSignals>,
+    ) -> Result<JoinHandle<Result<Flushed>>> {
+        let mut manifest = self.manifest.take().ok_or(Error::FlushFailed)?;
         let job = Job {
             storage: Arc::clone(&self.storage),
             dir: self.dir.clone(),
             options: table_options(&self.keyspace)?,
-            table,
-            flushed,
+            table: Arc::clone(&oldest.table),
+            flushed: oldest.flushed,
         };
-        let mut manifest = self.manifest.take().ok_or(Error::FlushFailed)?;
-        let (manifest, written) = tokio::task::spawn_blocking(move || {
-            let written = job.run(&mut manifest);
-            (manifest, written)
-        })
-        .await
-        .map_err(|_| Error::FlushFailed)?;
-        self.manifest = Some(manifest);
-        let file = written?;
-        // Step 5: the file replaces the table in one view.
-        let current = self.view.load_full();
-        self.view.store(Arc::new(current.after_flush(epoch, file)?));
-        // Step 6.
-        self.log.release_through(flushed);
-        Ok(())
-    }
-}
-
-/// A flush's blocking part: the table file and the manifest edit.
-struct Job {
-    storage: Arc<dyn Storage>,
-    dir: PathBuf,
-    options: TableOptions,
-    table: Arc<Memtable>,
-    flushed: u64,
-}
-
-impl Job {
-    /// Writes the table file and its manifest edit; returns the file, or none when the table
-    /// held no version (its sequences were claimed by batches that were never applied).
-    fn run(self, manifest: &mut ManifestStore) -> Result<Option<TableFile>> {
-        let mut edit = ManifestEdit {
-            flushed_sequence: Some(self.flushed),
-            ..ManifestEdit::default()
-        };
-        let mut versions = self.table.iter();
-        versions.seek_to_first();
-        if versions.entry().is_none() {
-            manifest.append(&edit)?;
-            return Ok(None);
-        }
-        let built = build(&self.table, self.options)?;
-        let id = manifest.version().next_file();
-        let path = table_path(&self.dir, id);
-        let mut file = self.storage.create(&path)?;
-        file.append(&built.bytes)?;
-        file.sync()?;
-        drop(file);
-        self.storage.sync_dir(&self.dir)?;
-        let meta = TableMeta {
-            keyspace: 0,
-            level: 0,
-            id,
-            size: u64::try_from(built.bytes.len()).map_err(|_| Error::FlushFailed)?,
-            smallest: built.smallest,
-            largest: built.largest,
-            min_sequence: built.min_sequence,
-            max_sequence: built.max_sequence,
-        };
-        edit.next_file = Some(id.checked_add(1).ok_or(Error::SequenceExhausted)?);
-        edit.added.push(meta.clone());
-        manifest.append(&edit)?;
-        Ok(Some(TableFile {
-            meta: Arc::new(meta),
-            table: open(built.bytes, Some(&path))?,
+        let (sequencer, signals) = (Arc::clone(&self.sequencer), Arc::clone(signals));
+        Ok(tokio::spawn(async move {
+            // Step 1: every claim of the frozen epoch has completed.
+            loop {
+                let completed = signals.visible.notified();
+                if sequencer.watch(job.flushed) {
+                    break;
+                }
+                completed.await;
+            }
+            sequencer.unwatch();
+            // Steps 2 and 3, on a blocking thread; the manifest goes down with a panicked one.
+            tokio::task::spawn_blocking(move || {
+                let written = job.run(&mut manifest);
+                (manifest, written)
+            })
+            .await
+            .map_err(|_| Error::FlushFailed)
         }))
     }
-}
 
-/// The file of table `id` in `dir`.
-pub(super) fn table_path(dir: &std::path::Path, id: u64) -> PathBuf {
-    dir.join(format!("{id:020}.sst"))
-}
-
-/// How flushed tables of a keyspace are laid out.
-fn table_options(keyspace: &KeyspaceOptions) -> Result<TableOptions> {
-    let invalid = |option| Error::InvalidOptions {
-        option,
-        reason: "does not fit this platform's address size".to_owned(),
-    };
-    Ok(TableOptions {
-        block_bytes: usize::try_from(keyspace.block_bytes())
-            .map_err(|_| invalid("keyspace.block_bytes"))?,
-        restart_interval: usize::try_from(keyspace.block_restart_interval())
-            .map_err(|_| invalid("keyspace.block_restart_interval"))?,
-        bloom_bits_per_key: keyspace.bloom_bits_per_key(),
-        compression: Compression::Lz4,
-    })
+    /// Publishes the view in which the flushed file replaces the oldest frozen table, and
+    /// releases the log it covers.
+    fn install(&mut self, frozen: &mut VecDeque<Frozen>, flushed: Flushed) -> Result<()> {
+        let (manifest, written) = flushed;
+        self.manifest = Some(manifest);
+        let file = written?;
+        let oldest = frozen.pop_front().ok_or(Error::FlushFailed)?;
+        let current = self.view.load_full();
+        self.view
+            .store(Arc::new(current.after_flush(oldest.epoch, file)?));
+        self.log.release_through(oldest.flushed);
+        Ok(())
+    }
 }

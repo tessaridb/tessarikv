@@ -30,6 +30,8 @@ impl Db {
     /// (nothing is applied), [`Error::LogFailed`] when the log stopped before the batch was as
     /// durable as asked (nothing is applied, and no later write succeeds),
     /// [`Error::FlushFailed`] after a flush failed (nothing is applied),
+    /// [`Error::WriteStalled`] when [`WriteOptions::no_slowdown`] is set and the write would
+    /// wait for a flush (nothing is applied),
     /// [`Error::SequenceExhausted`] when the sequence space is used up, and [`Error::Memtable`]
     /// when the table cannot take an entry, which means an engine invariant is broken.
     pub async fn write(
@@ -56,8 +58,11 @@ impl Db {
         // A place in the log's queue is taken before the claim, so nothing between claiming
         // and handing the range over can wait or be cancelled.
         let installer = self.installer.as_ref();
-        if installer.is_some_and(|installer| installer.signals.failed()) {
-            return Err(Error::FlushFailed);
+        if let Some(installer) = installer {
+            installer
+                .signals
+                .admit(&self.view, options.no_slowdown)
+                .await?;
         }
         let slot = log.reserve().await?;
         let completed = installer.map(|installer| &installer.signals.visible);

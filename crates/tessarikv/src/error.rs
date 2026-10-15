@@ -129,6 +129,13 @@ pub enum Error {
     /// from the manifest and the log.
     #[error("a flush failed to write its table or the manifest; reopen the database")]
     FlushFailed,
+    /// The write asked not to wait while in-memory tables wait for flushes, and they do: the
+    /// active table is full and no more tables may be frozen. Retry later.
+    #[error("writes are stalled: {reason}")]
+    WriteStalled {
+        /// What the engine is waiting for.
+        reason: &'static str,
+    },
     /// Opening was told to fail when a database already exists, and one does.
     #[error("a database already exists at {path}")]
     AlreadyExists {
@@ -156,6 +163,7 @@ impl Error {
             Self::UnknownKeyspace { .. } | Self::Unsupported { .. } => ErrorCategory::Validation,
             Self::Memtable { .. } | Self::SequenceExhausted => ErrorCategory::Internal,
             Self::LogFailed | Self::FlushFailed => ErrorCategory::Io,
+            Self::WriteStalled { .. } => ErrorCategory::Unavailable,
             Self::AlreadyExists { .. } => ErrorCategory::Conflict,
             Self::Closed => ErrorCategory::ShutDown,
         }
@@ -177,6 +185,7 @@ impl Error {
             Self::Memtable { .. } => "memtable",
             Self::LogFailed => "log_failed",
             Self::FlushFailed => "flush_failed",
+            Self::WriteStalled { .. } => "write_stalled",
             Self::AlreadyExists { .. } => "already_exists",
             Self::Closed => "closed",
         }
@@ -190,7 +199,7 @@ impl Error {
                 source.kind(),
                 std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
             ),
-            Self::Locked { .. } => true,
+            Self::Locked { .. } | Self::WriteStalled { .. } => true,
             Self::NotFound { .. }
             | Self::InvalidOptions { .. }
             | Self::Corruption { .. }

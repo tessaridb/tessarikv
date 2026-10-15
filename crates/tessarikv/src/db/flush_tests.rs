@@ -13,7 +13,7 @@ use crate::{
     WriteOptions,
 };
 
-const PATH: &str = "/db";
+pub(super) const PATH: &str = "/db";
 const WRITES: u32 = 400;
 
 fn options() -> DbOptions {
@@ -34,12 +34,12 @@ async fn open(storage: &FaultStorage) -> Db {
         .expect("opened")
 }
 
-fn key(index: u32) -> Vec<u8> {
+pub(super) fn key(index: u32) -> Vec<u8> {
     format!("key{index:05}").into_bytes()
 }
 
 /// About four kilobytes, different for every index.
-fn value(index: u32) -> Vec<u8> {
+pub(super) fn value(index: u32) -> Vec<u8> {
     format!("value of {index};").repeat(256).into_bytes()
 }
 
@@ -72,7 +72,7 @@ async fn assert_all_readable(db: &Db) {
 }
 
 /// Returns once `done` holds, failing the test instead of hanging.
-async fn until(what: &str, done: impl Fn() -> bool) {
+pub(super) async fn until(what: &str, done: impl Fn() -> bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !done() {
             tokio::task::yield_now().await;
@@ -82,7 +82,7 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     .unwrap_or_else(|_| panic!("{what}"));
 }
 
-fn table_files(db: &Db) -> usize {
+pub(super) fn table_files(db: &Db) -> usize {
     db.view.load().files(0).count()
 }
 

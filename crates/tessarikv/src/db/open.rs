@@ -8,7 +8,8 @@ use tessarikv_constants::{COMMIT_RING_SLOTS, LEVELS};
 use tessarikv_sync::Sequencer;
 
 use super::Db;
-use super::installer::{Flusher, Installer, table_path};
+use super::flush_job::table_path;
+use super::installer::{Flusher, Installer};
 use super::recover::recover;
 use super::tables::open;
 use super::view::{TableFile, View};
