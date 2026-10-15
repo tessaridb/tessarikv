@@ -15,6 +15,8 @@ mod recover;
 mod write;
 
 #[cfg(test)]
+mod kill_tests;
+#[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
 mod tests;
