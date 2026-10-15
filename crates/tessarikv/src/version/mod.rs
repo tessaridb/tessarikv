@@ -9,6 +9,10 @@
 //! Level 0 holds flushed tables newest first, and their key ranges may overlap. Every other level
 //! holds tables sorted by key with ranges that never overlap.
 
+pub(crate) mod manifest;
+
+#[cfg(test)]
+mod manifest_tests;
 #[cfg(test)]
 mod tests;
 
@@ -23,7 +27,7 @@ use tessarikv_types::compare_internal;
 use crate::{Error, Result};
 
 /// See the module documentation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Version {
     /// Per keyspace, the tables of each level.
     keyspaces: BTreeMap<u32, Levels>,
@@ -56,6 +60,22 @@ impl Version {
             .get(&keyspace)
             .and_then(|levels| levels.get(level))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// One edit that rebuilds this version from an empty one.
+    pub(crate) fn as_edit(&self) -> ManifestEdit {
+        ManifestEdit {
+            flushed_sequence: Some(self.flushed_sequence),
+            next_file: Some(self.next_file),
+            added: self
+                .keyspaces
+                .values()
+                .flat_map(|levels| levels.iter())
+                .flatten()
+                .map(|table| TableMeta::clone(table))
+                .collect(),
+            removed: Vec::new(),
+        }
     }
 
     /// The version `edit` makes of this one.

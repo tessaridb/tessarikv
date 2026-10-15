@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub use memory::MemoryStorage;
 pub use os::OsStorage;
 
-use crate::Result;
+use crate::{Error, Result};
 
 /// A file system the engine can keep a database in.
 pub trait Storage: Send + Sync + std::fmt::Debug {
@@ -144,3 +144,22 @@ pub trait ReadableFile: Send + Sync {
 
 /// An exclusive lock on a database directory, released on drop.
 pub trait StorageLock: Send + Sync + std::fmt::Debug {}
+
+/// Every byte of the file at `path`, which holds `what`.
+///
+/// # Errors
+///
+/// [`Error::Corruption`] when the file is larger than memory can address, and whatever opening
+/// or reading the file returns.
+pub(crate) fn read_all(storage: &dyn Storage, path: &Path, what: &'static str) -> Result<Vec<u8>> {
+    let file = storage.open(path)?;
+    let len = usize::try_from(file.len()?).map_err(|_| Error::Corruption {
+        what,
+        path: Some(path.to_path_buf()),
+        offset: Some(0),
+        detail: "the file is larger than memory can address".to_owned(),
+    })?;
+    let mut bytes = vec![0; len];
+    file.read_at(0, &mut bytes)?;
+    Ok(bytes)
+}

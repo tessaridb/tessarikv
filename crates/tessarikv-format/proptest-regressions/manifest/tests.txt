@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 201d41dce9db30d3ee1c8a64ce0e7301eeb608424adb1757c2e8558a43eabfbc # shrinks to edit = ManifestEdit { flushed_sequence: None, next_file: None, added: [TableMeta { keyspace: 0, level: 0, id: 0, size: 0, smallest: [], largest: [], min_sequence: 0, max_sequence: 1 }], removed: [] }

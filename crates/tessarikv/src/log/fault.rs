@@ -100,7 +100,17 @@ impl Storage for FaultStorage {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        self.files.rename(from, to)
+        self.files.rename(from, to)?;
+        // What was synced stays synced: the bytes follow the file to its new name. (Whether the
+        // new NAME survives a power loss before the directory is synced is not modelled.)
+        let synced = self.state.synced.pin();
+        let len = synced.get(from).copied();
+        synced.remove(from);
+        match len {
+            Some(len) => synced.insert(to.to_path_buf(), len),
+            None => synced.remove(to),
+        };
+        Ok(())
     }
 
     fn list(&self, dir: &Path) -> Result<Vec<String>> {

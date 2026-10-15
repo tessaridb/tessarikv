@@ -18,7 +18,7 @@ use tessarikv_format::{EndKind, FrameReader, LogRead, WriteBatch};
 use super::write::apply;
 use crate::log::segment_path;
 use crate::memtable::Memtable;
-use crate::storage::Storage;
+use crate::storage::{Storage, read_all};
 use crate::{Error, Result, WalRecovery};
 
 /// Bytes of the sequence number at the start of a log payload.
@@ -47,7 +47,7 @@ pub(super) fn recover(
     let mut last_sequence = 0;
     for (index, &log_number) in segments.iter().enumerate() {
         let path = segment_path(dir, log_number);
-        let bytes = read_all(storage, &path)?;
+        let bytes = read_all(storage, &path, "write-ahead log")?;
         let mut frames = FrameReader::new(&bytes, log_number);
         let end = loop {
             match frames.next_frame() {
@@ -137,16 +137,6 @@ fn cut(storage: &dyn Storage, dir: &Path, log_number: u64, bytes: &[u8], valid: 
     file.sync()?;
     drop(file);
     storage.rename(&temporary, &path)
-}
-
-/// Every byte of the file at `path`.
-fn read_all(storage: &dyn Storage, path: &Path) -> Result<Vec<u8>> {
-    let file = storage.open(path)?;
-    let len = usize::try_from(file.len()?)
-        .map_err(|_| corruption(path, 0, "segment larger than memory".to_owned()))?;
-    let mut bytes = vec![0; len];
-    file.read_at(0, &mut bytes)?;
-    Ok(bytes)
 }
 
 fn corruption(path: &Path, offset: u64, detail: String) -> Error {
