@@ -18,7 +18,9 @@ use std::sync::Arc;
 
 use tessarikv_format::{Table, TableMeta};
 
+use super::tables;
 use crate::memtable::Memtable;
+use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
 /// The tables of one read view.
@@ -149,6 +151,22 @@ impl View {
     /// The in-memory tables, newest first.
     pub(crate) fn memtables(&self) -> impl Iterator<Item = &Memtable> {
         self.tables.iter().map(|entry| entry.table.as_ref())
+    }
+
+    /// The range deletes of every in-memory table and of the table files of `keyspace`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Corruption`] for a damaged range-delete block in a table file.
+    pub(crate) fn tombstones(&self, keyspace: u32) -> Result<Vec<RangeTombstone>> {
+        let mut tombstones = Vec::new();
+        for table in self.memtables() {
+            table.tombstones(&mut tombstones);
+        }
+        for file in self.files(keyspace) {
+            tables::tombstones(&file.table, &mut tombstones)?;
+        }
+        Ok(tombstones)
     }
 
     /// The in-memory tables, newest first, shared: a holder keeps one alive after the view is

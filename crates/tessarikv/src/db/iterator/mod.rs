@@ -12,6 +12,7 @@ use super::merge::{MergedVersions, Source, TableVersions};
 use super::snapshot::Snapshot;
 use super::view::View;
 use crate::memtable::MemtableCursor;
+use crate::tombstones::Fragments;
 use crate::{ReadOptions, Result};
 
 /// A walk over the live keys of one keyspace, in key order forward or backward, at one
@@ -53,6 +54,8 @@ use crate::{ReadOptions, Result};
 pub struct DbIterator<'a> {
     versions: MergedVersions<'static>,
     snapshot: SequenceNumber,
+    /// The range deletes visible at the snapshot, from every source.
+    fragments: Fragments,
     lower: Option<Vec<u8>>,
     upper: Option<Vec<u8>>,
     /// The current key; empty when not valid.
@@ -71,19 +74,20 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// [`crate::Error::UnknownKeyspace`] for a keyspace this database does not hold, and the
+    /// [`crate::Error::UnknownKeyspace`] for a keyspace this database does not hold,
+    /// [`crate::Error::Corruption`] for a damaged range-delete block in a table file, and the
     /// errors of [`Db::snapshot`].
     pub fn iter(&self, keyspace: KeyspaceId, options: &ReadOptions) -> Result<DbIterator<'_>> {
         Self::check_keyspace(keyspace)?;
         let snapshot = self.snapshot()?;
         let sequence = snapshot.sequence();
-        Ok(DbIterator::new(
+        DbIterator::new(
             &self.view.load_full(),
             keyspace,
             sequence,
             options,
             Some(snapshot),
-        ))
+        )
     }
 }
 
@@ -94,7 +98,8 @@ impl<'a> DbIterator<'a> {
         snapshot: SequenceNumber,
         options: &ReadOptions,
         registration: Option<Snapshot<'a>>,
-    ) -> Self {
+    ) -> Result<Self> {
+        let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
         let sources = view
             .shared_memtables()
             .map(|table| Source::Shared(MemtableCursor::new(Arc::clone(table))))
@@ -103,9 +108,10 @@ impl<'a> DbIterator<'a> {
                     .map(|file| Source::Table(Box::new(TableVersions::new(file.table.iter())))),
             )
             .collect();
-        Self {
+        Ok(Self {
             versions: MergedVersions::new(sources),
             snapshot,
+            fragments,
             lower: options.lower_bound.clone(),
             upper: options.upper_bound.clone(),
             key: Vec::new(),
@@ -113,7 +119,7 @@ impl<'a> DbIterator<'a> {
             backward: false,
             saved: Vec::new(),
             _snapshot: registration,
-        }
+        })
     }
 
     /// Whether the iterator is on a key.
@@ -212,7 +218,9 @@ impl<'a> DbIterator<'a> {
             if !passed {
                 self.key.clear();
                 self.key.extend_from_slice(version.user_key);
-                if version.kind == ValueKind::Value {
+                if version.kind == ValueKind::Value
+                    && !self.fragments.deletes(version.user_key, version.sequence)
+                {
                     self.valid = true;
                     break;
                 }

@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use super::block::{Block, BlockIter, Compare};
-use super::builder::ENTRIES_PROPERTY;
+use super::builder::{ENTRIES_PROPERTY, RANGE_DELETES_PROPERTY};
 use super::filter::BloomFilter;
 use super::handle::{BlockHandle, Footer, read_block};
 use crate::error::{Error, Result};
@@ -18,6 +18,7 @@ pub struct Table {
     filter_key: fn(&[u8]) -> &[u8],
     compare: Compare,
     entries: u64,
+    range_deletes: Option<Block>,
 }
 
 impl Table {
@@ -53,6 +54,14 @@ impl Table {
                 reason: "no entry count",
             });
         };
+        property.seek(RANGE_DELETES_PROPERTY);
+        let range_deletes = if property.valid() && property.key() == RANGE_DELETES_PROPERTY {
+            let handle = BlockHandle::decode(property.value())?;
+            Some(Block::new(read_block(&file, handle)?, compare)?)
+        } else {
+            None
+        };
+        property.status()?;
         Ok(Self {
             file: file.into(),
             index,
@@ -60,7 +69,28 @@ impl Table {
             filter_key,
             compare,
             entries,
+            range_deletes,
         })
+    }
+
+    /// The table's range deletes as `(key, end)`, in key order.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] for a damaged range-delete block.
+    pub fn range_deletes(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let Some(block) = &self.range_deletes else {
+            return Ok(Vec::new());
+        };
+        let mut deletes = Vec::new();
+        let mut iter = block.iter();
+        iter.seek_to_first();
+        while iter.valid() {
+            deletes.push((iter.key().to_vec(), iter.value().to_vec()));
+            iter.next();
+        }
+        iter.status()?;
+        Ok(deletes)
     }
 
     /// Whether `key` may be in the table: `false` means it certainly is not.

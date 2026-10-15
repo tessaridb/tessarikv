@@ -89,16 +89,17 @@ impl Snapshot<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownKeyspace`] for a keyspace this database does not hold.
+    /// [`Error::UnknownKeyspace`] for a keyspace this database does not hold, and
+    /// [`Error::Corruption`] for a damaged range-delete block in a table file.
     pub fn iter(&self, keyspace: KeyspaceId, options: &ReadOptions) -> Result<DbIterator<'_>> {
         Db::check_keyspace(keyspace)?;
-        Ok(DbIterator::new(
+        DbIterator::new(
             &self.db.view.load_full(),
             keyspace,
             self.sequence,
             options,
             None,
-        ))
+        )
     }
 
     /// A page of `keyspace` at this snapshot, as [`Db::scan`] returns one.

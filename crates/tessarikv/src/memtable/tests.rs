@@ -79,12 +79,25 @@ fn inserting_the_same_version_twice_keeps_the_first() {
 }
 
 #[test]
-fn a_range_delete_is_refused() {
+fn a_range_delete_is_kept_apart_from_the_point_entries() {
     let table = Memtable::new();
-    assert!(
-        table
-            .insert(seq(1), ValueKind::RangeDelete, b"a", b"z")
-            .is_err()
+    assert!(!table.has_tombstones());
+    table.insert(seq(1), ValueKind::Value, b"b", b"1").unwrap();
+    table
+        .insert(seq(2), ValueKind::RangeDelete, b"a", b"z")
+        .unwrap();
+    assert!(table.has_tombstones());
+    // Point reads do not see it: applying it is the reader's work.
+    assert_eq!(value(table.get(b"b", seq(5))), Some(Some(b"1".to_vec())));
+    let mut tombstones = Vec::new();
+    table.tombstones(&mut tombstones);
+    assert_eq!(
+        tombstones,
+        [crate::tombstones::RangeTombstone {
+            start: b"a".to_vec(),
+            end: b"z".to_vec(),
+            sequence: seq(2),
+        }]
     );
 }
 

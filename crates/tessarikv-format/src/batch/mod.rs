@@ -1,4 +1,5 @@
-//! The write batch: an ordered list of puts and deletes that the engine applies atomically.
+//! The write batch: an ordered list of puts, deletes and range deletes that the engine applies
+//! atomically.
 //!
 //! A batch is the unit of atomicity. Every entry in it becomes visible together or not at all,
 //! across keyspaces, and the whole batch is logged as one record. Each entry receives its own
@@ -8,13 +9,15 @@
 //! The encoding is also the log payload, so it is versioned and bounded:
 //!
 //! ```text
-//! [version: u8 = 1][count: u32]
+//! [version: u8 = 2][count: u32]
 //! per entry: [kind: u8][keyspace: u32][key_len: u32][key] then, for a put, [value_len: u32][value]
+//!            and, for a range delete, [end_len: u32][end]
 //! ```
 //!
 //! All integers are little-endian. Keys are at most [`MAX_KEY_BYTES`], values at most
 //! [`MAX_VALUE_BYTES`], and the encoded batch at most [`MAX_BATCH_BYTES`]; an entry that would
-//! break a bound is refused and leaves the batch unchanged.
+//! break a bound is refused and leaves the batch unchanged. Version 1 batches, which hold no range
+//! deletes, are still read.
 
 mod codec;
 
@@ -26,8 +29,11 @@ use tessarikv_types::{KeyspaceId, ValueKind};
 
 use crate::{Error, Result};
 
-/// The batch encoding version this build writes and reads.
-const FORMAT_VERSION: u8 = 1;
+/// The batch encoding version this build writes.
+const FORMAT_VERSION: u8 = 2;
+
+/// The first version, without range deletes; still read.
+const FORMAT_VERSION_1: u8 = 1;
 
 /// Bytes before the first entry: the version and the entry count.
 const HEADER_BYTES: usize = 5;
@@ -58,11 +64,12 @@ pub struct WriteBatch {
 pub struct BatchEntry<'a> {
     /// The keyspace the entry writes to.
     pub keyspace: KeyspaceId,
-    /// [`ValueKind::Value`] for a put, [`ValueKind::Delete`] for a delete.
+    /// [`ValueKind::Value`] for a put, [`ValueKind::Delete`] for a delete,
+    /// [`ValueKind::RangeDelete`] for a range delete.
     pub kind: ValueKind,
     /// The user key.
     pub key: &'a [u8],
-    /// The value of a put; `None` for a delete.
+    /// The value of a put, the end of a range delete; `None` for a delete.
     pub value: Option<&'a [u8]>,
 }
 
@@ -99,6 +106,20 @@ impl WriteBatch {
     /// As for [`WriteBatch::put`].
     pub fn delete(&mut self, keyspace: KeyspaceId, key: &[u8]) -> Result<()> {
         self.append(keyspace, ValueKind::Delete, key, None)
+    }
+
+    /// Removes every key in `[start, end)` from `keyspace`: older versions of them become
+    /// invisible, and a key written later in the range is visible again.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] when `start` is not below `end`, and as for [`WriteBatch::put`].
+    pub fn delete_range(&mut self, keyspace: KeyspaceId, start: &[u8], end: &[u8]) -> Result<()> {
+        if start >= end {
+            return Err(empty_range());
+        }
+        check_size("range end", end.len(), MAX_KEY_BYTES)?;
+        self.append(keyspace, ValueKind::RangeDelete, start, Some(end))
     }
 
     /// The number of entries.
@@ -150,7 +171,7 @@ impl WriteBatch {
     pub fn from_bytes(rep: Vec<u8>) -> Result<Self> {
         check_size("write batch", rep.len(), MAX_BATCH_BYTES)?;
         let version = codec::read_u8(&rep, 0, "write batch")?;
-        if version != FORMAT_VERSION {
+        if version != FORMAT_VERSION && version != FORMAT_VERSION_1 {
             return Err(Error::UnsupportedVersion {
                 what: "write batch",
                 version,
@@ -159,7 +180,7 @@ impl WriteBatch {
         let count = codec::read_u32(&rep, 1, "write batch")?;
         let mut at = HEADER_BYTES;
         for _ in 0..count {
-            (_, at) = codec::read_entry(&rep, at)?;
+            (_, at) = codec::read_entry(&rep, at, version)?;
         }
         if at != rep.len() {
             return Err(Error::Malformed {
@@ -221,7 +242,8 @@ impl<'a> Iterator for BatchIter<'a> {
             return None;
         }
         // A batch's encoding is valid by construction, so decoding cannot fail here.
-        let (entry, next) = codec::read_entry(self.rep, self.at).ok()?;
+        let version = self.rep.first().copied().unwrap_or(FORMAT_VERSION);
+        let (entry, next) = codec::read_entry(self.rep, self.at, version).ok()?;
         self.at = next;
         Some(entry)
     }
@@ -253,5 +275,13 @@ fn too_large_batch(size: usize) -> Error {
         what: "write batch",
         size: u64::try_from(size).unwrap_or(u64::MAX),
         limit: u64::try_from(MAX_BATCH_BYTES).unwrap_or(u64::MAX),
+    }
+}
+
+/// The refusal of a range that holds no key.
+pub(super) fn empty_range() -> Error {
+    Error::Malformed {
+        what: "range delete",
+        reason: "the start is not below the end",
     }
 }

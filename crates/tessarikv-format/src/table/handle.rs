@@ -22,7 +22,10 @@ use crate::varint;
 pub const FOOTER_BYTES: usize = 64;
 
 /// The table format this build writes and reads.
-pub(super) const FORMAT_VERSION: u32 = 1;
+pub(super) const FORMAT_VERSION: u32 = 2;
+
+/// The first version, without range deletes; still read.
+const FORMAT_VERSION_1: u32 = 1;
 
 /// Identifies a table file.
 const MAGIC: u64 = 0x5445_5353_4B56_5442;
@@ -128,7 +131,7 @@ impl Footer {
             });
         }
         let version = u32_at(48);
-        if version != FORMAT_VERSION {
+        if version != FORMAT_VERSION && version != FORMAT_VERSION_1 {
             return Err(match u8::try_from(version) {
                 Ok(version) => Error::UnsupportedVersion {
                     what: "table",

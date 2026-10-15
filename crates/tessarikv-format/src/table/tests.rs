@@ -134,16 +134,42 @@ fn a_truncated_file_or_an_unknown_version_is_refused() {
         open(bytes[..10].to_vec()),
         Err(Error::Truncated { .. })
     ));
-    let mut newer = bytes.clone();
-    let version_at = newer.len() - FOOTER_BYTES + 48;
-    newer[version_at..version_at + 4].copy_from_slice(&2_u32.to_le_bytes());
-    let footer_at = newer.len() - FOOTER_BYTES;
-    let checksum = crc32c::crc32c(&newer[footer_at..footer_at + 52]);
-    newer[footer_at + 52..footer_at + 56].copy_from_slice(&checksum.to_le_bytes());
     assert!(matches!(
-        open(newer),
-        Err(Error::UnsupportedVersion { version: 2, .. })
+        open(with_version(&bytes, 3)),
+        Err(Error::UnsupportedVersion { version: 3, .. })
     ));
+    // The first version, which has no range deletes, still opens.
+    assert!(open(with_version(&bytes, 1)).is_ok());
+}
+
+/// `bytes` with the footer's format version replaced and the footer resealed.
+fn with_version(bytes: &[u8], version: u32) -> Vec<u8> {
+    let mut changed = bytes.to_vec();
+    let footer_at = changed.len() - FOOTER_BYTES;
+    changed[footer_at + 48..footer_at + 52].copy_from_slice(&version.to_le_bytes());
+    let checksum = crc32c::crc32c(&changed[footer_at..footer_at + 52]);
+    changed[footer_at + 52..footer_at + 56].copy_from_slice(&checksum.to_le_bytes());
+    changed
+}
+
+#[test]
+fn range_deletes_are_kept_apart_and_read_back() {
+    let mut builder = TableBuilder::new(options(Compression::Lz4), bytewise, whole);
+    builder.add(b"a", b"1").unwrap();
+    builder.add_range_delete(b"b", b"d").unwrap();
+    builder.add_range_delete(b"c", b"f").unwrap();
+    assert!(builder.add_range_delete(b"c", b"g").is_err());
+    let table = open(builder.finish().unwrap()).unwrap();
+    assert_eq!(table.entries(), 1);
+    assert_eq!(
+        table.range_deletes().unwrap(),
+        [
+            (b"b".to_vec(), b"d".to_vec()),
+            (b"c".to_vec(), b"f".to_vec())
+        ]
+    );
+    let plain = open(build(&sample(), Compression::None)).unwrap();
+    assert!(plain.range_deletes().unwrap().is_empty());
 }
 
 #[test]

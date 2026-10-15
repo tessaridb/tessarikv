@@ -143,3 +143,62 @@ fn a_huge_length_field_is_refused_without_allocating_it() {
         Err(Error::TooLarge { what: "key", .. })
     ));
 }
+
+#[test]
+fn a_range_delete_round_trips_and_an_empty_range_is_refused() {
+    let mut batch = WriteBatch::new();
+    batch.put(KeyspaceId::DEFAULT, b"a", b"1").unwrap();
+    batch.delete_range(KeyspaceId::DEFAULT, b"b", b"d").unwrap();
+    assert!(matches!(
+        batch.delete_range(KeyspaceId::DEFAULT, b"d", b"d"),
+        Err(Error::Malformed {
+            what: "range delete",
+            ..
+        })
+    ));
+    assert!(matches!(
+        batch.delete_range(KeyspaceId::DEFAULT, b"e", b"d"),
+        Err(Error::Malformed {
+            what: "range delete",
+            ..
+        })
+    ));
+    assert_eq!(batch.len(), 2);
+    let decoded = WriteBatch::from_bytes(batch.as_bytes().to_vec()).unwrap();
+    let entries: Vec<_> = decoded.iter().collect();
+    assert_eq!(entries[1].kind, ValueKind::RangeDelete);
+    assert_eq!(entries[1].key, b"b");
+    assert_eq!(entries[1].value, Some(&b"d"[..]));
+}
+
+#[test]
+fn a_version_1_batch_decodes_but_may_not_carry_a_range_delete() {
+    let mut batch = WriteBatch::new();
+    batch.put(KeyspaceId::DEFAULT, b"a", b"1").unwrap();
+    let mut old = batch.as_bytes().to_vec();
+    old[0] = 1;
+    assert_eq!(WriteBatch::from_bytes(old).unwrap().len(), 1);
+
+    let mut batch = WriteBatch::new();
+    batch.delete_range(KeyspaceId::DEFAULT, b"a", b"b").unwrap();
+    let mut old = batch.as_bytes().to_vec();
+    old[0] = 1;
+    assert!(matches!(
+        WriteBatch::from_bytes(old),
+        Err(Error::Malformed {
+            what: "write batch entry kind",
+            ..
+        })
+    ));
+    // A decoded range whose end is not above its start is refused too.
+    let mut reversed = batch.as_bytes().to_vec();
+    let start = reversed.len() - 6;
+    reversed[start] = b'c';
+    assert!(matches!(
+        WriteBatch::from_bytes(reversed),
+        Err(Error::Malformed {
+            what: "range delete",
+            ..
+        })
+    ));
+}

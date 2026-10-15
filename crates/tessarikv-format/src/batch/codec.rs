@@ -3,7 +3,7 @@
 use tessarikv_constants::{MAX_KEY_BYTES, MAX_VALUE_BYTES};
 use tessarikv_types::{KeyspaceId, ValueKind};
 
-use super::{BatchEntry, check_size};
+use super::{BatchEntry, FORMAT_VERSION_1, check_size, empty_range};
 use crate::{Error, Result};
 
 /// Bytes of an entry with `key` and, for a put, `value`.
@@ -36,26 +36,37 @@ pub(super) fn write_entry(
     Ok(())
 }
 
-/// Decodes the entry starting at `at`; returns it and where the next one starts.
-pub(super) fn read_entry(rep: &[u8], at: usize) -> Result<(BatchEntry<'_>, usize)> {
+/// Decodes the entry starting at `at` of a batch of encoding `version`; returns it and where
+/// the next one starts.
+pub(super) fn read_entry(rep: &[u8], at: usize, version: u8) -> Result<(BatchEntry<'_>, usize)> {
     let kind_byte = read_u8(rep, at, "write batch entry")?;
     let kind = match ValueKind::from_byte(kind_byte) {
         Ok(kind @ (ValueKind::Value | ValueKind::Delete)) => kind,
+        Ok(ValueKind::RangeDelete) if version != FORMAT_VERSION_1 => ValueKind::RangeDelete,
         _ => {
             return Err(Error::Malformed {
                 what: "write batch entry kind",
-                reason: "not a put or a delete",
+                reason: "not a put, a delete or a range delete of this version",
             });
         }
     };
     let keyspace = KeyspaceId::new(read_u32(rep, offset(at, 1)?, "write batch entry")?);
     let (key, mut next) = read_bytes(rep, offset(at, 5)?, "key", MAX_KEY_BYTES)?;
-    let value = if kind == ValueKind::Value {
-        let (value, after) = read_bytes(rep, next, "value", MAX_VALUE_BYTES)?;
-        next = after;
-        Some(value)
-    } else {
-        None
+    let value = match kind {
+        ValueKind::Value => {
+            let (value, after) = read_bytes(rep, next, "value", MAX_VALUE_BYTES)?;
+            next = after;
+            Some(value)
+        }
+        ValueKind::RangeDelete => {
+            let (end, after) = read_bytes(rep, next, "range end", MAX_KEY_BYTES)?;
+            if key >= end {
+                return Err(empty_range());
+            }
+            next = after;
+            Some(end)
+        }
+        ValueKind::Delete => None,
     };
     Ok((
         BatchEntry {

@@ -96,7 +96,8 @@ impl DbIterator<'_> {
                     break;
                 }
                 if version.sequence <= self.snapshot {
-                    live = version.kind == ValueKind::Value;
+                    live = version.kind == ValueKind::Value
+                        && !self.fragments.deletes(version.user_key, version.sequence);
                     if live {
                         self.saved.clear();
                         self.saved.extend_from_slice(version.value);

@@ -23,7 +23,8 @@ pub(super) struct Job {
 
 impl Job {
     /// Writes the table file and its manifest edit; returns the file, or none when the table
-    /// held no version (its sequences were claimed by batches that were never applied).
+    /// held neither a version nor a range delete (its sequences were claimed by batches that
+    /// were never applied).
     pub(super) fn run(self, manifest: &mut ManifestStore) -> Result<Option<TableFile>> {
         let mut edit = ManifestEdit {
             flushed_sequence: Some(self.flushed),
@@ -31,7 +32,7 @@ impl Job {
         };
         let mut versions = self.table.iter();
         versions.seek_to_first();
-        if versions.entry().is_none() {
+        if versions.entry().is_none() && !self.table.has_tombstones() {
             manifest.append(&edit)?;
             return Ok(None);
         }

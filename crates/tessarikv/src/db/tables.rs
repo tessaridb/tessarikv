@@ -15,6 +15,7 @@ use tessarikv_types::{
 };
 
 use crate::memtable::Memtable;
+use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
 /// What a table holds for a key at a snapshot.
@@ -44,11 +45,13 @@ fn user_key(internal: &[u8]) -> &[u8] {
         .unwrap_or(internal)
 }
 
-/// Writes every version of `memtable` into a table file. Runs on a blocking thread.
+/// Writes every version and range delete of `memtable` into a table file. Runs on a blocking
+/// thread. The recorded key range spans the point entries and the starts of the range deletes.
 ///
 /// # Errors
 ///
-/// [`Error::Memtable`] when the table holds no version (an empty table is never flushed), and
+/// [`Error::Memtable`] when the table holds neither a version nor a range delete (an empty
+/// table is never flushed), and
 /// [`Error::Corruption`] when the format refuses an entry, which means the table's order broke.
 pub(crate) fn build(memtable: &Memtable, options: TableOptions) -> Result<BuiltTable> {
     let mut builder = TableBuilder::new(options, compare_internal, user_key);
@@ -74,15 +77,45 @@ pub(crate) fn build(memtable: &Memtable, options: TableOptions) -> Result<BuiltT
         max_sequence = max_sequence.max(entry.sequence.get());
         versions.next();
     }
-    let smallest = smallest.ok_or(Error::Memtable {
-        reason: "an empty in-memory table was asked for a table file",
-    })?;
+    let mut largest = smallest.is_some().then_some(key);
+    let mut tombstones = Vec::new();
+    memtable.tombstones(&mut tombstones);
+    for tombstone in &tombstones {
+        let mut start = Vec::new();
+        encode_internal(
+            &tombstone.start,
+            Trailer::new(tombstone.sequence, ValueKind::RangeDelete),
+            &mut start,
+        );
+        builder
+            .add_range_delete(&start, &tombstone.end)
+            .map_err(|error| format_error(&error, None))?;
+        min_sequence = min_sequence.min(tombstone.sequence.get());
+        max_sequence = max_sequence.max(tombstone.sequence.get());
+        if smallest
+            .as_deref()
+            .is_none_or(|least| compare_internal(&start, least).is_lt())
+        {
+            smallest = Some(start.clone());
+        }
+        if largest
+            .as_deref()
+            .is_none_or(|most| compare_internal(&start, most).is_gt())
+        {
+            largest = Some(start);
+        }
+    }
+    let (Some(smallest), Some(largest)) = (smallest, largest) else {
+        return Err(Error::Memtable {
+            reason: "an empty in-memory table was asked for a table file",
+        });
+    };
     Ok(BuiltTable {
         bytes: builder
             .finish()
             .map_err(|error| format_error(&error, None))?,
         smallest,
-        largest: key,
+        largest,
         min_sequence,
         max_sequence,
     })
@@ -95,6 +128,32 @@ pub(crate) fn build(memtable: &Memtable, options: TableOptions) -> Result<BuiltT
 /// [`Error::Corruption`] when the bytes are not a whole table of this format.
 pub(crate) fn open(bytes: Vec<u8>, path: Option<&Path>) -> Result<Table> {
     Table::open(bytes, compare_internal, user_key).map_err(|error| format_error(&error, path))
+}
+
+/// The range deletes of `table`, appended to `out`.
+///
+/// # Errors
+///
+/// [`Error::Corruption`] for a damaged range-delete block or a stored start that is not an
+/// internal key.
+pub(crate) fn tombstones(table: &Table, out: &mut Vec<RangeTombstone>) -> Result<()> {
+    for (start, end) in table
+        .range_deletes()
+        .map_err(|error| format_error(&error, None))?
+    {
+        let parsed = InternalKeyRef::parse(&start).map_err(|_| Error::Corruption {
+            what: "table",
+            path: None,
+            offset: None,
+            detail: "a range delete's start is not an internal key".to_owned(),
+        })?;
+        out.push(RangeTombstone {
+            start: parsed.user_key().to_vec(),
+            end,
+            sequence: parsed.trailer().sequence(),
+        });
+    }
+    Ok(())
 }
 
 /// The newest version of `key` in `table` at `snapshot`.

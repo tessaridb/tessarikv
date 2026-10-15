@@ -7,6 +7,7 @@ use super::merge::{MergedVersions, Source, TableVersions};
 use super::tables::{TableLookup, lookup};
 use super::view::View;
 use crate::memtable::Lookup;
+use crate::tombstones::Fragments;
 use crate::{ReadOptions, Result};
 
 /// One page of a scan: live entries in key order, and where the next page starts.
@@ -87,6 +88,10 @@ pub(super) fn get_in(
     key: &[u8],
     snapshot: SequenceNumber,
 ) -> Result<Option<Vec<u8>>> {
+    let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
+    if !fragments.is_empty() {
+        return get_merged(view, keyspace, key, snapshot, &fragments);
+    }
     // Newest first, in-memory tables before table files: the first that decides the key
     // answers for it.
     for table in view.memtables() {
@@ -120,15 +125,8 @@ pub(super) fn scan_in(
     snapshot: SequenceNumber,
 ) -> Result<ScanPage> {
     let mut page = ScanPage::default();
-    let sources = view
-        .memtables()
-        .map(|table| Source::Memtable(table.iter()))
-        .chain(
-            view.files(keyspace.get())
-                .map(|file| Source::Table(Box::new(TableVersions::new(file.table.iter())))),
-        )
-        .collect();
-    let mut versions = MergedVersions::new(sources);
+    let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
+    let mut versions = MergedVersions::new(sources(view, keyspace));
     versions.seek(start, snapshot);
     // The user key last decided, kept in one buffer reused across keys.
     let mut decided: Option<Vec<u8>> = None;
@@ -142,7 +140,9 @@ pub(super) fn scan_in(
             let key = decided.get_or_insert_with(Vec::new);
             key.clear();
             key.extend_from_slice(version.user_key);
-            if version.kind == ValueKind::Value {
+            if version.kind == ValueKind::Value
+                && !fragments.deletes(version.user_key, version.sequence)
+            {
                 if page.entries.len() >= limit {
                     page.next = Some(version.user_key.to_vec());
                     break;
@@ -155,4 +155,38 @@ pub(super) fn scan_in(
     }
     versions.finish()?;
     Ok(page)
+}
+
+/// Every source of `keyspace` in `view`, borrowed: in-memory tables, then table files.
+fn sources(view: &View, keyspace: KeyspaceId) -> Vec<Source<'_>> {
+    view.memtables()
+        .map(|table| Source::Memtable(table.iter()))
+        .chain(
+            view.files(keyspace.get())
+                .map(|file| Source::Table(Box::new(TableVersions::new(file.table.iter())))),
+        )
+        .collect()
+}
+
+/// The value of `key` when range deletes may hide it: the newest version at the snapshot,
+/// unless a fragment with a higher sequence covers it.
+fn get_merged(
+    view: &View,
+    keyspace: KeyspaceId,
+    key: &[u8],
+    snapshot: SequenceNumber,
+    fragments: &Fragments,
+) -> Result<Option<Vec<u8>>> {
+    let mut versions = MergedVersions::new(sources(view, keyspace));
+    versions.seek(key, snapshot);
+    let value = versions
+        .entry()
+        .filter(|version| {
+            version.user_key == key
+                && version.kind == ValueKind::Value
+                && !fragments.deletes(key, version.sequence)
+        })
+        .map(|version| version.value.to_vec());
+    versions.finish()?;
+    Ok(value)
 }

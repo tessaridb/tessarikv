@@ -18,6 +18,7 @@ mod log;
 mod memtable;
 mod options;
 mod storage;
+mod tombstones;
 mod version;
 
 pub use db::{Db, DbIterator, ScanPage, Snapshot};

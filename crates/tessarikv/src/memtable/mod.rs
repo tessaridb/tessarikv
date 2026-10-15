@@ -23,6 +23,7 @@ use tessarikv_types::{
     seek_trailer,
 };
 
+use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
 pub(crate) use iter::{MemtableCursor, MemtableEntry, MemtableIter};
@@ -55,6 +56,8 @@ pub(crate) enum Lookup<'a> {
 /// See the module documentation.
 pub(crate) struct Memtable {
     entries: SkipList<InternalKeyComparator>,
+    /// Range deletes, apart from the point entries: key internal(start, sequence), value end.
+    range_deletes: SkipList<InternalKeyComparator>,
 }
 
 impl Memtable {
@@ -62,15 +65,16 @@ impl Memtable {
     pub(crate) fn new() -> Self {
         Self {
             entries: SkipList::new(InternalKeyComparator),
+            range_deletes: SkipList::new(InternalKeyComparator),
         }
     }
 
-    /// Adds version `sequence` of `key`: a value, or a delete (whose `value` is ignored).
+    /// Adds version `sequence` of `key`: a value, a delete (whose `value` is ignored), or a
+    /// range delete from `key` to `value` (exclusive).
     ///
     /// # Errors
     ///
-    /// [`Error::Memtable`] for a range delete, which tables do not hold, or when the arena
-    /// cannot take the entry.
+    /// [`Error::Memtable`] when the arena cannot take the entry.
     pub(crate) fn insert(
         &self,
         sequence: SequenceNumber,
@@ -78,20 +82,16 @@ impl Memtable {
         key: &[u8],
         value: &[u8],
     ) -> Result<()> {
-        let value = match kind {
-            ValueKind::Value => value,
-            ValueKind::Delete => &[],
-            ValueKind::RangeDelete => {
-                return Err(Error::Memtable {
-                    reason: "a range delete cannot be stored as a point entry",
-                });
-            }
+        let (list, value) = match kind {
+            ValueKind::Value => (&self.entries, value),
+            ValueKind::Delete => (&self.entries, &[][..]),
+            ValueKind::RangeDelete => (&self.range_deletes, value),
         };
         SCRATCH
             .with_borrow_mut(|internal| {
                 internal.clear();
                 encode_internal(key, Trailer::new(sequence, kind), internal);
-                self.entries.insert(internal, value)
+                list.insert(internal, value)
             })
             .map(|_| ())
             .map_err(arena_error)
@@ -126,9 +126,34 @@ impl Memtable {
         MemtableIter::new(self.entries.cursor())
     }
 
+    /// The table's range deletes, appended to `out`.
+    pub(crate) fn tombstones(&self, out: &mut Vec<RangeTombstone>) {
+        let mut cursor = self.range_deletes.cursor();
+        cursor.seek_to_first();
+        while cursor.valid() {
+            if let Ok(start) = InternalKeyRef::parse(cursor.key()) {
+                out.push(RangeTombstone {
+                    start: start.user_key().to_vec(),
+                    end: cursor.value().to_vec(),
+                    sequence: start.trailer().sequence(),
+                });
+            }
+            cursor.next();
+        }
+    }
+
+    /// Whether the table holds a range delete.
+    pub(crate) fn has_tombstones(&self) -> bool {
+        let mut cursor = self.range_deletes.cursor();
+        cursor.seek_to_first();
+        cursor.valid()
+    }
+
     /// Bytes the table occupies, including arena waste; an estimate under concurrent inserts.
     pub(crate) fn approximate_bytes(&self) -> u64 {
-        self.entries.allocated_bytes()
+        self.entries
+            .allocated_bytes()
+            .saturating_add(self.range_deletes.allocated_bytes())
     }
 }
 

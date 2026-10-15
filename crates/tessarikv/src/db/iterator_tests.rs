@@ -86,7 +86,7 @@ proptest! {
         for snapshot in 0..=ops.len() {
             let at = SequenceNumber::new(u64::try_from(snapshot).unwrap()).unwrap();
             let state = model(&ops, snapshot);
-            let mut iterator = DbIterator::new(&view, KeyspaceId::DEFAULT, at, &options, None);
+            let mut iterator = DbIterator::new(&view, KeyspaceId::DEFAULT, at, &options, None).unwrap();
             let (all, from_target) = run(async {
                 iterator.seek_to_first().await.unwrap();
                 let all = walk(&mut iterator).await;
@@ -200,7 +200,7 @@ proptest! {
         for snapshot in 0..=ops.len() {
             let at = SequenceNumber::new(u64::try_from(snapshot).unwrap()).unwrap();
             let entries = expected(&model(&ops, snapshot), b"", lower.as_deref(), upper.as_deref());
-            let mut iterator = DbIterator::new(&view, KeyspaceId::DEFAULT, at, &options, None);
+            let mut iterator = DbIterator::new(&view, KeyspaceId::DEFAULT, at, &options, None).unwrap();
             let mut position = start.index(entries.len().max(1));
             let (backward, previous, walked) = run(async {
                 iterator.seek_to_last().await.unwrap();
