@@ -25,6 +25,8 @@ mod view;
 mod write;
 
 #[cfg(test)]
+mod crash_step_tests;
+#[cfg(test)]
 mod flush_tests;
 #[cfg(test)]
 mod kill_tests;

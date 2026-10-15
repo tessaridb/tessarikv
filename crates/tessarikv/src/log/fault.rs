@@ -1,9 +1,10 @@
-//! A file system for log tests: memory files that remember how much of each was synced, and can
-//! be told to fail every sync.
+//! A file system for log tests: memory files that remember how much of each was synced, can be
+//! told to fail or hold every sync, and can take crash images around every durable step.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use crate::storage::{MemoryStorage, ReadableFile, Storage, StorageLock, WritableFile};
 use crate::{Error, Result};
@@ -20,8 +21,27 @@ struct State {
     synced: papaya::HashMap<PathBuf, u64>,
     fail_sync: AtomicBool,
     /// While set, syncs wait.
-    paused: std::sync::Mutex<bool>,
+    paused: Mutex<bool>,
     resumed: std::sync::Condvar,
+    /// When armed, crash images are taken around every durable step outside the log.
+    capture: OnceLock<Capture>,
+}
+
+#[derive(Debug)]
+struct Capture {
+    dir: PathBuf,
+    acknowledged: Arc<AtomicU64>,
+    images: Mutex<Vec<CrashImage>>,
+}
+
+/// The files as a crash at one durable step would leave them.
+#[derive(Debug)]
+pub(crate) struct CrashImage {
+    /// Writes acknowledged before the image was taken.
+    pub(crate) acknowledged: u64,
+    /// The step, for failure messages.
+    pub(crate) step: String,
+    pub(crate) storage: FaultStorage,
 }
 
 impl FaultStorage {
@@ -42,13 +62,51 @@ impl FaultStorage {
         self.state.resumed.notify_all();
     }
 
+    /// From now on, takes crash images of `dir` around every sync of a file that is not a log
+    /// segment and after every removal, each tagged with `acknowledged` as read before the copy.
+    pub(crate) fn capture_steps(&self, dir: &Path, acknowledged: Arc<AtomicU64>) {
+        let capture = Capture {
+            dir: dir.to_path_buf(),
+            acknowledged,
+            images: Mutex::new(Vec::new()),
+        };
+        assert!(self.state.capture.set(capture).is_ok(), "armed once");
+    }
+
+    /// The crash images taken so far.
+    pub(crate) fn take_images(&self) -> Vec<CrashImage> {
+        self.state.capture.get().map_or_else(Vec::new, |capture| {
+            std::mem::take(&mut *capture.images.lock().expect("the images"))
+        })
+    }
+
+    /// A power-loss and a process-crash image, when capture is armed and `path` is not a log
+    /// segment.
+    fn capture(&self, path: &Path, step: &str) {
+        let Some(capture) = self.state.capture.get() else {
+            return;
+        };
+        if path.extension().is_some_and(|extension| extension == "log") && step != "removed" {
+            return;
+        }
+        // SeqCst: read before the copy, so every write it counts is in the image.
+        let acknowledged = capture.acknowledged.load(Ordering::SeqCst);
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        for power_loss in [true, false] {
+            let image = CrashImage {
+                acknowledged,
+                step: format!("{step} {name:?}, power loss {power_loss}"),
+                storage: self.crash(&capture.dir, power_loss),
+            };
+            capture.images.lock().expect("the images").push(image);
+        }
+    }
+
     /// Everything appended to `path`.
     pub(crate) fn bytes(&self, path: &Path) -> Vec<u8> {
-        let file = self.files.open(path).expect("the file exists");
-        let len = usize::try_from(file.len().expect("length is known")).expect("fits in memory");
-        let mut bytes = vec![0; len];
-        file.read_at(0, &mut bytes).expect("readable");
-        bytes
+        contents(&*self.files.open(path).expect("the file exists"))
     }
 
     /// The files of `dir` as a crash would leave them: everything appended after a process
@@ -58,11 +116,15 @@ impl FaultStorage {
         image.files.create_dir_all(dir).expect("directory");
         for name in self.files.list(dir).expect("listable") {
             let path = dir.join(name);
-            let bytes = if power_loss {
-                self.synced_bytes(&path)
-            } else {
-                self.bytes(&path)
+            // A file removed since the listing is gone from the image too.
+            let Ok(file) = self.files.open(&path) else {
+                continue;
             };
+            let synced = self.state.synced.pin().get(&path).copied().unwrap_or(0);
+            let mut bytes = contents(&*file);
+            if power_loss {
+                bytes.truncate(usize::try_from(synced).expect("fits in memory"));
+            }
             let mut file = image.files.create(&path).expect("created");
             file.append(&bytes).expect("appended");
             image.state.synced.pin().insert(path, file.len());
@@ -92,12 +154,20 @@ impl FaultStorage {
     }
 }
 
+/// Everything in `file`.
+fn contents(file: &dyn ReadableFile) -> Vec<u8> {
+    let len = usize::try_from(file.len().expect("length is known")).expect("fits in memory");
+    let mut bytes = vec![0; len];
+    file.read_at(0, &mut bytes).expect("readable");
+    bytes
+}
+
 impl Storage for FaultStorage {
     fn create(&self, path: &Path) -> Result<Box<dyn WritableFile>> {
         Ok(Box::new(FaultFile {
             inner: self.files.create(path)?,
             path: path.to_path_buf(),
-            state: Arc::clone(&self.state),
+            storage: self.clone(),
         }))
     }
 
@@ -110,7 +180,9 @@ impl Storage for FaultStorage {
     }
 
     fn remove(&self, path: &Path) -> Result<()> {
-        self.files.remove(path)
+        self.files.remove(path)?;
+        self.capture(path, "removed");
+        Ok(())
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
@@ -147,7 +219,7 @@ impl Storage for FaultStorage {
 struct FaultFile {
     inner: Box<dyn WritableFile>,
     path: PathBuf,
-    state: Arc<State>,
+    storage: FaultStorage,
 }
 
 impl WritableFile for FaultFile {
@@ -156,23 +228,26 @@ impl WritableFile for FaultFile {
     }
 
     fn sync(&mut self) -> Result<()> {
-        let mut paused = self.state.paused.lock().expect("the gate");
+        let state = &self.storage.state;
+        let mut paused = state.paused.lock().expect("the gate");
         while *paused {
-            paused = self.state.resumed.wait(paused).expect("the gate");
+            paused = state.resumed.wait(paused).expect("the gate");
         }
         drop(paused);
-        if self.state.fail_sync.load(Ordering::SeqCst) {
+        if state.fail_sync.load(Ordering::SeqCst) {
             return Err(Error::Io {
                 operation: "sync",
                 path: self.path.clone(),
                 source: std::io::Error::other("injected sync failure"),
             });
         }
+        self.storage.capture(&self.path, "before syncing");
         self.inner.sync()?;
-        self.state
+        state
             .synced
             .pin()
             .insert(self.path.clone(), self.inner.len());
+        self.storage.capture(&self.path, "after syncing");
         Ok(())
     }
 
