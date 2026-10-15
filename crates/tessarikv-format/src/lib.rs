@@ -28,3 +28,4 @@ pub use log::{
     frame_bytes, frame_header, payload_checksum,
 };
 pub use table::block::{Block, BlockBuilder, BlockIter, Compare};
+pub use table::filter::{BloomBuilder, BloomFilter};

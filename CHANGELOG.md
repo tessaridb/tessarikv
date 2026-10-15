@@ -19,6 +19,8 @@ All notable changes to this project are documented here. The format follows
   completed batches.
 - `WriteBatch`: an atomic, ordered list of puts and deletes across keyspaces, with a versioned encoding whose decoder
   refuses truncated, oversized or malformed input.
+- Bloom filter blocked by cache line: one line per lookup, no false negatives, about 1 % false positives at ten bits
+  per key; a filter whose size or probe count does not add up is refused.
 - Table block format: sorted entries with shared key prefixes and restart points, a builder that refuses keys out of
   order, and an iterator that seeks by binary search and stops with an error on a damaged entry.
 - Log frame codec: CRC-32C checksummed frames tagged with their log number; a reader returns the valid prefix and
