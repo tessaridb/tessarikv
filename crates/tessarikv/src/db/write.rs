@@ -39,7 +39,7 @@ impl Db {
             Self::check_keyspace(entry.keyspace)?;
         }
         if batch.is_empty() {
-            return self.snapshot();
+            return self.visible_sequence();
         }
         let Some(log) = &self.log else {
             let claim = Completion::new(&self.sequencer, self.claim(batch)?);

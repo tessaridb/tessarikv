@@ -1,6 +1,6 @@
 //! Point reads and ordered scans at a snapshot.
 
-use tessarikv_types::{KeyspaceId, ValueKind};
+use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::Db;
 use super::merge::MergedVersions;
@@ -28,8 +28,17 @@ impl Db {
         key: &[u8],
         _options: &ReadOptions,
     ) -> Result<Option<Vec<u8>>> {
+        self.get_at(keyspace, key, self.visible_sequence()?)
+    }
+
+    /// The value of `key` in `keyspace` at `snapshot`.
+    pub(super) fn get_at(
+        &self,
+        keyspace: KeyspaceId,
+        key: &[u8],
+        snapshot: SequenceNumber,
+    ) -> Result<Option<Vec<u8>>> {
         Self::check_keyspace(keyspace)?;
-        let snapshot = self.snapshot()?;
         let view = self.view.load();
         // Newest table first: the first table that decides the key answers for it.
         for table in view.tables() {
@@ -57,8 +66,19 @@ impl Db {
         limit: usize,
         _options: &ReadOptions,
     ) -> Result<ScanPage> {
+        self.scan_at(keyspace, start, end, limit, self.visible_sequence()?)
+    }
+
+    /// A page of `keyspace` at `snapshot`, as [`Db::scan`] returns one.
+    pub(super) fn scan_at(
+        &self,
+        keyspace: KeyspaceId,
+        start: &[u8],
+        end: Option<&[u8]>,
+        limit: usize,
+        snapshot: SequenceNumber,
+    ) -> Result<ScanPage> {
         Self::check_keyspace(keyspace)?;
-        let snapshot = self.snapshot()?;
         let mut page = ScanPage::default();
         let view = self.view.load();
         let mut versions = MergedVersions::new(view.tables().map(|table| table.iter()).collect());

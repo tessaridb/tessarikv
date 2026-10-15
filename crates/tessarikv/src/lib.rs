@@ -19,7 +19,7 @@ mod memtable;
 mod options;
 mod storage;
 
-pub use db::{Db, ScanPage};
+pub use db::{Db, ScanPage, Snapshot};
 pub use error::{Error, ErrorCategory, Result};
 pub use options::{
     DbOptions, DbOptionsBuilder, Durability, KeyspaceOptions, KeyspaceOptionsBuilder, ReadOptions,

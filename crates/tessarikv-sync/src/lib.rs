@@ -25,8 +25,10 @@ mod sequencer;
 mod shim;
 mod skiplist;
 mod slot_directory;
+mod snapshots;
 
 pub use append_buffer::{AppendReader, AppendWriter, append_buffer};
 pub use error::{ArenaError, BufferError};
 pub use sequencer::{Claim, Sequencer, Switch, next_epoch};
 pub use skiplist::{BytewiseComparator, Cursor, Insert, KeyComparator, SkipList};
+pub use snapshots::{Horizon, Registration, SnapshotRegistry};

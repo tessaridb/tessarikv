@@ -139,3 +139,49 @@ async fn concurrent_writes_land_in_the_table_of_their_epoch() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_snapshot_reads_the_same_values_after_later_writes_and_switches() {
+    let db = memory_db().await;
+    put(&db, b"a", Some(b"1")).await;
+    put(&db, b"b", Some(b"2")).await;
+    let snapshot = db.snapshot().unwrap();
+    put(&db, b"a", Some(b"changed")).await;
+    put(&db, b"b", None).await;
+    let _ = db.switch_memtable().expect("no switch in progress");
+    put(&db, b"c", Some(b"3")).await;
+    let read = ReadOptions::default();
+    assert_eq!(snapshot.sequence().get(), 2);
+    assert_eq!(
+        snapshot
+            .get(KeyspaceId::DEFAULT, b"a", &read)
+            .await
+            .unwrap(),
+        Some(b"1".to_vec())
+    );
+    assert_eq!(
+        snapshot
+            .get(KeyspaceId::DEFAULT, b"b", &read)
+            .await
+            .unwrap(),
+        Some(b"2".to_vec())
+    );
+    let page = snapshot
+        .scan(KeyspaceId::DEFAULT, b"", None, 10, &read)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.entries,
+        vec![
+            (b"a".to_vec(), b"1".to_vec()),
+            (b"b".to_vec(), b"2".to_vec())
+        ]
+    );
+    assert_eq!(get(&db, b"a").await, Some(b"changed".to_vec()));
+    assert_eq!(db.snapshots.horizon(9).snapshots(), &[2]);
+    drop(snapshot);
+    assert!(
+        db.snapshots.horizon(9).snapshots().is_empty(),
+        "a dropped snapshot is released"
+    );
+}

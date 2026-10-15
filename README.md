@@ -6,7 +6,8 @@ layer for [TessariDB](https://github.com/tessaridb/tessaridb), with no C or C++ 
 
 **Status: early development.** `Db` opens on the file system or in memory, writes batches
 atomically through a write-ahead log, and answers point reads and paged scans at a consistent
-snapshot, from any number of concurrent tasks. A write returns once it is as durable as it asks:
+snapshot, from any number of concurrent tasks; `Db::snapshot` holds a point in history that later
+reads return to. A write returns once it is as durable as it asks:
 synced (survives a power loss), handed to the operating system (survives a process crash), or not
 logged. Opening replays the log. Tables are not yet flushed to storage, so the log grows until the
 database is reopened. Underneath it:

@@ -16,6 +16,7 @@ mod merge;
 mod open;
 mod read;
 mod recover;
+mod snapshot;
 mod view;
 mod write;
 
@@ -34,9 +35,9 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use tessarikv_constants::COMMIT_RING_SLOTS;
-use tessarikv_sync::Sequencer;
 #[cfg(test)]
 use tessarikv_sync::Switch;
+use tessarikv_sync::{Sequencer, SnapshotRegistry};
 use tessarikv_types::{KeyspaceId, SequenceNumber};
 
 use crate::log::LogWriter;
@@ -46,6 +47,7 @@ use crate::{DbOptions, Error, Result, StorageMode};
 use view::View;
 
 pub use read::ScanPage;
+pub use snapshot::Snapshot;
 
 /// An open database.
 ///
@@ -69,6 +71,8 @@ pub struct Db {
     sequencer: Sequencer,
     /// The in-memory tables reads consult and writes land in.
     view: ArcSwap<View>,
+    /// The snapshots readers hold, which compaction keeps versions for.
+    snapshots: SnapshotRegistry,
     /// Set while a switch runs, so switches never overlap.
     #[cfg(test)]
     switching: std::sync::atomic::AtomicBool,
@@ -100,6 +104,7 @@ impl Db {
             StorageMode::Memory => Ok(Self {
                 sequencer: Sequencer::new(0, COMMIT_RING_SLOTS),
                 view: ArcSwap::from_pointee(View::new(0, Memtable::new())),
+                snapshots: SnapshotRegistry::new(),
                 #[cfg(test)]
                 switching: std::sync::atomic::AtomicBool::new(false),
                 log: None,
@@ -179,7 +184,7 @@ impl Db {
     }
 
     /// The snapshot a read takes: the highest sequence covering only completed batches.
-    fn snapshot(&self) -> Result<SequenceNumber> {
+    fn visible_sequence(&self) -> Result<SequenceNumber> {
         SequenceNumber::new(self.sequencer.visible()).map_err(|_| Error::SequenceExhausted)
     }
 }

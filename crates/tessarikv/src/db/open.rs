@@ -58,6 +58,7 @@ impl Db {
         Ok(Self {
             sequencer: Sequencer::new(recovered.last_sequence, COMMIT_RING_SLOTS),
             view: arc_swap::ArcSwap::from_pointee(super::view::View::new(0, table)),
+            snapshots: tessarikv_sync::SnapshotRegistry::new(),
             #[cfg(test)]
             switching: std::sync::atomic::AtomicBool::new(false),
             log: Some(log),
