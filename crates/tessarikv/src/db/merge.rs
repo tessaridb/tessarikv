@@ -58,6 +58,30 @@ impl Source<'_> {
         }
     }
 
+    fn seek_to_last(&mut self) {
+        match self {
+            Self::Memtable(versions) => versions.seek_to_last(),
+            Self::Shared(versions) => versions.seek_to_last(),
+            Self::Table(versions) => versions.seek_to_last(),
+        }
+    }
+
+    fn seek_for_prev(&mut self, target: &[u8]) {
+        match self {
+            Self::Memtable(versions) => versions.seek_for_prev(target),
+            Self::Shared(versions) => versions.seek_for_prev(target),
+            Self::Table(versions) => versions.seek_for_prev(target),
+        }
+    }
+
+    fn prev(&mut self) {
+        match self {
+            Self::Memtable(versions) => versions.prev(),
+            Self::Shared(versions) => versions.prev(),
+            Self::Table(versions) => versions.prev(),
+        }
+    }
+
     fn entry(&self) -> Option<KeyVersion<'_>> {
         match self {
             Self::Memtable(versions) => versions.entry().map(KeyVersion::from),
@@ -94,6 +118,23 @@ impl TableVersions {
     fn next(&mut self) {
         if self.error.is_none() {
             self.versions.next();
+            self.check();
+        }
+    }
+
+    fn seek_to_last(&mut self) {
+        self.versions.seek_to_last();
+        self.check();
+    }
+
+    fn seek_for_prev(&mut self, target: &[u8]) {
+        self.versions.seek_for_prev(target);
+        self.check();
+    }
+
+    fn prev(&mut self) {
+        if self.error.is_none() {
+            self.versions.prev();
             self.check();
         }
     }
@@ -141,34 +182,70 @@ fn parse(encoded: &[u8]) -> Option<(InternalKeyRef<'_>, ValueKind)> {
 /// Each sequence number lives in exactly one source, so two sources never hold the same version
 /// and the merge needs no tie rule. The sources of one view are few, so the next version is
 /// found by comparing the current version of each.
+///
+/// The walk runs in the direction of the last positioning: forward after [`Self::seek`],
+/// backward after [`Self::seek_to_last`] and [`Self::seek_for_prev`]; a caller turning around
+/// positions again.
 pub(super) struct MergedVersions<'a> {
     sources: Vec<Source<'a>>,
+    backward: bool,
 }
 
 impl<'a> MergedVersions<'a> {
     pub(super) fn new(sources: Vec<Source<'a>>) -> Self {
-        Self { sources }
+        Self {
+            sources,
+            backward: false,
+        }
     }
 
     /// Moves every source to the first version of the least key not less than `key` that is
     /// visible at `snapshot`.
     pub(super) fn seek(&mut self, key: &[u8], snapshot: SequenceNumber) {
+        self.backward = false;
         for source in &mut self.sources {
             source.seek(key, snapshot);
         }
     }
 
-    /// The least version among the sources, or `None` when every source is past its end.
-    pub(super) fn entry(&self) -> Option<KeyVersion<'_>> {
-        self.least().map(|(_, entry)| entry)
+    /// Moves every source to its last version, to walk backward.
+    pub(super) fn seek_to_last(&mut self) {
+        self.backward = true;
+        for source in &mut self.sources {
+            source.seek_to_last();
+        }
     }
 
-    /// Moves past the current version.
+    /// Moves every source to its last version whose internal key is not greater than
+    /// `target`, to walk backward.
+    pub(super) fn seek_for_prev(&mut self, target: &[u8]) {
+        self.backward = true;
+        for source in &mut self.sources {
+            source.seek_for_prev(target);
+        }
+    }
+
+    /// The current version: the least among the sources walking forward, the greatest walking
+    /// backward; `None` when every source is past its end.
+    pub(super) fn entry(&self) -> Option<KeyVersion<'_>> {
+        self.current().map(|(_, entry)| entry)
+    }
+
+    /// Moves past the current version, forward.
     pub(super) fn next(&mut self) {
-        if let Some((index, _)) = self.least()
+        if let Some((index, _)) = self.current()
             && let Some(source) = self.sources.get_mut(index)
         {
             source.next();
+        }
+    }
+
+    /// Moves past the current version, backward.
+    pub(super) fn prev(&mut self) {
+        if let Some((index, _)) = self.current()
+            && let Some(source) = self.sources.get_mut(index)
+        {
+            source.prev();
         }
     }
 
@@ -197,13 +274,18 @@ impl<'a> MergedVersions<'a> {
         Ok(())
     }
 
-    /// The source holding the least version, and that version.
-    fn least(&self) -> Option<(usize, KeyVersion<'_>)> {
-        self.sources
+    /// The source holding the current version, and that version.
+    fn current(&self) -> Option<(usize, KeyVersion<'_>)> {
+        let versions = self
+            .sources
             .iter()
             .enumerate()
-            .filter_map(|(index, source)| source.entry().map(|entry| (index, entry)))
-            .min_by(|(_, left), (_, right)| version_order(left, right))
+            .filter_map(|(index, source)| source.entry().map(|entry| (index, entry)));
+        if self.backward {
+            versions.max_by(|(_, left), (_, right)| version_order(left, right))
+        } else {
+            versions.min_by(|(_, left), (_, right)| version_order(left, right))
+        }
     }
 }
 

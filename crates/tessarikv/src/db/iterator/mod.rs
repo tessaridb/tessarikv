@@ -1,4 +1,7 @@
-//! Iterators: a walk over one keyspace at one snapshot, inside optional bounds.
+//! Iterators: a walk over one keyspace at one snapshot, inside optional bounds, in either
+//! direction.
+
+mod backward;
 
 use std::sync::Arc;
 
@@ -11,8 +14,11 @@ use super::view::View;
 use crate::memtable::MemtableCursor;
 use crate::{ReadOptions, Result};
 
-/// A walk over the live keys of one keyspace, in key order, at one snapshot and inside the
-/// bounds of its [`ReadOptions`]. A deleted key is not shown.
+/// A walk over the live keys of one keyspace, in key order forward or backward, at one
+/// snapshot and inside the bounds of its [`ReadOptions`]. A deleted key is not shown.
+///
+/// Turning around (`prev` after `next`, or the other way) positions every source again, which
+/// costs about a seek.
 ///
 /// It reads the in-memory tables and table files of the moment it was made and keeps them
 /// alive, so later writes and flushes change nothing it shows; holding one for long keeps
@@ -52,6 +58,9 @@ pub struct DbIterator<'a> {
     /// The current key; empty when not valid.
     key: Vec<u8>,
     valid: bool,
+    /// Walking backward: the merge is already before the current key, whose value is `saved`.
+    backward: bool,
+    saved: Vec<u8>,
     /// The snapshot's registration, when the iterator took its own.
     _snapshot: Option<Snapshot<'a>>,
 }
@@ -101,6 +110,8 @@ impl<'a> DbIterator<'a> {
             upper: options.upper_bound.clone(),
             key: Vec::new(),
             valid: false,
+            backward: false,
+            saved: Vec::new(),
             _snapshot: registration,
         }
     }
@@ -117,10 +128,13 @@ impl<'a> DbIterator<'a> {
 
     /// The current value; empty when not valid.
     pub fn value(&self) -> &[u8] {
-        match self.versions.entry() {
-            Some(version) if self.valid => version.value,
-            _ => &[],
+        if !self.valid {
+            return &[];
         }
+        if self.backward {
+            return &self.saved;
+        }
+        self.versions.entry().map_or(&[], |version| version.value)
     }
 
     /// Moves to the least key, or to the lower bound.
@@ -161,11 +175,20 @@ impl<'a> DbIterator<'a> {
         if !self.valid {
             return Ok(());
         }
+        if self.backward {
+            // Turning around: back onto the current key, walking forward.
+            let key = std::mem::take(&mut self.key);
+            self.position_at(&key)?;
+            if !self.valid {
+                return Ok(());
+            }
+        }
         self.versions.next();
         self.settle(true)
     }
 
     fn position_at(&mut self, start: &[u8]) -> Result<()> {
+        self.backward = false;
         self.versions.seek(start, self.snapshot);
         self.key.clear();
         self.settle(false)
@@ -200,6 +223,11 @@ impl<'a> DbIterator<'a> {
         if !self.valid {
             self.key.clear();
         }
+        self.finish_move()
+    }
+
+    /// Reports a damaged table file met on the way; the iterator is then not valid.
+    fn finish_move(&mut self) -> Result<()> {
         match self.versions.take_error() {
             Some(error) => {
                 self.valid = false;

@@ -44,10 +44,12 @@ All notable changes to this project are documented here. The format follows
   are removed. Opening reads the tables the manifest names, removes unnamed ones, and replays the log above them.
   `DbOptions::default_keyspace` sets the default keyspace's options. A failed flush stops writes with
   `Error::FlushFailed`.
-- Iterators: `Db::iter` and `Snapshot::iter` walk a keyspace forward at one snapshot (`seek`, `seek_to_first`,
-  `next`), across in-memory tables and table files, inside `ReadOptions::lower_bound` / `upper_bound`;
+- Iterators: `Db::iter` and `Snapshot::iter` walk a keyspace at one snapshot, forward (`seek`, `seek_to_first`,
+  `next`) and backward (`seek_for_prev`, `seek_to_last`, `prev`), across in-memory tables and table files, inside
+  `ReadOptions::lower_bound` / `upper_bound`;
   `ReadOptions::with_prefix` bounds one to a key prefix. An iterator keeps the tables it reads alive.
 - `SkipList::cursor_at` resumes a cursor from a `CursorPosition` taken from the same list.
+- Table and block iterators move backward: `seek_to_last`, `seek_for_prev` (tables) and `prev`.
 - Write stall: full in-memory tables queue for their flushes, up to `KeyspaceOptions::max_immutable_memtables`; past
   that a write waits for the next flush, or returns `Error::WriteStalled` when `WriteOptions::no_slowdown` is set.
 - Options: `DbOptions`, `KeyspaceOptions` with the `point_lookup`, `write_heavy` and `bulk_load`

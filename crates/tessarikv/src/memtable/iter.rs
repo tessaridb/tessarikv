@@ -1,9 +1,12 @@
 //! Walking a table's versions in internal-key order.
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use tessarikv_sync::{Cursor, CursorPosition};
-use tessarikv_types::{InternalKeyRef, SequenceNumber, ValueKind, encode_internal, seek_trailer};
+use tessarikv_types::{
+    InternalKeyRef, SequenceNumber, ValueKind, compare_internal, encode_internal, seek_trailer,
+};
 
 use super::{InternalKeyComparator, Memtable};
 
@@ -49,6 +52,26 @@ impl<'a> MemtableIter<'a> {
         self.cursor.next();
     }
 
+    /// Moves to the last version.
+    pub(crate) fn seek_to_last(&mut self) {
+        self.cursor.seek_to_last();
+    }
+
+    /// Moves to the last version whose internal key is not greater than `target`.
+    pub(crate) fn seek_for_prev(&mut self, target: &[u8]) {
+        self.cursor.seek(target);
+        if !self.cursor.valid() {
+            self.cursor.seek_to_last();
+        } else if compare_internal(self.cursor.key(), target) == Ordering::Greater {
+            self.cursor.prev();
+        }
+    }
+
+    /// Moves to the previous version.
+    pub(crate) fn prev(&mut self) {
+        self.cursor.prev();
+    }
+
     /// The current version, or `None` past the end.
     pub(crate) fn entry(&self) -> Option<MemtableEntry<'a>> {
         if !self.cursor.valid() {
@@ -90,6 +113,21 @@ impl MemtableCursor {
     /// Moves to the next version.
     pub(crate) fn next(&mut self) {
         self.step(|versions| versions.next());
+    }
+
+    /// Moves to the last version.
+    pub(crate) fn seek_to_last(&mut self) {
+        self.step(|versions| versions.seek_to_last());
+    }
+
+    /// As [`MemtableIter::seek_for_prev`].
+    pub(crate) fn seek_for_prev(&mut self, target: &[u8]) {
+        self.step(|versions| versions.seek_for_prev(target));
+    }
+
+    /// Moves to the previous version.
+    pub(crate) fn prev(&mut self) {
+        self.step(|versions| versions.prev());
     }
 
     /// The current version, or `None` past the end.

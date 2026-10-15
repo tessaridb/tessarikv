@@ -1,5 +1,6 @@
 //! Reading a table: opening it, testing its filter, and walking it in key order.
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use super::block::{Block, BlockIter, Compare};
@@ -160,6 +161,36 @@ impl TableIter {
         self.skip_finished_blocks();
     }
 
+    /// Moves to the last entry.
+    pub fn seek_to_last(&mut self) {
+        self.index.seek_to_last();
+        self.load();
+        if let Some(data) = &mut self.data {
+            data.seek_to_last();
+        }
+        self.skip_finished_blocks_backward();
+    }
+
+    /// Moves to the last entry whose key is not greater than `target`.
+    pub fn seek_for_prev(&mut self, target: &[u8]) {
+        self.seek(target);
+        if self.valid() {
+            if (self.compare)(self.key(), target) == Ordering::Greater {
+                self.prev();
+            }
+        } else if self.status().is_ok() {
+            self.seek_to_last();
+        }
+    }
+
+    /// Moves to the previous entry; before the first one the iterator is no longer valid.
+    pub fn prev(&mut self) {
+        if let Some(data) = &mut self.data {
+            data.prev();
+        }
+        self.skip_finished_blocks_backward();
+    }
+
     /// Opens the data block the index is on, or none past the last.
     fn load(&mut self) {
         self.data = None;
@@ -188,6 +219,23 @@ impl TableIter {
             self.load();
             if let Some(data) = &mut self.data {
                 data.seek_to_first();
+            }
+        }
+    }
+
+    /// Moves back past data blocks that have no entries left, stopping at an error.
+    fn skip_finished_blocks_backward(&mut self) {
+        loop {
+            match &self.data {
+                Some(data) if data.valid() => return,
+                Some(data) if data.status().is_err() => return,
+                None => return,
+                Some(_) => {}
+            }
+            self.index.prev();
+            self.load();
+            if let Some(data) = &mut self.data {
+                data.seek_to_last();
             }
         }
     }

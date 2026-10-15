@@ -198,3 +198,55 @@ fn an_entry_sharing_more_than_the_previous_key_is_reported() {
     assert!(!iter.valid());
     assert!(matches!(iter.status(), Err(Error::Malformed { .. })));
 }
+
+proptest! {
+    #[test]
+    fn walking_backward_and_turning_around_matches_the_model(
+        model in prop::collection::btree_map(
+            prop::collection::vec(any::<u8>(), 0..12),
+            prop::collection::vec(any::<u8>(), 0..20),
+            0..80,
+        ),
+        interval in 1_usize..20,
+        moves in prop::collection::vec(any::<bool>(), 0..40),
+        start in any::<prop::sample::Index>(),
+    ) {
+        let block = build(&model, interval);
+        let entries: Vec<_> = model.into_iter().collect();
+        let mut iter = block.iter();
+        iter.seek_to_last();
+        let mut backward = Vec::new();
+        while iter.valid() {
+            // A step back that does not move fails here instead of looping forever.
+            prop_assert!(backward.len() < entries.len(), "prev did not move back");
+            backward.push((iter.key().to_vec(), iter.value().to_vec()));
+            iter.prev();
+        }
+        prop_assert!(iter.status().is_ok());
+        prop_assert_eq!(backward, entries.iter().rev().cloned().collect::<Vec<_>>());
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut at = start.index(entries.len());
+        iter.seek(&entries[at].0);
+        for forward in moves {
+            prop_assert_eq!(iter.key(), entries[at].0.as_slice());
+            prop_assert_eq!(iter.value(), entries[at].1.as_slice());
+            if forward {
+                iter.next();
+                if at + 1 == entries.len() {
+                    prop_assert!(!iter.valid());
+                    break;
+                }
+                at += 1;
+            } else {
+                iter.prev();
+                if at == 0 {
+                    prop_assert!(!iter.valid());
+                    break;
+                }
+                at -= 1;
+            }
+        }
+    }
+}

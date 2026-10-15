@@ -15,6 +15,8 @@ use crate::varint;
 #[derive(Debug)]
 pub struct BlockIter {
     block: Block,
+    /// Where the current entry starts.
+    current: usize,
     /// Where the entry after the current one starts.
     next: usize,
     key: Vec<u8>,
@@ -27,6 +29,7 @@ impl BlockIter {
     pub(super) fn new(block: Block) -> Self {
         Self {
             block,
+            current: 0,
             next: 0,
             key: Vec::new(),
             value: 0..0,
@@ -101,6 +104,51 @@ impl BlockIter {
         }
     }
 
+    /// Moves to the last entry.
+    pub fn seek_to_last(&mut self) {
+        self.restart_at(self.block.restart_count.saturating_sub(1));
+        self.step();
+        while self.valid && self.next < self.block.entries_end {
+            self.step();
+        }
+    }
+
+    /// Moves to the previous entry; before the first one the iterator is no longer valid.
+    ///
+    /// Entries are prefix-compressed forward, so the previous one is found by decoding forward
+    /// from the last restart point before the current entry.
+    pub fn prev(&mut self) {
+        if !self.valid {
+            return;
+        }
+        let current = self.current;
+        let Some(restart) = self.restart_before(current) else {
+            self.key.clear();
+            self.valid = false;
+            self.next = self.block.entries_end;
+            return;
+        };
+        self.restart_at(restart);
+        self.step();
+        while self.valid && self.next < current {
+            self.step();
+        }
+    }
+
+    /// The last restart point whose entry starts before `offset`.
+    fn restart_before(&self, offset: usize) -> Option<usize> {
+        // The first restart point at or after `offset`, by binary search; the one before it.
+        let (mut low, mut high) = (0, self.block.restart_count);
+        while low < high {
+            let middle = low.saturating_add(high.saturating_sub(low) / 2);
+            match self.block.restart(middle) {
+                Some(start) if start < offset => low = middle.saturating_add(1),
+                _ => high = middle,
+            }
+        }
+        low.checked_sub(1)
+    }
+
     /// Positions before the entry at restart point `index`, with no previous key.
     fn restart_at(&mut self, index: usize) {
         self.key.clear();
@@ -117,6 +165,7 @@ impl BlockIter {
             self.valid = false;
             return;
         }
+        self.current = self.next;
         match self.decode() {
             Some(next) => {
                 self.next = next;

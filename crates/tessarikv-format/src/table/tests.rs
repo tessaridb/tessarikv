@@ -155,3 +155,61 @@ fn an_empty_table_has_no_entries() {
     assert!(iter.status().is_ok());
     assert!(!table.may_contain(b"anything"));
 }
+
+proptest! {
+    #[test]
+    fn a_table_walks_backward_and_seeks_for_the_previous_key(
+        model in prop::collection::btree_map(
+            prop::collection::vec(any::<u8>(), 1..16),
+            prop::collection::vec(any::<u8>(), 0..40),
+            0..120,
+        ),
+        targets in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..16), 1..8),
+        lz4 in any::<bool>(),
+        moves in prop::collection::vec(any::<bool>(), 0..60),
+        start in any::<prop::sample::Index>(),
+    ) {
+        let compression = if lz4 { Compression::Lz4 } else { Compression::None };
+        let table = open(build(&model, compression)).expect("opens");
+        let mut iter = table.iter();
+        iter.seek_to_last();
+        let mut backward = Vec::new();
+        while iter.valid() {
+            // A step back that does not move fails here instead of looping forever.
+            prop_assert!(backward.len() < model.len(), "prev did not move back");
+            backward.push((iter.key().to_vec(), iter.value().to_vec()));
+            iter.prev();
+        }
+        prop_assert!(iter.status().is_ok());
+        let entries: Vec<_> = model.clone().into_iter().collect();
+        prop_assert_eq!(backward, entries.iter().rev().cloned().collect::<Vec<_>>());
+        for target in targets {
+            iter.seek_for_prev(&target);
+            let expected = model.range(..=target).next_back().map(|(key, _)| key.as_slice());
+            prop_assert_eq!(iter.valid().then(|| iter.key()), expected);
+        }
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut at = start.index(entries.len());
+        iter.seek(&entries[at].0);
+        for forward in moves {
+            prop_assert_eq!(iter.key(), entries[at].0.as_slice());
+            if forward {
+                iter.next();
+                if at + 1 == entries.len() {
+                    prop_assert!(!iter.valid());
+                    break;
+                }
+                at += 1;
+            } else {
+                iter.prev();
+                if at == 0 {
+                    prop_assert!(!iter.valid());
+                    break;
+                }
+                at -= 1;
+            }
+        }
+    }
+}

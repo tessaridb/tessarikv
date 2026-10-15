@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 1619859da4103c21bcbaaad9eb9d268e978577feac0cd1b18979d6b9b9ac139d # shrinks to model = {[0]: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [2]: []}, targets = [[]], lz4 = false
+cc 68255155f553af4da45b362d4f936c5640868e70703d32c0a6fecc6e99b992bc # shrinks to model = {[0]: []}, targets = [[1]], lz4 = false, moves = [], start = Index(0)
