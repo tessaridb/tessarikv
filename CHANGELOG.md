@@ -19,6 +19,8 @@ All notable changes to this project are documented here. The format follows
   completed batches.
 - `WriteBatch`: an atomic, ordered list of puts and deletes across keyspaces, with a versioned encoding whose decoder
   refuses truncated, oversized or malformed input.
+- Table block format: sorted entries with shared key prefixes and restart points, a builder that refuses keys out of
+  order, and an iterator that seeks by binary search and stops with an error on a damaged entry.
 - Log frame codec: CRC-32C checksummed frames tagged with their log number; a reader returns the valid prefix and
   whether the log ended cleanly, with a torn write, or on bytes from an earlier use of the file.
 - Write-ahead log: one writer task puts every logged batch in commit order into segment files,

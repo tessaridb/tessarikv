@@ -1,0 +1,161 @@
+//! Walking and seeking a block.
+
+use std::cmp::Ordering;
+use std::ops::Range;
+
+use super::Block;
+use crate::error::{Error, Result};
+use crate::varint;
+
+/// A position in a [`Block`]: on an entry, or past the end.
+///
+/// The current key is rebuilt in a buffer the iterator owns, because an entry stores only the
+/// suffix that differs from the previous key; the value is borrowed from the block. A damaged
+/// entry ends the iteration, and [`BlockIter::status`] then reports why.
+#[derive(Debug)]
+pub struct BlockIter<'a> {
+    block: &'a Block,
+    /// Where the entry after the current one starts.
+    next: usize,
+    key: Vec<u8>,
+    value: Range<usize>,
+    valid: bool,
+    error: Option<Error>,
+}
+
+impl<'a> BlockIter<'a> {
+    pub(super) fn new(block: &'a Block) -> Self {
+        Self {
+            block,
+            next: 0,
+            key: Vec::new(),
+            value: 0..0,
+            valid: false,
+            error: None,
+        }
+    }
+
+    /// Whether the iterator is on an entry.
+    pub fn valid(&self) -> bool {
+        self.valid
+    }
+
+    /// The current key; empty when not on an entry.
+    pub fn key(&self) -> &[u8] {
+        if self.valid { &self.key } else { &[] }
+    }
+
+    /// The current value; empty when not on an entry.
+    pub fn value(&self) -> &'a [u8] {
+        if self.valid {
+            self.block.bytes.get(self.value.clone()).unwrap_or_default()
+        } else {
+            &[]
+        }
+    }
+
+    /// Why the iteration stopped early, if it did.
+    ///
+    /// # Errors
+    ///
+    /// The [`Error::Malformed`] describing the damaged entry.
+    pub fn status(&self) -> Result<()> {
+        self.error.clone().map_or(Ok(()), Err)
+    }
+
+    /// Moves to the first entry.
+    pub fn seek_to_first(&mut self) {
+        self.restart_at(0);
+        self.step();
+    }
+
+    /// Moves to the first entry whose key is not less than `target`.
+    pub fn seek(&mut self, target: &[u8]) {
+        // The last restart point whose key is less than the target: its interval holds the
+        // answer, or the answer is the first key of the next interval.
+        let (mut low, mut high) = (0, self.block.restart_count.saturating_sub(1));
+        while low < high {
+            let middle = low.saturating_add(high.saturating_sub(low).saturating_add(1) / 2);
+            self.restart_at(middle);
+            self.step();
+            if !self.valid {
+                return;
+            }
+            if (self.block.compare)(&self.key, target) == Ordering::Less {
+                low = middle;
+            } else {
+                high = middle.saturating_sub(1);
+            }
+        }
+        self.restart_at(low);
+        self.step();
+        while self.valid && (self.block.compare)(&self.key, target) == Ordering::Less {
+            self.step();
+        }
+    }
+
+    /// Moves to the next entry; past the last one the iterator is no longer valid.
+    pub fn next(&mut self) {
+        if self.valid {
+            self.step();
+        }
+    }
+
+    /// Positions before the entry at restart point `index`, with no previous key.
+    fn restart_at(&mut self, index: usize) {
+        self.key.clear();
+        self.valid = false;
+        match self.block.restart(index) {
+            Some(offset) if index < self.block.restart_count => self.next = offset,
+            _ => self.next = self.block.entries_end,
+        }
+    }
+
+    /// Decodes the entry at `self.next` into the current position.
+    fn step(&mut self) {
+        if self.next >= self.block.entries_end {
+            self.valid = false;
+            return;
+        }
+        match self.decode() {
+            Some(next) => {
+                self.next = next;
+                self.valid = true;
+            }
+            None => {
+                self.valid = false;
+                self.next = self.block.entries_end;
+                self.error = Some(Error::Malformed {
+                    what: "block",
+                    reason: "an entry runs past the entries or shares more than the previous key",
+                });
+            }
+        }
+    }
+
+    /// Reads the entry at `self.next`, updating the key and value; returns where the following
+    /// entry starts.
+    fn decode(&mut self) -> Option<usize> {
+        let entries = self.block.bytes.get(..self.block.entries_end)?;
+        let mut at = self.next;
+        let field = |at: &mut usize| -> Option<usize> {
+            let (value, used) = varint::get_u32(entries.get(*at..)?)?;
+            *at = at.checked_add(used)?;
+            usize::try_from(value).ok()
+        };
+        let shared = field(&mut at)?;
+        let unshared = field(&mut at)?;
+        let value_len = field(&mut at)?;
+        if shared > self.key.len() {
+            return None;
+        }
+        let suffix_end = at.checked_add(unshared)?;
+        let value_end = suffix_end.checked_add(value_len)?;
+        let suffix = entries.get(at..suffix_end)?;
+        entries.get(suffix_end..value_end)?;
+        self.key.truncate(shared);
+        self.key.extend_from_slice(suffix);
+        self.value = suffix_end..value_end;
+        Some(value_end)
+    }
+}

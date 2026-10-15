@@ -567,6 +567,7 @@ name = "tessarikv-format"
 version = "0.1.0"
 dependencies = [
  "crc32c",
+ "proptest",
  "tessarikv-constants",
  "tessarikv-types",
  "thiserror",

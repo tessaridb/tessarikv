@@ -18,6 +18,8 @@
 mod batch;
 mod error;
 mod log;
+mod table;
+mod varint;
 
 pub use batch::{BatchEntry, WriteBatch};
 pub use error::{Error, Result};
@@ -25,3 +27,4 @@ pub use log::{
     EndKind, FRAME_HEADER_BYTES, FrameReader, LogEnd, LogRead, concat_checksum, encode_frame,
     frame_bytes, frame_header, payload_checksum,
 };
+pub use table::block::{Block, BlockBuilder, BlockIter, Compare};
