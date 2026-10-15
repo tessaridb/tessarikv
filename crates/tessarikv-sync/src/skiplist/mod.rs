@@ -19,18 +19,16 @@ mod bench_tests;
 mod loom_tests;
 
 use crossbeam_utils::CachePadded;
-use tessarikv_constants::{ARENA_CHUNK_BYTES, LINK_CHUNK_SLOTS, SKIPLIST_MAX_HEIGHT};
+use tessarikv_constants::{ARENA_CHUNK_BYTES, SKIPLIST_MAX_HEIGHT};
 
-use crate::arena::{ByteArena, LinkArena};
+use crate::arena::ByteArena;
 use crate::error::ArenaError;
 use crate::shim::AtomicU64;
 
 pub use cursor::Cursor;
 
-// The default chunk sizes satisfy the arenas' checks, which is what makes `SkipList::new` infallible.
+// The default chunk size satisfies the arena's check, which is what makes `SkipList::new` infallible.
 const _: () = assert!(ARENA_CHUNK_BYTES.is_power_of_two() && ARENA_CHUNK_BYTES >= 64);
-const _: () = assert!(LINK_CHUNK_SLOTS.is_power_of_two() && LINK_CHUNK_SLOTS >= 16);
-const _: () = assert!(SKIPLIST_MAX_HEIGHT <= LINK_CHUNK_SLOTS / 4);
 
 /// The order of keys in a [`SkipList`]. Must be a total order, and stable for the list's life.
 pub trait KeyComparator: Send + Sync {
@@ -85,8 +83,8 @@ pub enum Insert {
 /// links with Acquire; a lost CAS discards the value it read and searches again with Acquire
 /// loads, so it needs no ordering of its own. `max_height` is Relaxed: it only chooses where a search starts. No store→load pairs.
 ///
-/// Reclamation: no node is ever freed or rewritten while the list is shared. Records and towers
-/// live in arenas dropped with the list, so a loaded reference stays valid and is never reused
+/// Reclamation: no node is ever freed or rewritten while the list is shared. Records, towers
+/// included, live in an arena dropped with the list, so a loaded reference stays valid and is never reused
 /// (no ABA). A losing inserter's allocation is simply left unused.
 ///
 /// # Example
@@ -108,36 +106,30 @@ pub struct SkipList<C> {
     head: [AtomicU64; SKIPLIST_MAX_HEIGHT],
     max_height: CachePadded<AtomicU64>,
     bytes: ByteArena,
-    links: LinkArena,
 }
 
 impl<C: KeyComparator> SkipList<C> {
     /// An empty list ordered by `comparator`.
     pub fn new(comparator: C) -> Self {
         // The const assertions above prove the default sizes valid.
-        match Self::with_chunk_sizes(comparator, ARENA_CHUNK_BYTES, LINK_CHUNK_SLOTS) {
+        match Self::with_chunk_size(comparator, ARENA_CHUNK_BYTES) {
             Ok(list) => list,
-            Err(_) => unreachable!("default arena chunk sizes are valid"),
+            Err(_) => unreachable!("the default arena chunk size is valid"),
         }
     }
 
-    /// An empty list with arena chunks of `chunk_bytes` bytes and `chunk_slots` link slots, each
-    /// a power of two (at least 64 and 16).
+    /// An empty list whose arena takes memory in chunks of `chunk_bytes`, a power of two of at
+    /// least 64; an entry larger than a quarter chunk gets an allocation of its own.
     ///
     /// # Errors
     ///
     /// [`ArenaError::TooLarge`] for a size that is not an accepted power of two.
-    pub fn with_chunk_sizes(
-        comparator: C,
-        chunk_bytes: usize,
-        chunk_slots: usize,
-    ) -> Result<Self, ArenaError> {
+    pub fn with_chunk_size(comparator: C, chunk_bytes: usize) -> Result<Self, ArenaError> {
         Ok(Self {
             comparator,
             head: std::array::from_fn(|_| AtomicU64::new(0)),
             max_height: CachePadded::new(AtomicU64::new(1)),
             bytes: ByteArena::new(chunk_bytes)?,
-            links: LinkArena::new(chunk_slots)?,
         })
     }
 

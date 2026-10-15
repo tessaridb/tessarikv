@@ -12,14 +12,15 @@ use crate::shim::Ordering;
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Position {
     pub(super) reference: u64,
-    pub(super) link_index: u64,
+    /// The node's height, which bounds the levels it has links at (unused for the head).
+    pub(super) height: u32,
 }
 
 impl From<&Node> for Position {
     fn from(node: &Node) -> Self {
         Self {
             reference: node.reference,
-            link_index: node.link_index,
+            height: node.height,
         }
     }
 }
@@ -48,10 +49,7 @@ impl<C: KeyComparator> SkipList<C> {
     /// The level-0 successor reference of `position` (0 = none).
     pub(super) fn next_at(&self, position: Position, level: usize) -> Option<u64> {
         // Acquire: the loaded node's record and tower were published by its linking CAS.
-        Some(
-            self.link(position.reference, position.link_index, level)?
-                .load(Ordering::Acquire),
-        )
+        Some(self.link(position, level)?.load(Ordering::Acquire))
     }
 
     /// From `start`, moves right at `level` while the next key is less than `key` (or, with

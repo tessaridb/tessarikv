@@ -40,15 +40,13 @@ impl<C: KeyComparator> SkipList<C> {
             for level in 0..height {
                 let succ = splice.succs.get(level).copied().unwrap_or(0);
                 // Relaxed: the node is unpublished; the linking CAS publishes it.
-                self.link(me.reference, me.link_index, level)
+                self.link(me, level)
                     .ok_or(ArenaError::Internal)?
                     .store(succ, Ordering::Relaxed);
             }
             let pred = splice.preds.first().copied().unwrap_or_default();
             let expected = splice.succs.first().copied().unwrap_or(0);
-            let slot = self
-                .link(pred.reference, pred.link_index, 0)
-                .ok_or(ArenaError::Internal)?;
+            let slot = self.link(pred, 0).ok_or(ArenaError::Internal)?;
             // Success Release: publishes the record and tower; this is the linearization point.
             // Failure Relaxed: the value is discarded; the re-search loads with Acquire.
             if slot
@@ -101,9 +99,7 @@ impl<C: KeyComparator> SkipList<C> {
             _ => return Err(ArenaError::Exhausted),
         };
         loop {
-            let slot = self
-                .link(pred.reference, pred.link_index, level)
-                .ok_or(ArenaError::Internal)?;
+            let slot = self.link(pred, level).ok_or(ArenaError::Internal)?;
             // Success Release: publishes this level of the tower. Failure Relaxed: the value
             // is discarded and `walk` reloads with Acquire.
             if slot
@@ -116,7 +112,7 @@ impl<C: KeyComparator> SkipList<C> {
                 .walk(level, pred, key, false)
                 .ok_or(ArenaError::Internal)?;
             // Relaxed: not yet reachable at this level; the next CAS publishes it.
-            self.link(me.reference, me.link_index, level)
+            self.link(me, level)
                 .ok_or(ArenaError::Internal)?
                 .store(succ, Ordering::Relaxed);
         }

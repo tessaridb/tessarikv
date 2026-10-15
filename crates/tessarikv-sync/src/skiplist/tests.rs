@@ -4,7 +4,7 @@ use std::sync::Arc;
 use super::{BytewiseComparator, Insert, KeyComparator, SkipList};
 
 fn list() -> SkipList<BytewiseComparator> {
-    SkipList::with_chunk_sizes(BytewiseComparator, 256, 64).unwrap()
+    SkipList::with_chunk_size(BytewiseComparator, 256).unwrap()
 }
 
 fn forward(list: &SkipList<impl KeyComparator>) -> Vec<Vec<u8>> {

@@ -1,7 +1,5 @@
 //! A position in the list that moves forward and backward.
 
-#[cfg(not(loom))]
-use super::node::HEADER_BYTES;
 use super::node::Node;
 use super::search::Position;
 use super::{KeyComparator, SkipList};
@@ -114,22 +112,21 @@ impl<'a, C: KeyComparator> Cursor<'a, C> {
 impl<'a, C: KeyComparator> Cursor<'a, C> {
     /// The current key; empty when invalid.
     pub fn key(&self) -> &'a [u8] {
-        self.bytes(|node| (HEADER_BYTES, node.key_len))
+        self.bytes(|node| Some((node.key_offset()?, node.key_len)))
     }
 
     /// The current value; empty when invalid.
     pub fn value(&self) -> &'a [u8] {
-        self.bytes(|node| {
-            let key_len = usize::try_from(node.key_len).unwrap_or(usize::MAX);
-            (HEADER_BYTES.saturating_add(key_len), node.value_len)
-        })
+        self.bytes(|node| Some((node.value_offset()?, node.value_len)))
     }
 
     /// The bytes at `(offset in record, len)` of the current node.
-    fn bytes(&self, range: impl FnOnce(&Node) -> (usize, u32)) -> &'a [u8] {
+    fn bytes(&self, range: impl FnOnce(&Node) -> Option<(usize, u32)>) -> &'a [u8] {
         let Some(node) = self.node else { return &[] };
         let list: &'a SkipList<C> = self.list;
-        let (relative, len) = range(&node);
+        let Some((relative, len)) = range(&node) else {
+            return &[];
+        };
         let resolved = list
             .bytes
             .resolve(node.reference)

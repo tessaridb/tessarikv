@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::{ByteArena, LinkArena};
+use super::ByteArena;
 use crate::shim::Ordering;
 
 fn write(arena: &ByteArena, len: usize, fill: u8) -> u64 {
@@ -95,31 +95,30 @@ fn concurrent_allocations_are_disjoint() {
 }
 
 #[test]
-fn link_towers_are_zeroed_and_disjoint() {
-    let links = LinkArena::new(16).unwrap();
-    let first = links.allocate(3).unwrap();
-    let second = links.allocate(4).unwrap();
-    for index in first..first + 3 {
-        assert_eq!(links.slot(index).unwrap().load(Ordering::Relaxed), 0);
-        links
-            .slot(index)
-            .unwrap()
-            .store(index + 100, Ordering::Relaxed);
-    }
-    for index in second..second + 4 {
-        assert_eq!(
-            links.slot(index).unwrap().load(Ordering::Relaxed),
-            0,
-            "tower overlaps"
-        );
-    }
-    let chunk_of = |index: u64| index / 16;
-    for _ in 0..40 {
-        let start = links.allocate(4).unwrap();
-        assert_eq!(
-            chunk_of(start),
-            chunk_of(start + 3),
-            "tower crosses a chunk"
-        );
+fn an_allocation_exposes_aligned_atomic_words_beside_its_bytes() {
+    let arena = ByteArena::new(64).unwrap();
+    let (_, cells, offset) = arena.allocate(32).unwrap();
+    // SAFETY: the first two words of this fresh allocation are only ever accessed atomically.
+    let (first, second) = unsafe {
+        (
+            cells.atomic_word(offset).unwrap(),
+            cells.atomic_word(offset + 8).unwrap(),
+        )
+    };
+    assert_eq!(first.load(Ordering::Relaxed), 0, "a fresh word is zero");
+    first.store(0x0102_0304_0506_0708, Ordering::Relaxed);
+    second.store(u64::MAX, Ordering::Relaxed);
+    // SAFETY: the bytes after the two words are this thread's alone.
+    unsafe { cells.write(offset + 16, &[9; 16]) }.unwrap();
+    assert_eq!(first.load(Ordering::Relaxed), 0x0102_0304_0506_0708);
+    assert_eq!(second.load(Ordering::Relaxed), u64::MAX);
+    let mut tail = [0; 16];
+    // SAFETY: written above on this thread.
+    unsafe { cells.read(offset + 16, &mut tail) }.unwrap();
+    assert_eq!(tail, [9; 16], "words and bytes overlap");
+    // SAFETY: refused before any access.
+    unsafe {
+        assert!(cells.atomic_word(offset + 3).is_none(), "misaligned word");
+        assert!(cells.atomic_word(64).is_none(), "word past the end");
     }
 }

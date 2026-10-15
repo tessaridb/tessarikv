@@ -103,9 +103,6 @@ pub const MAX_KEYSPACES: u32 = 4096;
 /// chunk's end are at most a quarter chunk per crossing.
 pub const ARENA_CHUNK_BYTES: usize = 128 * 1024;
 
-/// Link slots in one chunk of a memtable's link arena (4096 slots, 32 KiB).
-pub const LINK_CHUNK_SLOTS: usize = 4096;
-
 /// Tallest tower in a memtable skiplist: with branching 4, enough for 4^12 = 16.7 million
 /// entries before searches lengthen.
 pub const SKIPLIST_MAX_HEIGHT: usize = 12;

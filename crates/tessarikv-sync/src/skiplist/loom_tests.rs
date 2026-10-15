@@ -6,7 +6,7 @@ use loom::thread;
 use super::{BytewiseComparator, Insert, SkipList};
 
 fn list() -> Arc<SkipList<BytewiseComparator>> {
-    Arc::new(SkipList::with_chunk_sizes(BytewiseComparator, 128, 16).unwrap())
+    Arc::new(SkipList::with_chunk_size(BytewiseComparator, 128).unwrap())
 }
 
 fn keys(list: &SkipList<BytewiseComparator>) -> Vec<Vec<u8>> {
