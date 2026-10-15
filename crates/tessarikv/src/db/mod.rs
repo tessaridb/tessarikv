@@ -17,6 +17,9 @@ mod open;
 mod read;
 mod recover;
 mod snapshot;
+// Built and read by the flush installer.
+#[cfg(test)]
+mod tables;
 mod view;
 mod write;
 
@@ -26,6 +29,8 @@ mod kill_tests;
 mod recovery_tests;
 #[cfg(test)]
 mod switch_tests;
+#[cfg(test)]
+mod table_tests;
 #[cfg(test)]
 mod tests;
 
