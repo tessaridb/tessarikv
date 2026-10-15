@@ -92,6 +92,11 @@ pub const MAX_KEY_BYTES: usize = 8 * 1024 * 1024;
 /// The largest value the engine accepts (1 GiB).
 pub const MAX_VALUE_BYTES: usize = 1024 * 1024 * 1024;
 
+/// The largest encoded write batch the engine accepts (2 GiB).
+///
+/// It bounds what one atomic commit may carry and what a decoder of a logged batch will accept.
+pub const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
 /// The largest number of keyspaces one database may hold.
 ///
 /// A keyspace id is a `u32` on disk; this bound is what the engine sizes per-keyspace state for.

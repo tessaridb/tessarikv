@@ -11,6 +11,8 @@ foundation the engine is built on:
 - an append-only byte buffer with one writer and any number of concurrent readers, and an
   insert-only lock-free skiplist for the in-memory table, both model-checked with `loom`
   (`tessarikv-sync`);
+- the write batch: an atomic, ordered list of puts and deletes with a versioned, bounded encoding
+  (`tessarikv-format`);
 - typed, validated options for the database, for each keyspace, and for each read and write;
 - a file-system abstraction with an operating-system backend and a fully in-memory one;
 - the engine's error type, with stable codes and categories.

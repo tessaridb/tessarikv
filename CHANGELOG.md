@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format follows
 - Append-only byte buffer with one writer and concurrent wait-free readers.
 - `SkipList`: an insert-only lock-free skiplist with entries in a lock-free arena, ordered by a
   pluggable `KeyComparator`, with forward and backward cursors.
+- `WriteBatch`: an atomic, ordered list of puts and deletes across keyspaces, with a versioned encoding whose decoder
+  refuses truncated, oversized or malformed input.
 - Options: `DbOptions`, `KeyspaceOptions` with the `point_lookup`, `write_heavy` and `bulk_load`
   presets, `ReadOptions` and `WriteOptions` with three durability levels.
 - `Storage` abstraction with an operating-system backend and an in-memory backend.
