@@ -21,10 +21,12 @@
 mod append_buffer;
 mod arena;
 mod error;
+mod sequencer;
 mod shim;
 mod skiplist;
 mod slot_directory;
 
 pub use append_buffer::{AppendReader, AppendWriter, append_buffer};
 pub use error::{ArenaError, BufferError};
+pub use sequencer::{Claim, Sequencer};
 pub use skiplist::{BytewiseComparator, Cursor, Insert, KeyComparator, SkipList};

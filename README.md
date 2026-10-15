@@ -9,8 +9,8 @@ foundation the engine is built on:
 
 - the internal-key encoding and its ordering (`tessarikv-types`);
 - an append-only byte buffer with one writer and any number of concurrent readers, and an
-  insert-only lock-free skiplist for the in-memory table, both model-checked with `loom`
-  (`tessarikv-sync`);
+  insert-only lock-free skiplist for the in-memory table, and a lock-free sequencer whose visible
+  watermark covers only completed commits, all model-checked with `loom` (`tessarikv-sync`);
 - the write batch: an atomic, ordered list of puts and deletes with a versioned, bounded encoding
   (`tessarikv-format`);
 - typed, validated options for the database, for each keyspace, and for each read and write;
