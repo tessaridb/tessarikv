@@ -18,3 +18,4 @@ workspace = true
 tessarikv-constants.workspace = true
 tessarikv-types.workspace = true
 thiserror.workspace = true
+crc32c.workspace = true

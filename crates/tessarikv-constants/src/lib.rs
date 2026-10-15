@@ -97,6 +97,12 @@ pub const MAX_VALUE_BYTES: usize = 1024 * 1024 * 1024;
 /// It bounds what one atomic commit may carry and what a decoder of a logged batch will accept.
 pub const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
+/// The largest payload one log frame carries: a batch of [`MAX_BATCH_BYTES`] and the first
+/// sequence number it was committed at.
+///
+/// A decoder refuses a frame whose length field claims more, before it looks at the bytes.
+pub const MAX_LOG_PAYLOAD_BYTES: usize = MAX_BATCH_BYTES + 8;
+
 /// Slots in the commit sequencer's ring: how many sequence numbers a writer may run ahead of
 /// the oldest commit still being applied before its completion waits.
 pub const COMMIT_RING_SLOTS: usize = 4096;
