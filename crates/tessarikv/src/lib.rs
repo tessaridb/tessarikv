@@ -20,7 +20,7 @@ mod options;
 mod storage;
 mod version;
 
-pub use db::{Db, ScanPage, Snapshot};
+pub use db::{Db, DbIterator, ScanPage, Snapshot};
 pub use error::{Error, ErrorCategory, Result};
 pub use options::{
     DbOptions, DbOptionsBuilder, Durability, KeyspaceOptions, KeyspaceOptionsBuilder, ReadOptions,

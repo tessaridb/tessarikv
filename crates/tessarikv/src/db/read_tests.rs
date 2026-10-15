@@ -12,9 +12,9 @@ use crate::Error;
 use crate::memtable::Memtable;
 
 /// One write: a key and its new value, or `None` for a delete.
-type Op = (u8, Option<u16>);
+pub(super) type Op = (u8, Option<u16>);
 
-fn user_key(key: u8) -> [u8; 2] {
+pub(super) fn user_key(key: u8) -> [u8; 2] {
     [b'k', key]
 }
 
@@ -66,13 +66,13 @@ fn table_file(bytes: Vec<u8>, built: &super::tables::BuiltTable, id: u64) -> Tab
 }
 
 /// The table file built from `table`, numbered `id`.
-fn file(table: &Memtable, id: u64) -> TableFile {
+pub(super) fn file(table: &Memtable, id: u64) -> TableFile {
     let built = build(table, options()).unwrap();
     table_file(built.bytes.clone(), &built, id)
 }
 
 /// What every key holds once the first `count` writes are applied.
-fn model(ops: &[Op], count: usize) -> BTreeMap<Vec<u8>, Vec<u8>> {
+pub(super) fn model(ops: &[Op], count: usize) -> BTreeMap<Vec<u8>, Vec<u8>> {
     let mut state = BTreeMap::new();
     for (key, value) in ops.iter().take(count) {
         match value {
@@ -85,7 +85,7 @@ fn model(ops: &[Op], count: usize) -> BTreeMap<Vec<u8>, Vec<u8>> {
 
 /// Three in-memory tables holding `ops` split at `first` and `second`, newest first: the view
 /// before any flush.
-fn unflushed(ops: &[Op], first: usize, second: usize) -> View {
+pub(super) fn unflushed(ops: &[Op], first: usize, second: usize) -> View {
     let view = View::new(0, Memtable::new());
     fill(view.table(0).unwrap(), 1, &ops[..first]);
     let view = view.with_next_table();

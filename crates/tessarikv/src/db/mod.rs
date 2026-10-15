@@ -15,6 +15,7 @@
 mod flush_job;
 mod flush_signals;
 mod installer;
+mod iterator;
 mod merge;
 mod open;
 mod read;
@@ -28,6 +29,8 @@ mod write;
 mod crash_step_tests;
 #[cfg(test)]
 mod flush_tests;
+#[cfg(test)]
+mod iterator_tests;
 #[cfg(test)]
 mod kill_tests;
 #[cfg(test)]
@@ -60,6 +63,7 @@ use crate::storage::{OsStorage, Storage, StorageLock};
 use crate::{DbOptions, Error, Result, StorageMode};
 use view::View;
 
+pub use iterator::DbIterator;
 pub use read::ScanPage;
 pub use snapshot::Snapshot;
 

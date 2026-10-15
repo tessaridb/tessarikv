@@ -151,6 +151,12 @@ impl View {
         self.tables.iter().map(|entry| entry.table.as_ref())
     }
 
+    /// The in-memory tables, newest first, shared: a holder keeps one alive after the view is
+    /// replaced.
+    pub(crate) fn shared_memtables(&self) -> impl Iterator<Item = &Arc<Memtable>> {
+        self.tables.iter().map(|entry| &entry.table)
+    }
+
     /// The table files of `keyspace`, newest first.
     pub(crate) fn files(&self, keyspace: u32) -> impl Iterator<Item = &TableFile> {
         self.files

@@ -3,7 +3,7 @@
 use tessarikv_sync::Registration;
 use tessarikv_types::{KeyspaceId, SequenceNumber};
 
-use super::{Db, ScanPage};
+use super::{Db, DbIterator, ScanPage};
 use crate::{Error, ReadOptions, Result};
 
 /// A point in the database's history. Reads through it see the database as it was when the
@@ -83,6 +83,22 @@ impl Snapshot<'_> {
         _options: &ReadOptions,
     ) -> Result<Option<Vec<u8>>> {
         self.db.get_at(keyspace, key, self.sequence)
+    }
+
+    /// An iterator over `keyspace` at this snapshot; the snapshot outlives it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownKeyspace`] for a keyspace this database does not hold.
+    pub fn iter(&self, keyspace: KeyspaceId, options: &ReadOptions) -> Result<DbIterator<'_>> {
+        Db::check_keyspace(keyspace)?;
+        Ok(DbIterator::new(
+            &self.db.view.load_full(),
+            keyspace,
+            self.sequence,
+            options,
+            None,
+        ))
     }
 
     /// A page of `keyspace` at this snapshot, as [`Db::scan`] returns one.

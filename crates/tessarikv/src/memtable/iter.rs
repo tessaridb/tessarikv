@@ -1,9 +1,11 @@
 //! Walking a table's versions in internal-key order.
 
-use tessarikv_sync::Cursor;
+use std::sync::Arc;
+
+use tessarikv_sync::{Cursor, CursorPosition};
 use tessarikv_types::{InternalKeyRef, SequenceNumber, ValueKind, encode_internal, seek_trailer};
 
-use super::InternalKeyComparator;
+use super::{InternalKeyComparator, Memtable};
 
 /// One version in a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,5 +61,50 @@ impl<'a> MemtableIter<'a> {
             kind: internal.trailer().kind().ok()?,
             value: self.cursor.value(),
         })
+    }
+}
+
+/// A position among a shared table's versions that owns the table instead of borrowing it, so
+/// it can live as long as an iterator does; each step borrows a cursor from the position.
+pub(crate) struct MemtableCursor {
+    table: Arc<Memtable>,
+    position: CursorPosition,
+    seek_key: Vec<u8>,
+}
+
+impl MemtableCursor {
+    pub(crate) fn new(table: Arc<Memtable>) -> Self {
+        let position = table.entries.cursor().position();
+        Self {
+            table,
+            position,
+            seek_key: Vec::new(),
+        }
+    }
+
+    /// As [`MemtableIter::seek`].
+    pub(crate) fn seek(&mut self, key: &[u8], snapshot: SequenceNumber) {
+        self.step(|versions| versions.seek(key, snapshot));
+    }
+
+    /// Moves to the next version.
+    pub(crate) fn next(&mut self) {
+        self.step(|versions| versions.next());
+    }
+
+    /// The current version, or `None` past the end.
+    pub(crate) fn entry(&self) -> Option<MemtableEntry<'_>> {
+        MemtableIter::new(self.table.entries.cursor_at(self.position)).entry()
+    }
+
+    /// Runs `move_to` on a cursor at the position and keeps where it lands.
+    fn step(&mut self, move_to: impl FnOnce(&mut MemtableIter<'_>)) {
+        let mut versions = MemtableIter {
+            cursor: self.table.entries.cursor_at(self.position),
+            seek_key: std::mem::take(&mut self.seek_key),
+        };
+        move_to(&mut versions);
+        self.position = versions.cursor.position();
+        self.seek_key = versions.seek_key;
     }
 }

@@ -7,7 +7,7 @@ use tessarikv_format::TableIter;
 use tessarikv_types::{InternalKeyRef, SequenceNumber, ValueKind, encode_internal, seek_trailer};
 
 use super::tables::format_error;
-use crate::memtable::MemtableIter;
+use crate::memtable::{MemtableCursor, MemtableEntry, MemtableIter};
 use crate::{Error, Result};
 
 /// One version of a key.
@@ -20,10 +20,23 @@ pub(super) struct KeyVersion<'a> {
     pub(super) value: &'a [u8],
 }
 
+impl<'a> From<MemtableEntry<'a>> for KeyVersion<'a> {
+    fn from(entry: MemtableEntry<'a>) -> Self {
+        Self {
+            user_key: entry.user_key,
+            sequence: entry.sequence,
+            kind: entry.kind,
+            value: entry.value,
+        }
+    }
+}
+
 /// Where versions come from.
 pub(super) enum Source<'a> {
     /// An in-memory table.
     Memtable(MemtableIter<'a>),
+    /// An in-memory table the source keeps alive itself.
+    Shared(MemtableCursor),
     /// A table file; boxed, as its iterator is several times an in-memory one's size.
     Table(Box<TableVersions>),
 }
@@ -32,6 +45,7 @@ impl Source<'_> {
     fn seek(&mut self, key: &[u8], snapshot: SequenceNumber) {
         match self {
             Self::Memtable(versions) => versions.seek(key, snapshot),
+            Self::Shared(versions) => versions.seek(key, snapshot),
             Self::Table(versions) => versions.seek(key, snapshot),
         }
     }
@@ -39,18 +53,15 @@ impl Source<'_> {
     fn next(&mut self) {
         match self {
             Self::Memtable(versions) => versions.next(),
+            Self::Shared(versions) => versions.next(),
             Self::Table(versions) => versions.next(),
         }
     }
 
     fn entry(&self) -> Option<KeyVersion<'_>> {
         match self {
-            Self::Memtable(versions) => versions.entry().map(|entry| KeyVersion {
-                user_key: entry.user_key,
-                sequence: entry.sequence,
-                kind: entry.kind,
-                value: entry.value,
-            }),
+            Self::Memtable(versions) => versions.entry().map(KeyVersion::from),
+            Self::Shared(versions) => versions.entry().map(KeyVersion::from),
             Self::Table(versions) => versions.entry(),
         }
     }
@@ -159,6 +170,14 @@ impl<'a> MergedVersions<'a> {
         {
             source.next();
         }
+    }
+
+    /// Why a table file's versions ended early, taken once; `None` while every source is whole.
+    pub(super) fn take_error(&mut self) -> Option<Error> {
+        self.sources.iter_mut().find_map(|source| match source {
+            Source::Table(versions) => versions.error.take(),
+            Source::Memtable(_) | Source::Shared(_) => None,
+        })
     }
 
     /// Whether every source ended where its data ended.

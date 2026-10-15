@@ -11,6 +11,16 @@ pub struct Cursor<'a, C> {
     node: Option<Node<'a>>,
 }
 
+/// Where a cursor stands, kept without borrowing the list and resumed with
+/// [`SkipList::cursor_at`]. Only a cursor makes one, so it names a published entry of its own
+/// list (entries are never removed while the list lives) or no entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorPosition {
+    list: u64,
+    /// The entry's arena reference; 0 for none.
+    node: u64,
+}
+
 impl<C: KeyComparator> SkipList<C> {
     /// A cursor, initially invalid.
     pub fn cursor(&self) -> Cursor<'_, C> {
@@ -18,6 +28,18 @@ impl<C: KeyComparator> SkipList<C> {
             list: self,
             node: None,
         }
+    }
+
+    /// A cursor at `position`, taken from a cursor of this list; a position from another list
+    /// gives an invalid cursor.
+    pub fn cursor_at(&self, position: CursorPosition) -> Cursor<'_, C> {
+        let node = if position.list == self.id {
+            // The reference was published in this list when the position was taken, and stays.
+            self.published(position.node)
+        } else {
+            None
+        };
+        Cursor { list: self, node }
     }
 
     /// The value of the key equal to `key`.
@@ -43,6 +65,14 @@ impl<'a, C: KeyComparator> Cursor<'a, C> {
     /// Whether the cursor is on an entry.
     pub fn valid(&self) -> bool {
         self.node.is_some()
+    }
+
+    /// Where the cursor stands, to resume later with [`SkipList::cursor_at`].
+    pub fn position(&self) -> CursorPosition {
+        CursorPosition {
+            list: self.list.id,
+            node: self.node.as_ref().map_or(0, |node| node.reference),
+        }
     }
 
     /// Moves to the least key not less than `key`.

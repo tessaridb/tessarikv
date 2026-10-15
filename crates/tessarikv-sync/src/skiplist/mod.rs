@@ -25,7 +25,7 @@ use crate::arena::ByteArena;
 use crate::error::ArenaError;
 use crate::shim::AtomicU64;
 
-pub use cursor::Cursor;
+pub use cursor::{Cursor, CursorPosition};
 
 // The default chunk size satisfies the arena's check, which is what makes `SkipList::new` infallible.
 const _: () = assert!(ARENA_CHUNK_BYTES.is_power_of_two() && ARENA_CHUNK_BYTES >= 64);
@@ -106,7 +106,14 @@ pub struct SkipList<C> {
     head: [AtomicU64; SKIPLIST_MAX_HEIGHT],
     max_height: CachePadded<AtomicU64>,
     bytes: ByteArena,
+    /// Never shared by two lists of one process: a [`CursorPosition`] resumes only in the list
+    /// it came from.
+    id: u64,
 }
+
+/// The source of list identities. Outside the loom model on purpose: it orders nothing, and
+/// uniqueness needs only the atomicity of the increment.
+static NEXT_LIST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl<C: KeyComparator> SkipList<C> {
     /// An empty list ordered by `comparator`.
@@ -130,6 +137,8 @@ impl<C: KeyComparator> SkipList<C> {
             head: std::array::from_fn(|_| AtomicU64::new(0)),
             max_height: CachePadded::new(AtomicU64::new(1)),
             bytes: ByteArena::new(chunk_bytes)?,
+            // Relaxed: only the increment's atomicity matters (2^64 lists are never made).
+            id: NEXT_LIST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         })
     }
 

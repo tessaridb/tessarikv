@@ -171,3 +171,43 @@ fn concurrent_inserters_lose_nothing_and_duplicate_nothing() {
         assert_eq!(list.get(key), Some(&writer.to_be_bytes()[..]));
     }
 }
+
+#[test]
+fn a_position_resumes_where_its_cursor_stood() {
+    let list = list();
+    for key in [b"a", b"b", b"c", b"d"] {
+        list.insert(key, key).unwrap();
+    }
+    let position = {
+        let mut cursor = list.cursor();
+        cursor.seek(b"b");
+        cursor.position()
+    };
+    // Entries inserted after the position was taken are seen when walking on from it.
+    list.insert(b"bb", b"bb").unwrap();
+    let mut resumed = list.cursor_at(position);
+    assert_eq!(resumed.key(), b"b");
+    resumed.next();
+    assert_eq!(resumed.key(), b"bb");
+    resumed.prev();
+    resumed.prev();
+    assert_eq!(resumed.key(), b"a");
+}
+
+#[test]
+fn a_position_resumes_only_in_its_own_list() {
+    let first = list();
+    let second = list();
+    for key in [b"a", b"b"] {
+        first.insert(key, b"").unwrap();
+        second.insert(key, b"").unwrap();
+    }
+    let mut cursor = first.cursor();
+    cursor.seek(b"b");
+    let position = cursor.position();
+    assert!(first.cursor_at(position).valid());
+    assert!(!second.cursor_at(position).valid());
+    // A position past the end resumes past the end.
+    cursor.next();
+    assert!(!first.cursor_at(cursor.position()).valid());
+}

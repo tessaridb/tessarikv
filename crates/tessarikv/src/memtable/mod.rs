@@ -25,7 +25,7 @@ use tessarikv_types::{
 
 use crate::{Error, Result};
 
-pub(crate) use iter::MemtableIter;
+pub(crate) use iter::{MemtableCursor, MemtableEntry, MemtableIter};
 
 /// Orders encoded internal keys: user key ascending, then newest version first.
 pub(crate) struct InternalKeyComparator;
