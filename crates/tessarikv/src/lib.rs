@@ -18,8 +18,6 @@ mod log;
 mod memtable;
 mod options;
 mod storage;
-// Built from manifest edits; read and installed by the flush installer.
-#[cfg(test)]
 mod version;
 
 pub use db::{Db, ScanPage, Snapshot};

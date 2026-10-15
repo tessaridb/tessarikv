@@ -9,22 +9,25 @@
 //! Writes land in the in-memory table of the epoch their claim carries, and reads consult every
 //! table of the current read view, newest first (see `view`).
 //!
-//! This version serves the default keyspace and keeps every batch in memory: tables are not yet
-//! flushed to storage, so the log grows until the database is reopened.
+//! This version serves the default keyspace. On storage, a full in-memory table is flushed to a
+//! table file in the background (see `installer`); in memory, every batch stays in memory.
 
+mod installer;
 mod merge;
 mod open;
 mod read;
 mod recover;
 mod snapshot;
-// Built and read by the flush installer.
-#[cfg(test)]
 mod tables;
 mod view;
 mod write;
 
 #[cfg(test)]
+mod flush_tests;
+#[cfg(test)]
 mod kill_tests;
+#[cfg(test)]
+mod read_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
@@ -73,9 +76,9 @@ pub use snapshot::Snapshot;
 /// # }
 /// ```
 pub struct Db {
-    sequencer: Sequencer,
-    /// The in-memory tables reads consult and writes land in.
-    view: ArcSwap<View>,
+    sequencer: Arc<Sequencer>,
+    /// The tables reads consult and writes land in.
+    view: Arc<ArcSwap<View>>,
     /// The snapshots readers hold, which compaction keeps versions for.
     snapshots: SnapshotRegistry,
     /// Set while a switch runs, so switches never overlap.
@@ -83,6 +86,8 @@ pub struct Db {
     switching: std::sync::atomic::AtomicBool,
     /// The write-ahead log; none for a database in memory.
     log: Option<LogWriter>,
+    /// The flush installer; none for a database in memory.
+    installer: Option<installer::Installer>,
     /// Held for as long as the database is open.
     _lock: Option<Box<dyn StorageLock>>,
 }
@@ -107,12 +112,13 @@ impl Db {
     pub async fn open(path: impl AsRef<Path>, options: DbOptions) -> Result<Self> {
         match options.storage() {
             StorageMode::Memory => Ok(Self {
-                sequencer: Sequencer::new(0, COMMIT_RING_SLOTS),
-                view: ArcSwap::from_pointee(View::new(0, Memtable::new())),
+                sequencer: Arc::new(Sequencer::new(0, COMMIT_RING_SLOTS)),
+                view: Arc::new(ArcSwap::from_pointee(View::new(0, Memtable::new()))),
                 snapshots: SnapshotRegistry::new(),
                 #[cfg(test)]
                 switching: std::sync::atomic::AtomicBool::new(false),
                 log: None,
+                installer: None,
                 _lock: None,
             }),
             StorageMode::Os => Self::open_with_storage(path, options, Arc::new(OsStorage)).await,
@@ -133,18 +139,24 @@ impl Db {
         Self::open_on(path.as_ref().to_path_buf(), options, storage).await
     }
 
-    /// Closes the database: every write already acknowledged is written and synced, and the
-    /// lock is released. Dropping a database without closing it leaves the log writer to
-    /// finish in the background, unobserved.
+    /// Closes the database: a running flush finishes, every write already acknowledged is
+    /// written and synced, and the lock is released. Dropping a database without closing it
+    /// leaves the log writer to finish in the background, unobserved.
     ///
     /// # Errors
     ///
-    /// [`Error::LogFailed`] when the log had stopped or its final sync failed.
+    /// [`Error::LogFailed`] when the log had stopped or its final sync failed, and the error of
+    /// a failed flush.
     pub async fn close(self) -> Result<()> {
-        match self.log {
+        let flushed = match self.installer {
+            Some(installer) => installer.close().await,
+            None => Ok(()),
+        };
+        let logged = match self.log {
             Some(log) => log.close().await,
             None => Ok(()),
-        }
+        };
+        flushed.and(logged)
     }
 
     /// Refuses a keyspace this database does not hold.

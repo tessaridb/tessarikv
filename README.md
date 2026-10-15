@@ -9,8 +9,9 @@ atomically through a write-ahead log, and answers point reads and paged scans at
 snapshot, from any number of concurrent tasks; `Db::snapshot` holds a point in history that later
 reads return to. A write returns once it is as durable as it asks:
 synced (survives a power loss), handed to the operating system (survives a process crash), or not
-logged. Opening replays the log. Tables are not yet flushed to storage, so the log grows until the
-database is reopened. Underneath it:
+logged. On storage, a full in-memory table is flushed in the background to a table file named by
+a synced manifest, and the log segments it covers are removed; opening reads the manifest and its
+table files and replays only the log above them. Underneath it:
 
 - the internal-key encoding and its ordering (`tessarikv-types`);
 - an append-only byte buffer with one writer and any number of concurrent readers, and an

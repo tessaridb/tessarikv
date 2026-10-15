@@ -121,3 +121,34 @@ fn a_claim_in_a_new_epoch_sees_what_preceded_the_switch() {
         sequencer.complete(claim);
     });
 }
+
+/// A watcher and the completer that reaches its target never miss each other: either the watch
+/// sees the target reached, or the completion reports reaching it (the store-then-load pair).
+#[test]
+fn a_reached_target_is_never_missed() {
+    loom::model(|| {
+        let sequencer = Arc::new(Sequencer::new(0, 4));
+        let claim = sequencer.claim(1).unwrap();
+        let other = Arc::clone(&sequencer);
+        let completer = loom::thread::spawn(move || other.complete(claim));
+        let seen = sequencer.watch(1);
+        let reported = completer.join().unwrap();
+        assert!(seen || reported, "the reached target was missed");
+    });
+}
+
+/// The same when the batch reaching the target is made visible by another completer's advance.
+#[test]
+fn a_target_reached_by_another_threads_advance_is_never_missed() {
+    loom::model(|| {
+        let sequencer = Arc::new(Sequencer::new(0, 4));
+        let first = sequencer.claim(1).unwrap();
+        let second = sequencer.claim(1).unwrap();
+        let (late, early) = (Arc::clone(&sequencer), Arc::clone(&sequencer));
+        let second_completer = loom::thread::spawn(move || late.complete(second));
+        let first_completer = loom::thread::spawn(move || early.complete(first));
+        let seen = sequencer.watch(2);
+        let reported = second_completer.join().unwrap() | first_completer.join().unwrap();
+        assert!(seen || reported, "the reached target was missed");
+    });
+}

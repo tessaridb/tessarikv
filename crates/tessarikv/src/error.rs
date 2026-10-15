@@ -124,6 +124,11 @@ pub enum Error {
     /// database is reopened, which recovers from the log on storage.
     #[error("the write-ahead log stopped after a failed write or sync; reopen the database")]
     LogFailed,
+    /// Writing a flushed table or its manifest record failed. Acknowledged writes stay in the
+    /// write-ahead log; nothing else is written until the database is reopened, which recovers
+    /// from the manifest and the log.
+    #[error("a flush failed to write its table or the manifest; reopen the database")]
+    FlushFailed,
     /// Opening was told to fail when a database already exists, and one does.
     #[error("a database already exists at {path}")]
     AlreadyExists {
@@ -150,7 +155,7 @@ impl Error {
             Self::Corruption { .. } | Self::ShortRead { .. } => ErrorCategory::Corruption,
             Self::UnknownKeyspace { .. } | Self::Unsupported { .. } => ErrorCategory::Validation,
             Self::Memtable { .. } | Self::SequenceExhausted => ErrorCategory::Internal,
-            Self::LogFailed => ErrorCategory::Io,
+            Self::LogFailed | Self::FlushFailed => ErrorCategory::Io,
             Self::AlreadyExists { .. } => ErrorCategory::Conflict,
             Self::Closed => ErrorCategory::ShutDown,
         }
@@ -171,6 +176,7 @@ impl Error {
             Self::SequenceExhausted => "sequence_exhausted",
             Self::Memtable { .. } => "memtable",
             Self::LogFailed => "log_failed",
+            Self::FlushFailed => "flush_failed",
             Self::AlreadyExists { .. } => "already_exists",
             Self::Closed => "closed",
         }
@@ -194,6 +200,7 @@ impl Error {
             | Self::SequenceExhausted
             | Self::Memtable { .. }
             | Self::LogFailed
+            | Self::FlushFailed
             | Self::AlreadyExists { .. }
             | Self::Closed => false,
         }

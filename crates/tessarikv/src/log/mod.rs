@@ -19,7 +19,7 @@
 //! only safe recovery is to reopen and replay the log from storage.
 //!
 //! Once every frame up to a sequence number is held in a table file that a synced manifest
-//! names, [`LogWriter::release_through`] lets the log remove the finished segments that hold
+//! names, [`LogRelease::release_through`] lets the log remove the finished segments that hold
 //! nothing later. The segment being written is never removed.
 
 mod segments;
@@ -148,11 +148,28 @@ impl Slot<'_> {
     }
 }
 
+/// Releases log segments once flushed tables hold their frames.
+pub(crate) struct LogRelease(Arc<Released>);
+
+impl LogRelease {
+    /// Lets the log remove every finished segment whose frames all carry sequence numbers at
+    /// or below `sequence`; called once a table holding them is named by a synced manifest. The
+    /// removal happens on the log writer's next round, and at the latest when the log closes. A
+    /// smaller `sequence` than one already released changes nothing.
+    pub(crate) fn release_through(&self, sequence: u64) {
+        // Release: everything this thread did before (the table and manifest syncs) happens
+        // before the removal; pairs with the Acquire load in `Writer::released_through`.
+        self.0
+            .through
+            .fetch_max(sequence, std::sync::atomic::Ordering::Release);
+        self.0.notice.notify_one();
+    }
+}
+
 /// The handle writers append through; the log writer task runs until it is closed.
 pub(crate) struct LogWriter {
     entries: mpsc::Sender<Entry>,
     progress: watch::Receiver<Progress>,
-    #[cfg(test)] // Read only by `release_through` until flushes release what they cover.
     released: Arc<Released>,
     task: JoinHandle<Result<()>>,
 }
@@ -194,7 +211,6 @@ impl LogWriter {
         Ok(Self {
             entries,
             progress,
-            #[cfg(test)]
             released,
             task,
         })
@@ -245,18 +261,9 @@ impl LogWriter {
         }
     }
 
-    /// Lets the log remove every finished segment whose frames all carry sequence numbers at
-    /// or below `sequence`; called once a table holding them is named by a synced manifest. The
-    /// removal happens on the log writer's next round, and at the latest when the log closes. A
-    /// smaller `sequence` than one already released changes nothing.
-    #[cfg(test)] // Test-only until flushes release what they cover.
-    pub(crate) fn release_through(&self, sequence: u64) {
-        // Release: everything this thread did before (the table and manifest syncs) happens
-        // before the removal; pairs with the Acquire load in `Writer::released_through`.
-        self.released
-            .through
-            .fetch_max(sequence, std::sync::atomic::Ordering::Release);
-        self.released.notice.notify_one();
+    /// The handle a flush releases log segments through.
+    pub(crate) fn releaser(&self) -> LogRelease {
+        LogRelease(Arc::clone(&self.released))
     }
 
     /// Stops accepting records, writes and syncs every record already handed over, and waits

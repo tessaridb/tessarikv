@@ -2,7 +2,9 @@
 //!
 //! Segments are replayed in log-number order, frames in file order, which is commit order. A
 //! frame's payload is the first sequence number its batch was committed at, then the batch's
-//! encoding. Sequence numbers only grow along the log; a range that was never logged (a batch
+//! encoding. Batches at or below the flushed sequence are already in table files and are passed
+//! over; a batch never straddles it, since a flush cuts between two epochs and a batch's
+//! sequences all belong to one. Sequence numbers only grow along the log; a range that was never logged (a batch
 //! written without the log, or one whose writer gave up) is simply absent.
 //!
 //! The replay stops at the first frame that is not valid. Under
@@ -34,12 +36,14 @@ pub(super) struct Recovered {
     pub(super) segments: Vec<FinishedSegment>,
 }
 
-/// Replays the log in `dir` into `table`. Runs on a blocking thread.
+/// Replays the log in `dir` into `table`, from above sequence `flushed`. Runs on a blocking
+/// thread.
 pub(super) fn recover(
     storage: &dyn Storage,
     dir: &Path,
     table: &Memtable,
     mode: WalRecovery,
+    flushed: u64,
 ) -> Result<Recovered> {
     let segments = segments(storage, dir)?;
     let next_log_number = match segments.last() {
@@ -55,7 +59,7 @@ pub(super) fn recover(
         let end = loop {
             match frames.next_frame() {
                 LogRead::Frame(payload) => {
-                    last_sequence = replay(table, payload, last_sequence, &path)?;
+                    last_sequence = replay(table, payload, last_sequence, flushed, &path)?;
                 }
                 LogRead::End(end) => break end,
             }
@@ -88,8 +92,15 @@ pub(super) fn recover(
     })
 }
 
-/// Applies one logged batch; returns its last sequence number.
-fn replay(table: &Memtable, payload: &[u8], previous: u64, path: &Path) -> Result<u64> {
+/// Applies one logged batch unless it is at or below `flushed`; returns its last sequence
+/// number.
+fn replay(
+    table: &Memtable,
+    payload: &[u8],
+    previous: u64,
+    flushed: u64,
+    path: &Path,
+) -> Result<u64> {
     let bad = |detail: &str| corruption(path, 0, detail.to_owned());
     let (sequence, encoded) = payload
         .split_first_chunk::<SEQUENCE_BYTES>()
@@ -105,7 +116,9 @@ fn replay(table: &Memtable, payload: &[u8], previous: u64, path: &Path) -> Resul
         .checked_sub(1)
         .and_then(|offset| first.checked_add(offset))
         .ok_or_else(|| bad("logged batch is empty or past the sequence space"))?;
-    apply(table, first, &batch)?;
+    if first > flushed {
+        apply(table, first, &batch)?;
+    }
     Ok(last)
 }
 

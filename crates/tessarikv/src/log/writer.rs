@@ -132,7 +132,7 @@ impl Writer {
 
     /// The sequence finished segments may be removed through.
     fn released_through(&self) -> u64 {
-        // Acquire: pairs with the Release `fetch_max` in `LogWriter::release_through`, so the
+        // Acquire: pairs with the Release `fetch_max` in `LogRelease::release_through`, so the
         // caller's table and manifest syncs happen before any removal this value allows.
         self.released.through.load(Ordering::Acquire)
     }

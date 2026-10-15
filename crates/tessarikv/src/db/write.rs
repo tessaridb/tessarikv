@@ -3,6 +3,7 @@
 use tessarikv_format::{FRAME_HEADER_BYTES, WriteBatch, concat_checksum, payload_checksum};
 use tessarikv_sync::{Claim, Sequencer};
 use tessarikv_types::SequenceNumber;
+use tokio::sync::Notify;
 
 use super::Db;
 use super::recover::SEQUENCE_BYTES;
@@ -28,6 +29,7 @@ impl Db {
     /// [`Error::UnknownKeyspace`] when an entry names a keyspace this database does not hold
     /// (nothing is applied), [`Error::LogFailed`] when the log stopped before the batch was as
     /// durable as asked (nothing is applied, and no later write succeeds),
+    /// [`Error::FlushFailed`] after a flush failed (nothing is applied),
     /// [`Error::SequenceExhausted`] when the sequence space is used up, and [`Error::Memtable`]
     /// when the table cannot take an entry, which means an engine invariant is broken.
     pub async fn write(
@@ -42,7 +44,7 @@ impl Db {
             return self.visible_sequence();
         }
         let Some(log) = &self.log else {
-            let claim = Completion::new(&self.sequencer, self.claim(batch)?);
+            let claim = Completion::new(&self.sequencer, None, self.claim(batch)?);
             let applied = self.apply(claim.epoch(), claim.first(), batch);
             return claim.complete(applied);
         };
@@ -53,8 +55,13 @@ impl Db {
         };
         // A place in the log's queue is taken before the claim, so nothing between claiming
         // and handing the range over can wait or be cancelled.
+        let installer = self.installer.as_ref();
+        if installer.is_some_and(|installer| installer.signals.failed()) {
+            return Err(Error::FlushFailed);
+        }
         let slot = log.reserve().await?;
-        let claim = Completion::new(&self.sequencer, self.claim(batch)?);
+        let completed = installer.map(|installer| &installer.signals.visible);
+        let claim = Completion::new(&self.sequencer, completed, self.claim(batch)?);
         let (first, last) = (claim.first(), claim.last());
         let (record, built) = match logged.map(|(prepared, wait)| (prepared.finish(first), wait)) {
             Some((Ok(frame), wait)) => (Record::Frame { frame, wait }, Ok(())),
@@ -68,6 +75,11 @@ impl Db {
             log.wait(last, wait).await?;
         }
         let applied = self.apply(claim.epoch(), first, batch);
+        if let Some(installer) = installer
+            && let Some(newest) = self.view.load().memtables().next()
+        {
+            installer.signals.check(newest);
+        }
         claim.complete(applied)
     }
 
@@ -145,14 +157,27 @@ impl Prepared {
 /// not hold back every later batch.
 struct Completion<'a> {
     sequencer: &'a Sequencer,
+    /// Woken when completing reaches the sequence a flush waits for.
+    completed: Option<&'a Notify>,
     claim: Option<Claim>,
 }
 
 impl<'a> Completion<'a> {
-    fn new(sequencer: &'a Sequencer, claim: Claim) -> Self {
+    fn new(sequencer: &'a Sequencer, completed: Option<&'a Notify>, claim: Claim) -> Self {
         Self {
             sequencer,
+            completed,
             claim: Some(claim),
+        }
+    }
+
+    /// Completes the claim, once, waking a waiting flush when it reached its sequence.
+    fn finish(&mut self) {
+        if let Some(claim) = self.claim.take()
+            && self.sequencer.complete(claim)
+            && let Some(completed) = self.completed
+        {
+            completed.notify_one();
         }
     }
 
@@ -172,9 +197,7 @@ impl<'a> Completion<'a> {
     /// returns the batch's last sequence number.
     fn complete(mut self, applied: Result<()>) -> Result<SequenceNumber> {
         let last = self.last();
-        if let Some(claim) = self.claim.take() {
-            self.sequencer.complete(claim);
-        }
+        self.finish();
         applied?;
         SequenceNumber::new(last).map_err(|_| Error::SequenceExhausted)
     }
@@ -182,8 +205,6 @@ impl<'a> Completion<'a> {
 
 impl Drop for Completion<'_> {
     fn drop(&mut self) {
-        if let Some(claim) = self.claim.take() {
-            self.sequencer.complete(claim);
-        }
+        self.finish();
     }
 }

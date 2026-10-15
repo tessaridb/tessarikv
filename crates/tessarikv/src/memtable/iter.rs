@@ -30,7 +30,6 @@ impl<'a> MemtableIter<'a> {
     }
 
     /// Moves to the first version.
-    #[cfg(test)]
     pub(crate) fn seek_to_first(&mut self) {
         self.cursor.seek_to_first();
     }

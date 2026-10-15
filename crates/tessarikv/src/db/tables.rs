@@ -141,7 +141,8 @@ pub(crate) fn lookup(table: &Table, key: &[u8], snapshot: SequenceNumber) -> Res
     })
 }
 
-fn format_error(error: &tessarikv_format::Error, path: Option<&Path>) -> Error {
+/// The engine error for a table the format refused, read from `path` when it came from a file.
+pub(super) fn format_error(error: &tessarikv_format::Error, path: Option<&Path>) -> Error {
     Error::Corruption {
         what: "table",
         path: path.map(Path::to_path_buf),

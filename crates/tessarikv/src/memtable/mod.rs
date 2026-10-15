@@ -25,7 +25,7 @@ use tessarikv_types::{
 
 use crate::{Error, Result};
 
-pub(crate) use iter::{MemtableEntry, MemtableIter};
+pub(crate) use iter::MemtableIter;
 
 /// Orders encoded internal keys: user key ascending, then newest version first.
 pub(crate) struct InternalKeyComparator;
@@ -127,7 +127,6 @@ impl Memtable {
     }
 
     /// Bytes the table occupies, including arena waste; an estimate under concurrent inserts.
-    #[cfg(test)]
     pub(crate) fn approximate_bytes(&self) -> u64 {
         self.entries.allocated_bytes()
     }

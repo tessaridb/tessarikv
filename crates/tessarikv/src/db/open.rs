@@ -1,16 +1,22 @@
-//! Opening a database on storage: its directory, its lock, and the replay of its log.
+//! Opening a database on storage: its directory, its lock, its manifest and table files, and
+//! the replay of its log above what the tables hold.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tessarikv_constants::COMMIT_RING_SLOTS;
+use tessarikv_constants::{COMMIT_RING_SLOTS, LEVELS};
 use tessarikv_sync::Sequencer;
 
 use super::Db;
+use super::installer::{Flusher, Installer, table_path};
 use super::recover::recover;
+use super::tables::open;
+use super::view::{TableFile, View};
 use crate::log::LogWriter;
 use crate::memtable::Memtable;
-use crate::storage::Storage;
+use crate::storage::{Storage, read_all};
+use crate::version::Version;
+use crate::version::manifest::ManifestStore;
 use crate::{DbOptions, Error, Result};
 
 /// The file whose presence marks a directory as holding a database.
@@ -29,43 +35,95 @@ impl Db {
     ) -> Result<Self> {
         let recovery = options.wal_recovery();
         let segment_bytes = options.wal_segment_bytes();
+        let keyspace = options.default_keyspace().clone();
         let opened = {
             let storage = Arc::clone(&storage);
             let path = path.clone();
             tokio::task::spawn_blocking(move || {
                 let lock = prepare(storage.as_ref(), &path, &options)?;
+                let (version, number) = ManifestStore::recover(storage.as_ref(), &path)?
+                    .unwrap_or_else(|| (Version::empty(), 0));
+                let files = restore_tables(storage.as_ref(), &path, &version)?;
                 let table = Memtable::new();
-                let recovered = recover(storage.as_ref(), &path, &table, recovery)?;
-                Ok::<_, Error>((lock, table, recovered))
+                let flushed = version.flushed_sequence();
+                let recovered = recover(storage.as_ref(), &path, &table, recovery, flushed)?;
+                let number = number.checked_add(1).ok_or(Error::SequenceExhausted)?;
+                let manifest = ManifestStore::create(storage, &path, &version, number)?;
+                let last = recovered.last_sequence.max(flushed);
+                Ok::<_, Error>((
+                    lock,
+                    View::recovered(table, files),
+                    recovered,
+                    manifest,
+                    last,
+                ))
             })
             .await
             .map_err(|_| Error::Unsupported {
                 what: "opening a database after its opening task panicked",
             })??
         };
-        let (lock, table, recovered) = opened;
-        let next_sequence = recovered
-            .last_sequence
+        let (lock, view, recovered, manifest, last_sequence) = opened;
+        let next_sequence = last_sequence
             .checked_add(1)
             .ok_or(Error::SequenceExhausted)?;
         let log = LogWriter::start(
-            storage,
-            path,
+            Arc::clone(&storage),
+            path.clone(),
             recovered.next_log_number,
             next_sequence,
             segment_bytes,
             recovered.segments,
         )?;
+        let sequencer = Arc::new(Sequencer::new(last_sequence, COMMIT_RING_SLOTS));
+        let view = Arc::new(arc_swap::ArcSwap::from_pointee(view));
+        let installer = Installer::start(Flusher {
+            storage,
+            dir: path,
+            sequencer: Arc::clone(&sequencer),
+            view: Arc::clone(&view),
+            manifest: Some(manifest),
+            log: log.releaser(),
+            keyspace,
+        });
         Ok(Self {
-            sequencer: Sequencer::new(recovered.last_sequence, COMMIT_RING_SLOTS),
-            view: arc_swap::ArcSwap::from_pointee(super::view::View::new(0, table)),
+            sequencer,
+            view,
             snapshots: tessarikv_sync::SnapshotRegistry::new(),
             #[cfg(test)]
             switching: std::sync::atomic::AtomicBool::new(false),
             log: Some(log),
+            installer: Some(installer),
             _lock: Some(lock),
         })
     }
+}
+
+/// Opens every table file `version` names, newest first, and removes the table files it does
+/// not name: those a crash left between writing a table and naming it in the manifest. Runs on
+/// a blocking thread.
+fn restore_tables(storage: &dyn Storage, dir: &Path, version: &Version) -> Result<Vec<TableFile>> {
+    let mut files = Vec::new();
+    for level in 0..LEVELS {
+        for meta in version.tables(0, level) {
+            let path = table_path(dir, meta.id);
+            let bytes = read_all(storage, &path, "table")?;
+            files.push(TableFile {
+                meta: Arc::clone(meta),
+                table: open(bytes, Some(&path))?,
+            });
+        }
+    }
+    for name in storage.list(dir)? {
+        let named = name
+            .strip_suffix(".sst")
+            .and_then(|stem| stem.parse::<u64>().ok())
+            .map(|id| files.iter().any(|file| file.meta.id == id));
+        if named == Some(false) {
+            storage.remove(&dir.join(&name))?;
+        }
+    }
+    Ok(files)
 }
 
 /// Checks whether a database exists at `path` against `options`, creates one when asked, and

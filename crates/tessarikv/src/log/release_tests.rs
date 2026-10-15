@@ -53,7 +53,7 @@ async fn a_release_removes_the_finished_segments_it_covers_without_another_write
     let storage = FaultStorage::default();
     let log = seven_frames(&storage).await;
     // Segment 2 ends exactly at the released sequence.
-    log.release_through(4);
+    log.releaser().release_through(4);
     removed(&storage, 1).await;
     removed(&storage, 2).await;
     assert!(exists(&storage, 3), "segment 3 holds 5 and 6");
@@ -66,7 +66,7 @@ async fn a_release_removes_the_finished_segments_it_covers_without_another_write
 async fn the_segment_being_written_is_never_removed() {
     let storage = FaultStorage::default();
     let log = seven_frames(&storage).await;
-    log.release_through(100);
+    log.releaser().release_through(100);
     removed(&storage, 3).await;
     log.close().await.expect("closed");
     assert!(!exists(&storage, 1) && !exists(&storage, 2));
@@ -77,8 +77,8 @@ async fn the_segment_being_written_is_never_removed() {
 async fn a_smaller_release_after_a_larger_one_takes_nothing_back() {
     let storage = FaultStorage::default();
     let log = seven_frames(&storage).await;
-    log.release_through(6);
-    log.release_through(2);
+    log.releaser().release_through(6);
+    log.releaser().release_through(2);
     log.close().await.expect("closed");
     for log_number in 1..=3 {
         assert!(
@@ -110,7 +110,7 @@ async fn segments_found_on_storage_are_released_too() {
         },
     ];
     let log = LogWriter::start(files, dir(), 3, 7, 1 << 20, finished).expect("inside a runtime");
-    log.release_through(5);
+    log.releaser().release_through(5);
     removed(&storage, 1).await;
     log.close().await.expect("closed");
     assert!(exists(&storage, 2), "segment 2 holds 6");

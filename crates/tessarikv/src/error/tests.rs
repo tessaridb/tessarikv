@@ -38,6 +38,7 @@ fn samples() -> Vec<Error> {
         Error::Unsupported { what: "x" },
         Error::SequenceExhausted,
         Error::LogFailed,
+        Error::FlushFailed,
         Error::AlreadyExists {
             path: PathBuf::from("db"),
         },
@@ -63,6 +64,7 @@ fn every_variant_maps_to_its_category() {
             ErrorCategory::Validation,
             ErrorCategory::Internal,
             ErrorCategory::Io,
+            ErrorCategory::Io,
             ErrorCategory::Conflict,
             ErrorCategory::ShutDown,
         ]
@@ -87,6 +89,7 @@ fn codes_are_stable_strings() {
             "unsupported",
             "sequence_exhausted",
             "log_failed",
+            "flush_failed",
             "already_exists",
             "closed"
         ]
@@ -100,7 +103,7 @@ fn only_transient_failures_are_retryable() {
         retryable,
         [
             false, false, true, false, false, false, false, false, false, false, false, false,
-            false
+            false, false
         ]
     );
     let interrupted = Error::Io {

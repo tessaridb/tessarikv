@@ -31,6 +31,7 @@ use crate::shim::{AtomicU64, Ordering};
 /// | `switch` | the `fetch_add` that starts the next epoch | wait-free |
 /// | `complete` | the store marking the batch's ring slot ready; the batch becomes visible at the compare-and-swap on `visible` that passes it, by this thread or a later completer | lock-free once the slot is free |
 /// | `visible` | the Acquire load of `visible` | wait-free |
+/// | `watch` | the read-modify-write on `visible` | wait-free |
 ///
 /// Two windows block. A completion waits while its ring slot still holds a batch that started at
 /// least `capacity` sequences earlier and is not yet visible (backpressure on a writer far ahead).
@@ -56,12 +57,22 @@ use crate::shim::{AtomicU64, Ordering};
 /// completed batches to readers, whose Acquire load of `visible` makes everything those writers
 /// did before completing visible to them.
 ///
+/// Watching: one waiter at a time may ask to learn when `visible` reaches a target.
+/// [`Sequencer::watch`] stores the target and then reads `visible` with a read-modify-write; an
+/// advancer reads the target after each compare-and-swap that moves `visible`, and
+/// [`Sequencer::complete`] returns `true` when its advance reached the target. All writes of
+/// `visible` are read-modify-writes, so either the advancer's compare-and-swap comes later in
+/// their order and synchronizes with the watcher's (and sees the target), or the watcher's
+/// read-modify-write comes later and reads the advanced value: a reached target is never missed.
+///
 /// Reclamation: the ring is fixed at construction and freed with the sequencer. A slot is reused
 /// only after its previous batch is visible, and the starts stored in one slot strictly increase,
 /// so a stale slot never matches the sequence being probed.
 pub struct Sequencer {
     next: CachePadded<AtomicU64>,
     visible: CachePadded<AtomicU64>,
+    /// The sequence a waiter wants to learn `visible` reached; [`NO_TARGET`] for none.
+    target: CachePadded<AtomicU64>,
     slots: Box<[Slot]>,
     mask: u64,
 }
@@ -102,6 +113,9 @@ impl Switch {
         self.boundary
     }
 }
+
+/// The target meaning no waiter.
+const NO_TARGET: u64 = u64::MAX;
 
 /// Bits of the counter below the epoch.
 const SEQUENCE_FIELD_BITS: u32 = 57;
@@ -148,6 +162,7 @@ impl Sequencer {
         Self {
             next: CachePadded::new(AtomicU64::new(last.saturating_add(1))),
             visible: CachePadded::new(AtomicU64::new(last)),
+            target: CachePadded::new(AtomicU64::new(NO_TARGET)),
             slots: (0..capacity)
                 .map(|_| Slot {
                     start: AtomicU64::new(0),
@@ -189,6 +204,24 @@ impl Sequencer {
         // Acquire: pairs with the advancing compare-and-swap; the completed batches' effects
         // happen before what the caller reads next.
         self.visible.load(Ordering::Acquire)
+    }
+
+    /// Asks completions to report when `visible` reaches `target` (see the type's
+    /// documentation), replacing any earlier target; returns whether it is reached already. One
+    /// waiter at a time.
+    pub fn watch(&self, target: u64) -> bool {
+        // Relaxed: published by the Release half of the read-modify-write below.
+        self.target.store(target, Ordering::Relaxed);
+        // AcqRel read-modify-write: reads the LATEST `visible`, and joins the chain every
+        // advancing compare-and-swap reads, so an advance after it sees the target.
+        self.visible.fetch_add(0, Ordering::AcqRel) >= target
+    }
+
+    /// Stops reporting a target.
+    pub fn unwatch(&self) {
+        // Relaxed: a completer that still reads the old target reports a spurious reach, which
+        // the waiter tolerates by checking again.
+        self.target.store(NO_TARGET, Ordering::Relaxed);
     }
 
     /// The ring slot for a batch starting at `start`; always present, since the mask keeps the

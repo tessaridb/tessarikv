@@ -8,8 +8,9 @@ use crate::shim::Ordering;
 impl Sequencer {
     /// Marks `claim`'s batch done and advances the visible prefix as far as completed batches
     /// allow. Everything this thread did before the call happens before any read of a `visible`
-    /// value that covers the batch.
-    pub fn complete(&self, claim: Claim) {
+    /// value that covers the batch. Returns `true` when this call moved `visible` to or past the
+    /// watched target (see [`Sequencer::watch`]).
+    pub fn complete(&self, claim: Claim) -> bool {
         let capacity = self.mask.saturating_add(1);
         let backoff = Backoff::new();
         // Acquire: pairs with the advance that made the slot's previous batch visible.
@@ -22,7 +23,7 @@ impl Sequencer {
             wait(&backoff);
         }
         let Some(slot) = self.slot(claim.first) else {
-            return;
+            return false;
         };
         // Relaxed: read only after the Acquire load of `start` that sees the store below.
         slot.end.store(claim.last, Ordering::Relaxed);
@@ -32,20 +33,22 @@ impl Sequencer {
         // compare-and-swap reads this write and so sees the slot stored above, or this thread
         // reads that advancer's value and probes the slot itself; no completion is left behind.
         let visible = self.visible.fetch_add(0, Ordering::AcqRel);
-        self.advance(visible);
+        self.advance(visible)
     }
 
-    /// Moves `visible` over every completed batch that directly follows it.
-    fn advance(&self, mut visible: u64) {
+    /// Moves `visible` over every completed batch that directly follows it; returns whether a
+    /// move reached the watched target.
+    fn advance(&self, mut visible: u64) -> bool {
+        let mut reached = false;
         loop {
             let probe = visible.saturating_add(1);
             let Some(slot) = self.slot(probe) else {
-                return;
+                return reached;
             };
             // Acquire: pairs with the slot's Release store; the batch's writes and `end` are
             // then visible to this thread.
             if slot.start.load(Ordering::Acquire) != probe {
-                return;
+                return reached;
             }
             // Relaxed: ordered after the store it reads by the Acquire load of `start` above.
             let end = slot.end.load(Ordering::Relaxed);
@@ -58,7 +61,12 @@ impl Sequencer {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => end,
+                Ok(_) => {
+                    // Relaxed: a target stored before a watcher's read-modify-write that this
+                    // compare-and-swap follows is ordered before it by that chain.
+                    reached |= self.target.load(Ordering::Relaxed) <= end;
+                    end
+                }
                 Err(current) => current,
             };
         }

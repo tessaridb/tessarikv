@@ -3,6 +3,7 @@
 use tessarikv_constants as limits;
 
 use super::bounds::check_range;
+use super::keyspace::KeyspaceOptions;
 use crate::{Error, Result};
 
 /// Where the database keeps its files.
@@ -42,6 +43,7 @@ pub struct DbOptions {
     wal_recovery: WalRecovery,
     block_cache_bytes: u64,
     background_threads: u32,
+    default_keyspace: KeyspaceOptions,
 }
 
 impl Default for DbOptions {
@@ -54,6 +56,7 @@ impl Default for DbOptions {
             wal_recovery: WalRecovery::PointInTime,
             block_cache_bytes: limits::DEFAULT_BLOCK_CACHE_BYTES,
             background_threads: limits::DEFAULT_BACKGROUND_THREADS,
+            default_keyspace: KeyspaceOptions::default(),
         }
     }
 }
@@ -115,6 +118,12 @@ impl DbOptions {
         self.block_cache_bytes
     }
 
+    /// Options of the default keyspace: its in-memory table size and the tables it flushes.
+    #[must_use]
+    pub const fn default_keyspace(&self) -> &KeyspaceOptions {
+        &self.default_keyspace
+    }
+
     /// Threads running flushes and compactions.
     #[must_use]
     pub const fn background_threads(&self) -> u32 {
@@ -169,6 +178,12 @@ impl DbOptionsBuilder {
     /// Sets [`DbOptions::background_threads`].
     pub const fn background_threads(mut self, value: u32) -> Self {
         self.options.background_threads = value;
+        self
+    }
+
+    /// Sets [`DbOptions::default_keyspace`].
+    pub fn default_keyspace(mut self, value: KeyspaceOptions) -> Self {
+        self.options.default_keyspace = value;
         self
     }
 
