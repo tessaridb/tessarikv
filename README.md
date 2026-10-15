@@ -15,8 +15,9 @@ database is reopened. Underneath it:
 - an append-only byte buffer with one writer and any number of concurrent readers, and an
   insert-only lock-free skiplist for the in-memory table, and a lock-free sequencer whose visible
   watermark covers only completed commits, all model-checked with `loom` (`tessarikv-sync`);
-- the write batch: an atomic, ordered list of puts and deletes with a versioned, bounded encoding,
-  and the checksummed log frame the write-ahead log will be made of (`tessarikv-format`);
+- the write batch, the checksummed log frame, and the table file: sorted data blocks with shared
+  key prefixes, an index, a cache-line bloom filter, optional LZ4, and a checksum on every block
+  verified on every read (`tessarikv-format`);
 - typed, validated options for the database, for each keyspace, and for each read and write;
 - a file-system abstraction with an operating-system backend and a fully in-memory one;
 - the engine's error type, with stable codes and categories.

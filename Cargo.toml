@@ -20,6 +20,7 @@ tessarikv-sync = { path = "crates/tessarikv-sync", version = "0.1.0" }
 tessarikv-format = { path = "crates/tessarikv-format", version = "0.1.0" }
 thiserror = "2.0.21"
 crc32c = "0.6.8"
+lz4_flex = { version = "0.14.0", default-features = false, features = ["safe-encode", "safe-decode", "std"] }
 crossbeam-utils = "0.8.23"
 rustix = { version = "1.1.5", features = ["fs"] }
 proptest = "1.12.0"

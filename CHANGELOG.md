@@ -19,6 +19,9 @@ All notable changes to this project are documented here. The format follows
   completed batches.
 - `WriteBatch`: an atomic, ordered list of puts and deletes across keyspaces, with a versioned encoding whose decoder
   refuses truncated, oversized or malformed input.
+- Table files: `TableBuilder` writes data blocks, a bloom filter, an index, a properties block and a versioned footer,
+  each block sealed with a CRC-32C and optionally LZ4-compressed; `Table` opens one and `TableIter` seeks and walks it,
+  stopping with an error on a damaged block.
 - Bloom filter blocked by cache line: one line per lookup, no false negatives, about 1 % false positives at ten bits
   per key; a filter whose size or probe count does not add up is refused.
 - Table block format: sorted entries with shared key prefixes and restart points, a builder that refuses keys out of

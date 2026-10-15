@@ -17,7 +17,7 @@ fn build(entries: &BTreeMap<Vec<u8>, Vec<u8>>, interval: usize) -> Block {
     Block::new(builder.finish(), bytewise).expect("a built block decodes")
 }
 
-fn collect(iter: &mut BlockIter<'_>) -> Vec<(Vec<u8>, Vec<u8>)> {
+fn collect(iter: &mut BlockIter) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = Vec::new();
     while iter.valid() {
         out.push((iter.key().to_vec(), iter.value().to_vec()));

@@ -23,6 +23,7 @@ mod iter;
 mod tests;
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::varint;
@@ -123,10 +124,10 @@ impl BlockBuilder {
     }
 }
 
-/// A decoded block, ready to be searched.
+/// A decoded block, ready to be searched. Cloning it shares its bytes.
 #[derive(Debug, Clone)]
 pub struct Block {
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     /// Where the entries end and the restart array begins.
     entries_end: usize,
     restart_count: usize,
@@ -181,16 +182,17 @@ impl Block {
             return Err(malformed("the first restart point is not the first entry"));
         }
         Ok(Self {
-            bytes,
+            bytes: bytes.into(),
             entries_end,
             restart_count,
             compare,
         })
     }
 
-    /// An iterator over the block's entries, positioned nowhere until a seek.
-    pub fn iter(&self) -> BlockIter<'_> {
-        BlockIter::new(self)
+    /// An iterator over the block's entries, positioned nowhere until a seek. It shares the
+    /// block's bytes, so it may outlive this handle.
+    pub fn iter(&self) -> BlockIter {
+        BlockIter::new(self.clone())
     }
 
     /// The offset of restart point `index`.

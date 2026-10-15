@@ -10,11 +10,11 @@ use crate::varint;
 /// A position in a [`Block`]: on an entry, or past the end.
 ///
 /// The current key is rebuilt in a buffer the iterator owns, because an entry stores only the
-/// suffix that differs from the previous key; the value is borrowed from the block. A damaged
+/// suffix that differs from the previous key; the value is read in place from the block. A damaged
 /// entry ends the iteration, and [`BlockIter::status`] then reports why.
 #[derive(Debug)]
-pub struct BlockIter<'a> {
-    block: &'a Block,
+pub struct BlockIter {
+    block: Block,
     /// Where the entry after the current one starts.
     next: usize,
     key: Vec<u8>,
@@ -23,8 +23,8 @@ pub struct BlockIter<'a> {
     error: Option<Error>,
 }
 
-impl<'a> BlockIter<'a> {
-    pub(super) fn new(block: &'a Block) -> Self {
+impl BlockIter {
+    pub(super) fn new(block: Block) -> Self {
         Self {
             block,
             next: 0,
@@ -46,7 +46,7 @@ impl<'a> BlockIter<'a> {
     }
 
     /// The current value; empty when not on an entry.
-    pub fn value(&self) -> &'a [u8] {
+    pub fn value(&self) -> &[u8] {
         if self.valid {
             self.block.bytes.get(self.value.clone()).unwrap_or_default()
         } else {
