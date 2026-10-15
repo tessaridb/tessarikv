@@ -212,3 +212,35 @@ async fn opening_respects_create_if_missing_and_error_if_exists() {
         Err(Error::AlreadyExists { .. })
     ));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_reports_each_segment_with_the_last_sequence_it_holds() {
+    let storage = FaultStorage::default();
+    let db = open(&storage, options()).await.expect("opened");
+    for key in ["a", "b"] {
+        db.write(&put(key, "1"), &write_options(Durability::Buffered))
+            .await
+            .expect("written");
+    }
+    db.close().await.expect("closed");
+    let db = open(&storage, options()).await.expect("reopened");
+    db.write(&put("c", "1"), &write_options(Durability::Buffered))
+        .await
+        .expect("written");
+    db.close().await.expect("closed");
+
+    let recovered = super::recover::recover(
+        &storage,
+        Path::new(PATH),
+        &crate::memtable::Memtable::new(),
+        WalRecovery::PointInTime,
+    )
+    .expect("recovered");
+    let found: Vec<(u64, u64)> = recovered
+        .segments
+        .iter()
+        .map(|segment| (segment.log_number, segment.last))
+        .collect();
+    assert_eq!(found, [(1, 2), (2, 3)]);
+    assert_eq!(recovered.next_log_number, 3);
+}

@@ -16,7 +16,7 @@ use std::path::Path;
 use tessarikv_format::{EndKind, FrameReader, LogRead, WriteBatch};
 
 use super::write::apply;
-use crate::log::segment_path;
+use crate::log::{FinishedSegment, segment_path};
 use crate::memtable::Memtable;
 use crate::storage::{Storage, read_all};
 use crate::{Error, Result, WalRecovery};
@@ -30,6 +30,8 @@ pub(super) struct Recovered {
     pub(super) last_sequence: u64,
     /// The log number for the next segment.
     pub(super) next_log_number: u64,
+    /// The segments left in place, in log-number order, with the last sequence each holds.
+    pub(super) segments: Vec<FinishedSegment>,
 }
 
 /// Replays the log in `dir` into `table`. Runs on a blocking thread.
@@ -45,6 +47,7 @@ pub(super) fn recover(
         None => 1,
     };
     let mut last_sequence = 0;
+    let mut kept = Vec::with_capacity(segments.len());
     for (index, &log_number) in segments.iter().enumerate() {
         let path = segment_path(dir, log_number);
         let bytes = read_all(storage, &path, "write-ahead log")?;
@@ -57,6 +60,10 @@ pub(super) fn recover(
                 LogRead::End(end) => break end,
             }
         };
+        kept.push(FinishedSegment {
+            log_number,
+            last: last_sequence,
+        });
         if end.kind == EndKind::Clean {
             continue;
         }
@@ -77,6 +84,7 @@ pub(super) fn recover(
     Ok(Recovered {
         last_sequence,
         next_log_number,
+        segments: kept,
     })
 }
 

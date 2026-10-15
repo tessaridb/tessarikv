@@ -54,6 +54,7 @@ impl Db {
             recovered.next_log_number,
             next_sequence,
             segment_bytes,
+            recovered.segments,
         )?;
         Ok(Self {
             sequencer: Sequencer::new(recovered.last_sequence, COMMIT_RING_SLOTS),

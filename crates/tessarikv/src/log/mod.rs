@@ -17,11 +17,18 @@
 //! stops the log for good ([`Error::LogFailed`]): after a failed sync the operating system may
 //! have dropped the unsynced pages, so retrying could report data durable that is gone, and the
 //! only safe recovery is to reopen and replay the log from storage.
+//!
+//! Once every frame up to a sequence number is held in a table file that a synced manifest
+//! names, [`LogWriter::release_through`] lets the log remove the finished segments that hold
+//! nothing later. The segment being written is never removed.
 
+mod segments;
 mod writer;
 
 #[cfg(test)]
 pub(crate) mod fault;
+#[cfg(test)]
+mod release_tests;
 #[cfg(test)]
 mod tests;
 
@@ -36,11 +43,21 @@ use tokio::task::JoinHandle;
 use crate::storage::Storage;
 use crate::{Error, Result};
 
-use writer::{Progress, Writer};
+use writer::{Progress, Released, Writer};
 
 /// The file of segment `log_number` in `dir`.
 pub(crate) fn segment_path(dir: &Path, log_number: u64) -> PathBuf {
     dir.join(format!("{log_number:020}.log"))
+}
+
+/// A segment no longer written to, and the last sequence number its frames carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FinishedSegment {
+    /// The segment's log number.
+    pub(crate) log_number: u64,
+    /// The last sequence number of its last frame; a segment without frames carries the last
+    /// sequence of the segments before it.
+    pub(crate) last: u64,
 }
 
 /// A frame ready to be logged: header space, then the payload, with the payload's checksum.
@@ -135,6 +152,8 @@ impl Slot<'_> {
 pub(crate) struct LogWriter {
     entries: mpsc::Sender<Entry>,
     progress: watch::Receiver<Progress>,
+    #[cfg(test)] // Read only by `release_through` until flushes release what they cover.
+    released: Arc<Released>,
     task: JoinHandle<Result<()>>,
 }
 
@@ -142,6 +161,8 @@ impl LogWriter {
     /// Starts the log writer task on the current tokio runtime. Its first segment is
     /// `log_number` in `dir`, created when the first frame arrives; it expects the first entry
     /// at sequence `next_sequence`, and closes a segment before it grows past `segment_bytes`.
+    /// `finished` lists the segments already in `dir`, in log-number order, so they are removed
+    /// once released.
     ///
     /// # Errors
     ///
@@ -152,17 +173,29 @@ impl LogWriter {
         log_number: u64,
         next_sequence: u64,
         segment_bytes: u64,
+        finished: Vec<FinishedSegment>,
     ) -> Result<Self> {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Unsupported {
             what: "a database outside a tokio runtime",
         })?;
         let (entries, receiver) = mpsc::channel(LOG_QUEUE_ENTRIES);
         let (publisher, progress) = watch::channel(Progress::new(next_sequence));
-        let writer = Writer::new(storage, dir, log_number, next_sequence, segment_bytes);
+        let released = Arc::new(Released::default());
+        let writer = Writer::new(
+            storage,
+            dir,
+            log_number,
+            next_sequence,
+            segment_bytes,
+            finished,
+            Arc::clone(&released),
+        );
         let task = runtime.spawn(writer.run(receiver, publisher));
         Ok(Self {
             entries,
             progress,
+            #[cfg(test)]
+            released,
             task,
         })
     }
@@ -210,6 +243,20 @@ impl LogWriter {
             Some(wait) => self.wait(last, wait).await,
             None => Ok(()),
         }
+    }
+
+    /// Lets the log remove every finished segment whose frames all carry sequence numbers at
+    /// or below `sequence`; called once a table holding them is named by a synced manifest. The
+    /// removal happens on the log writer's next round, and at the latest when the log closes. A
+    /// smaller `sequence` than one already released changes nothing.
+    #[cfg(test)] // Test-only until flushes release what they cover.
+    pub(crate) fn release_through(&self, sequence: u64) {
+        // Release: everything this thread did before (the table and manifest syncs) happens
+        // before the removal; pairs with the Acquire load in `Writer::released_through`.
+        self.released
+            .through
+            .fetch_max(sequence, std::sync::atomic::Ordering::Release);
+        self.released.notice.notify_one();
     }
 
     /// Stops accepting records, writes and syncs every record already handed over, and waits

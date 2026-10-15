@@ -7,34 +7,34 @@ use tessarikv_format::{FRAME_HEADER_BYTES, FrameReader, LogRead};
 use super::fault::FaultStorage;
 use super::*;
 
-const DIR: &str = "/db/log";
+pub(super) const DIR: &str = "/db/log";
 
-fn dir() -> PathBuf {
+pub(super) fn dir() -> PathBuf {
     PathBuf::from(DIR)
 }
 
 /// A distinct payload for sequence `sequence`.
-fn payload(sequence: u64) -> Vec<u8> {
+pub(super) fn payload(sequence: u64) -> Vec<u8> {
     format!("batch at {sequence}").into_bytes()
 }
 
 /// A prepared frame carrying `payload`, its header left for the log writer.
-fn frame(payload: &[u8]) -> Frame {
+pub(super) fn frame(payload: &[u8]) -> Frame {
     let mut bytes = vec![0; FRAME_HEADER_BYTES];
     bytes.extend_from_slice(payload);
     Frame::new(bytes).expect("test payloads are within the limit")
 }
 
 /// Appends through `log`, failing the test instead of hanging when the append never returns.
-async fn append(log: &LogWriter, first: u64, last: u64, record: Record) -> Result<()> {
+pub(super) async fn append(log: &LogWriter, first: u64, last: u64, record: Record) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(10), log.append(first, last, record))
         .await
         .expect("the append returns")
 }
 
-fn start(storage: &FaultStorage, segment_bytes: u64) -> LogWriter {
+pub(super) fn start(storage: &FaultStorage, segment_bytes: u64) -> LogWriter {
     let files: Arc<dyn crate::storage::Storage> = Arc::new(storage.clone());
-    LogWriter::start(files, dir(), 1, 1, segment_bytes).expect("inside a runtime")
+    LogWriter::start(files, dir(), 1, 1, segment_bytes, Vec::new()).expect("inside a runtime")
 }
 
 /// The payloads of one segment and whether it ended cleanly.
