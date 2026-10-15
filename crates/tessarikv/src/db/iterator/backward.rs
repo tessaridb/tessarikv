@@ -18,13 +18,14 @@ impl DbIterator<'_> {
     pub async fn seek_to_last(&mut self) -> Result<()> {
         match self.upper.take() {
             Some(upper) => {
-                let moved = self.before(&upper);
+                let moved = self.before(&upper).await;
                 self.upper = Some(upper);
                 moved
             }
             None => {
-                self.versions.seek_to_last();
-                self.settle_backward()
+                self.valid = false;
+                self.versions.seek_to_last().await;
+                self.settle_backward().await
             }
         }
     }
@@ -45,8 +46,9 @@ impl DbIterator<'_> {
             Trailer::new(SequenceNumber::ZERO, ValueKind::Delete),
             &mut target,
         );
-        self.versions.seek_for_prev(&target);
-        self.settle_backward()
+        self.valid = false;
+        self.versions.seek_for_prev(&target).await;
+        self.settle_backward().await
     }
 
     /// Moves to the previous key; the iterator is not valid before the first one or the lower
@@ -61,23 +63,24 @@ impl DbIterator<'_> {
         }
         if self.backward {
             // The merge already stands before every version of the current key.
-            return self.settle_backward();
+            return self.settle_backward().await;
         }
         let key = std::mem::take(&mut self.key);
-        self.before(&key)
+        self.before(&key).await
     }
 
     /// Positions before every version of `key` and walks back to a live key.
-    fn before(&mut self, key: &[u8]) -> Result<()> {
+    async fn before(&mut self, key: &[u8]) -> Result<()> {
         // The greatest trailer: every version of `key` sorts after it.
         let mut target = Vec::new();
         encode_internal(key, seek_trailer(SequenceNumber::MAX), &mut target);
-        self.versions.seek_for_prev(&target);
-        self.settle_backward()
+        self.valid = false;
+        self.versions.seek_for_prev(&target).await;
+        self.settle_backward().await
     }
 
     /// Walks back to the greatest live key at the snapshot, not below the lower bound.
-    fn settle_backward(&mut self) -> Result<()> {
+    async fn settle_backward(&mut self) -> Result<()> {
         self.backward = true;
         self.valid = false;
         while let Some(version) = self.versions.entry() {
@@ -103,7 +106,7 @@ impl DbIterator<'_> {
                         self.saved.extend_from_slice(version.value);
                     }
                 }
-                self.versions.prev();
+                self.versions.prev().await;
             }
             if live {
                 self.valid = true;

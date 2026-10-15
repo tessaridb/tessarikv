@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use tessarikv_format::{Compression, ManifestEdit, TableMeta, TableOptions};
 
-use super::tables::{build, open};
+use super::block_cache::BlockCache;
+use super::table_blocks::open_table;
+use super::tables::build;
 use super::view::TableFile;
 use crate::memtable::Memtable;
 use crate::storage::Storage;
@@ -19,6 +21,8 @@ pub(super) struct Job {
     pub(super) options: TableOptions,
     pub(super) table: Arc<Memtable>,
     pub(super) flushed: u64,
+    /// The cache the new table file reads its data blocks through.
+    pub(super) cache: Arc<BlockCache>,
 }
 
 impl Job {
@@ -57,9 +61,18 @@ impl Job {
         edit.next_file = Some(id.checked_add(1).ok_or(Error::SequenceExhausted)?);
         edit.added.push(meta.clone());
         manifest.append(&edit)?;
+        // The metadata comes from the bytes just written; data blocks from the file.
+        let (table, blocks) = open_table(
+            self.storage.as_ref(),
+            &path,
+            id,
+            &self.cache,
+            Some(&built.bytes),
+        )?;
         Ok(Some(TableFile {
             meta: Arc::new(meta),
-            table: open(built.bytes, Some(&path))?,
+            table,
+            blocks,
         }))
     }
 }

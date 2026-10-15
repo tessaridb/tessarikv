@@ -129,6 +129,9 @@ pub enum Error {
     /// from the manifest and the log.
     #[error("a flush failed to write its table or the manifest; reopen the database")]
     FlushFailed,
+    /// The thread reading a table block stopped without an answer. Nothing was changed.
+    #[error("a table block read stopped without an answer")]
+    ReadFailed,
     /// The write asked not to wait while in-memory tables wait for flushes, and they do: the
     /// active table is full and no more tables may be frozen. Retry later.
     #[error("writes are stalled: {reason}")]
@@ -161,7 +164,9 @@ impl Error {
             Self::InvalidOptions { .. } => ErrorCategory::Validation,
             Self::Corruption { .. } | Self::ShortRead { .. } => ErrorCategory::Corruption,
             Self::UnknownKeyspace { .. } | Self::Unsupported { .. } => ErrorCategory::Validation,
-            Self::Memtable { .. } | Self::SequenceExhausted => ErrorCategory::Internal,
+            Self::Memtable { .. } | Self::SequenceExhausted | Self::ReadFailed => {
+                ErrorCategory::Internal
+            }
             Self::LogFailed | Self::FlushFailed => ErrorCategory::Io,
             Self::WriteStalled { .. } => ErrorCategory::Unavailable,
             Self::AlreadyExists { .. } => ErrorCategory::Conflict,
@@ -185,6 +190,7 @@ impl Error {
             Self::Memtable { .. } => "memtable",
             Self::LogFailed => "log_failed",
             Self::FlushFailed => "flush_failed",
+            Self::ReadFailed => "read_failed",
             Self::WriteStalled { .. } => "write_stalled",
             Self::AlreadyExists { .. } => "already_exists",
             Self::Closed => "closed",
@@ -210,6 +216,7 @@ impl Error {
             | Self::Memtable { .. }
             | Self::LogFailed
             | Self::FlushFailed
+            | Self::ReadFailed
             | Self::AlreadyExists { .. }
             | Self::Closed => false,
         }

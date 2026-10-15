@@ -3,7 +3,8 @@
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::Db;
-use super::merge::{MergedVersions, Source, TableVersions};
+use super::merge::{MergedVersions, Source};
+use super::table_versions::TableVersions;
 use super::tables::{TableLookup, lookup};
 use super::view::View;
 use crate::memtable::Lookup;
@@ -29,20 +30,24 @@ impl Db {
         &self,
         keyspace: KeyspaceId,
         key: &[u8],
-        _options: &ReadOptions,
+        options: &ReadOptions,
     ) -> Result<Option<Vec<u8>>> {
-        self.get_at(keyspace, key, self.visible_sequence()?)
+        self.get_at(keyspace, key, self.visible_sequence()?, options)
+            .await
     }
 
     /// The value of `key` in `keyspace` at `snapshot`.
-    pub(super) fn get_at(
+    pub(super) async fn get_at(
         &self,
         keyspace: KeyspaceId,
         key: &[u8],
         snapshot: SequenceNumber,
+        options: &ReadOptions,
     ) -> Result<Option<Vec<u8>>> {
         Self::check_keyspace(keyspace)?;
-        get_in(&self.view.load(), keyspace, key, snapshot)
+        // A guard, not a shared count: holding it costs other readers nothing.
+        let view = self.view.load();
+        get_in(&view, keyspace, key, snapshot, options.fill_cache).await
     }
 
     /// Up to `limit` live entries of `keyspace` with keys in `[start, end)` (unbounded above
@@ -58,39 +63,47 @@ impl Db {
         start: &[u8],
         end: Option<&[u8]>,
         limit: usize,
-        _options: &ReadOptions,
+        options: &ReadOptions,
     ) -> Result<ScanPage> {
-        self.scan_at(keyspace, start, end, limit, self.visible_sequence()?)
+        let snapshot = self.visible_sequence()?;
+        self.scan_at(keyspace, start, end, limit, snapshot, options)
+            .await
     }
 
     /// A page of `keyspace` at `snapshot`, as [`Db::scan`] returns one.
-    pub(super) fn scan_at(
+    pub(super) async fn scan_at(
         &self,
         keyspace: KeyspaceId,
         start: &[u8],
         end: Option<&[u8]>,
         limit: usize,
         snapshot: SequenceNumber,
+        options: &ReadOptions,
     ) -> Result<ScanPage> {
         Self::check_keyspace(keyspace)?;
-        scan_in(&self.view.load(), keyspace, start, end, limit, snapshot)
+        let view = self.view.load();
+        let range = ScanRange { start, end, limit };
+        scan_in(&view, keyspace, range, snapshot, options.fill_cache).await
     }
 }
 
-/// The value of `key` in `keyspace` of `view` at `snapshot`.
+/// The value of `key` in `keyspace` of `view` at `snapshot`, keeping the blocks it reads in the
+/// cache unless `fill_cache` is false.
 ///
 /// # Errors
 ///
-/// [`crate::Error::Corruption`] when a table file on the way is damaged.
-pub(super) fn get_in(
+/// [`crate::Error::Corruption`] when a table file on the way is damaged, and the storage's error
+/// when reading one fails.
+pub(super) async fn get_in(
     view: &View,
     keyspace: KeyspaceId,
     key: &[u8],
     snapshot: SequenceNumber,
+    fill_cache: bool,
 ) -> Result<Option<Vec<u8>>> {
     let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
     if !fragments.is_empty() {
-        return get_merged(view, keyspace, key, snapshot, &fragments);
+        return get_merged(view, keyspace, key, snapshot, &fragments, fill_cache).await;
     }
     // Newest first, in-memory tables before table files: the first that decides the key
     // answers for it.
@@ -102,7 +115,7 @@ pub(super) fn get_in(
         }
     }
     for file in view.files(keyspace.get()) {
-        match lookup(&file.table, key, snapshot)? {
+        match lookup(file, key, snapshot, fill_cache).await? {
             TableLookup::Value(value) => return Ok(Some(value)),
             TableLookup::Deleted => return Ok(None),
             TableLookup::Absent => {}
@@ -111,23 +124,33 @@ pub(super) fn get_in(
     Ok(None)
 }
 
-/// A page of `keyspace` of `view` at `snapshot`, as [`Db::scan`] returns one.
+/// Which keys a scan page lists: up to `limit` of those in `[start, end)`, unbounded above when
+/// `end` is `None`.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScanRange<'a> {
+    pub(super) start: &'a [u8],
+    pub(super) end: Option<&'a [u8]>,
+    pub(super) limit: usize,
+}
+
+/// A page of `keyspace` of `view` at `snapshot`, as [`Db::scan`] returns one, keeping the blocks
+/// it reads in the cache unless `fill_cache` is false.
 ///
 /// # Errors
 ///
-/// [`crate::Error::Corruption`] when a table file on the way is damaged.
-pub(super) fn scan_in(
+/// As [`get_in`].
+pub(super) async fn scan_in(
     view: &View,
     keyspace: KeyspaceId,
-    start: &[u8],
-    end: Option<&[u8]>,
-    limit: usize,
+    range: ScanRange<'_>,
     snapshot: SequenceNumber,
+    fill_cache: bool,
 ) -> Result<ScanPage> {
+    let ScanRange { start, end, limit } = range;
     let mut page = ScanPage::default();
     let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
-    let mut versions = MergedVersions::new(sources(view, keyspace));
-    versions.seek(start, snapshot);
+    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache));
+    versions.seek(start, snapshot).await;
     // The user key last decided, kept in one buffer reused across keys.
     let mut decided: Option<Vec<u8>> = None;
     while let Some(version) = versions.entry() {
@@ -151,34 +174,35 @@ pub(super) fn scan_in(
                     .push((version.user_key.to_vec(), version.value.to_vec()));
             }
         }
-        versions.next();
+        versions.next().await;
     }
     versions.finish()?;
     Ok(page)
 }
 
 /// Every source of `keyspace` in `view`, borrowed: in-memory tables, then table files.
-fn sources(view: &View, keyspace: KeyspaceId) -> Vec<Source<'_>> {
+fn sources(view: &View, keyspace: KeyspaceId, fill_cache: bool) -> Vec<Source<'_>> {
     view.memtables()
         .map(|table| Source::Memtable(table.iter()))
         .chain(
             view.files(keyspace.get())
-                .map(|file| Source::Table(Box::new(TableVersions::new(file.table.iter())))),
+                .map(|file| Source::Table(Box::new(TableVersions::new(file, fill_cache)))),
         )
         .collect()
 }
 
 /// The value of `key` when range deletes may hide it: the newest version at the snapshot,
 /// unless a fragment with a higher sequence covers it.
-fn get_merged(
+async fn get_merged(
     view: &View,
     keyspace: KeyspaceId,
     key: &[u8],
     snapshot: SequenceNumber,
     fragments: &Fragments,
+    fill_cache: bool,
 ) -> Result<Option<Vec<u8>>> {
-    let mut versions = MergedVersions::new(sources(view, keyspace));
-    versions.seek(key, snapshot);
+    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache));
+    versions.seek(key, snapshot).await;
     let value = versions
         .entry()
         .filter(|version| {

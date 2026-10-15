@@ -42,14 +42,36 @@ const FOOTER_CHECKSUM_AT: usize = 52;
 /// The most bytes LZ4 can expand one input byte into.
 const LZ4_MAX_RATIO: usize = 255;
 
-/// Where a block is in the file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) struct BlockHandle {
+/// Where a block is in a table file: its offset and its size, seal included. A reader that
+/// holds the file reads exactly these bytes and passes them to [`super::unseal_block`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct BlockHandle {
     pub(super) offset: u64,
     pub(super) size: u64,
 }
 
 impl BlockHandle {
+    /// Where the block starts in the file.
+    pub fn offset(self) -> u64 {
+        self.offset
+    }
+
+    /// Bytes of the block in the file, its seal included.
+    pub fn size(self) -> u64 {
+        self.size
+    }
+
+    /// Where the block ends in the file, checked against a file of `len` bytes.
+    pub(super) fn end_within(self, len: u64) -> Result<u64> {
+        self.offset
+            .checked_add(self.size)
+            .filter(|end| *end <= len)
+            .ok_or(Error::Malformed {
+                what: "table block",
+                reason: "handle points past the file",
+            })
+    }
+
     pub(super) fn encode(self) -> [u8; HANDLE_BYTES] {
         let mut bytes = [0; HANDLE_BYTES];
         bytes[..8].copy_from_slice(&self.offset.to_le_bytes());
@@ -189,17 +211,27 @@ pub(super) fn write_block(
 
 /// The verified, uncompressed payload of the block at `handle` in `file`.
 pub(super) fn read_block(file: &[u8], handle: BlockHandle) -> Result<Vec<u8>> {
+    let len = u64::try_from(file.len()).unwrap_or(u64::MAX);
+    let end = handle.end_within(len)?;
+    let sealed = usize::try_from(handle.offset)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .and_then(|(start, end)| file.get(start..end))
+        .ok_or(Error::Malformed {
+            what: "table block",
+            reason: "handle points past the file",
+        })?;
+    unseal(sealed)
+}
+
+/// The verified, uncompressed payload of a sealed block: its stored bytes and its seal.
+pub(super) fn unseal(sealed: &[u8]) -> Result<Vec<u8>> {
     let corrupt = |reason| Error::Malformed {
         what: "table block",
         reason,
     };
-    let start = usize::try_from(handle.offset).map_err(|_| corrupt("offset"))?;
-    let size = usize::try_from(handle.size).map_err(|_| corrupt("size"))?;
-    let sealed = start
-        .checked_add(size)
-        .and_then(|end| file.get(start..end))
-        .ok_or(corrupt("handle points past the file"))?;
-    let stored_len = size
+    let stored_len = sealed
+        .len()
         .checked_sub(SEAL_BYTES)
         .ok_or(corrupt("shorter than its seal"))?;
     let (stored, seal) = sealed.split_at(stored_len);

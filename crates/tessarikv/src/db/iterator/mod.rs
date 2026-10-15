@@ -8,8 +8,9 @@ use std::sync::Arc;
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::Db;
-use super::merge::{MergedVersions, Source, TableVersions};
+use super::merge::{MergedVersions, Source};
 use super::snapshot::Snapshot;
+use super::table_versions::TableVersions;
 use super::view::View;
 use crate::memtable::MemtableCursor;
 use crate::tombstones::Fragments;
@@ -23,7 +24,9 @@ use crate::{ReadOptions, Result};
 ///
 /// It reads the in-memory tables and table files of the moment it was made and keeps them
 /// alive, so later writes and flushes change nothing it shows; holding one for long keeps
-/// their memory. It starts unpositioned: call a seek first.
+/// their memory. A move that needs a table file block the cache does not hold reads it from
+/// storage on a blocking thread. It starts unpositioned: call a seek first. A move whose future
+/// is dropped before it finishes leaves the iterator not valid: seek again before using it.
 ///
 /// # Example
 ///
@@ -103,10 +106,10 @@ impl<'a> DbIterator<'a> {
         let sources = view
             .shared_memtables()
             .map(|table| Source::Shared(MemtableCursor::new(Arc::clone(table))))
-            .chain(
-                view.files(keyspace.get())
-                    .map(|file| Source::Table(Box::new(TableVersions::new(file.table.iter())))),
-            )
+            .chain(view.files(keyspace.get()).map(|file| {
+                let versions = TableVersions::new(file, options.fill_cache);
+                Source::Table(Box::new(versions))
+            }))
             .collect();
         Ok(Self {
             versions: MergedVersions::new(sources),
@@ -129,7 +132,8 @@ impl<'a> DbIterator<'a> {
 
     /// The current key; empty when not valid.
     pub fn key(&self) -> &[u8] {
-        &self.key
+        // A move dropped halfway may leave a key behind; only a valid iterator shows one.
+        if self.valid { &self.key } else { &[] }
     }
 
     /// The current value; empty when not valid.
@@ -151,7 +155,7 @@ impl<'a> DbIterator<'a> {
     /// then not valid.
     pub async fn seek_to_first(&mut self) -> Result<()> {
         let lower = self.lower.take();
-        let moved = self.position_at(lower.as_deref().unwrap_or_default());
+        let moved = self.position_at(lower.as_deref().unwrap_or_default()).await;
         self.lower = lower;
         moved
     }
@@ -167,7 +171,7 @@ impl<'a> DbIterator<'a> {
             Some(lower) if lower > key => lower,
             _ => key,
         };
-        let moved = self.position_at(start);
+        let moved = self.position_at(start).await;
         self.lower = lower;
         moved
     }
@@ -184,25 +188,28 @@ impl<'a> DbIterator<'a> {
         if self.backward {
             // Turning around: back onto the current key, walking forward.
             let key = std::mem::take(&mut self.key);
-            self.position_at(&key)?;
+            self.position_at(&key).await?;
             if !self.valid {
                 return Ok(());
             }
         }
-        self.versions.next();
-        self.settle(true)
+        // Not valid until the move finishes, so a move dropped halfway leaves nothing to show.
+        self.valid = false;
+        self.versions.next().await;
+        self.settle(true).await
     }
 
-    fn position_at(&mut self, start: &[u8]) -> Result<()> {
+    async fn position_at(&mut self, start: &[u8]) -> Result<()> {
+        self.valid = false;
         self.backward = false;
-        self.versions.seek(start, self.snapshot);
+        self.versions.seek(start, self.snapshot).await;
         self.key.clear();
-        self.settle(false)
+        self.settle(false).await
     }
 
     /// Walks on to the first live key at the snapshot, below the upper bound. While `skipping`,
     /// versions of the current key are passed over: it has been decided.
-    fn settle(&mut self, mut skipping: bool) -> Result<()> {
+    async fn settle(&mut self, mut skipping: bool) -> Result<()> {
         self.valid = false;
         while let Some(version) = self.versions.entry() {
             if self
@@ -226,7 +233,7 @@ impl<'a> DbIterator<'a> {
                 }
                 skipping = true;
             }
-            self.versions.next();
+            self.versions.next().await;
         }
         if !self.valid {
             self.key.clear();

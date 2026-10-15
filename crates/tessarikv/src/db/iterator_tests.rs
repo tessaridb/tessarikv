@@ -2,28 +2,16 @@
 //! tables and table files.
 
 use std::collections::BTreeMap;
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
+use std::sync::Arc;
 
 use proptest::prelude::*;
 use tessarikv_types::{KeyspaceId, SequenceNumber};
 
+use super::block_cache::BlockCache;
 use super::iterator::DbIterator;
-use super::read_tests::{Op, file, model, unflushed, user_key};
+use super::read_tests::{Op, block_on, cache_bytes, file, model, unflushed, user_key};
 use super::view::View;
 use crate::ReadOptions;
-
-/// Runs a future that must not wait: iteration over in-memory sources completes when polled.
-fn run<T>(future: impl Future<Output = T>) -> T {
-    let mut future = pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("an iterator over memory waited"),
-    }
-}
 
 /// Every key and value from the iterator's position on.
 async fn walk(iterator: &mut DbIterator<'_>) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -51,11 +39,16 @@ fn expected(
 }
 
 /// The view of `ops` split in three tables, with the oldest `flushed` of them in table files.
-fn view(ops: &[Op], first: usize, second: usize, flushed: usize) -> View {
+fn view(ops: &[Op], first: usize, second: usize, flushed: usize, capacity: u64) -> View {
+    let cache = Arc::new(BlockCache::new(capacity));
     let mut view = unflushed(ops, first, second);
     for epoch in 0..flushed {
         let id = u64::try_from(epoch).unwrap() + 1;
-        let table = file(view.table(u8::try_from(epoch).unwrap()).unwrap(), id);
+        let table = file(
+            view.table(u8::try_from(epoch).unwrap()).unwrap(),
+            id,
+            &cache,
+        );
         view = view
             .after_flush(u8::try_from(epoch).unwrap(), Some(table))
             .unwrap();
@@ -69,12 +62,13 @@ proptest! {
         ops in proptest::collection::vec((0_u8..12, proptest::option::of(any::<u16>())), 3..50),
         cuts in (any::<prop::sample::Index>(), any::<prop::sample::Index>()),
         flushed in 0_usize..=2,
+        capacity in cache_bytes(),
         bounds in (proptest::option::of(0_u8..13), proptest::option::of(0_u8..13)),
         target in 0_u8..13,
     ) {
         let first = 1 + cuts.0.index(ops.len() - 2);
         let second = first + 1 + cuts.1.index(ops.len() - first - 1);
-        let view = view(&ops, first, second, flushed);
+        let view = view(&ops, first, second, flushed, capacity);
         let lower = bounds.0.map(|key| user_key(key).to_vec());
         let upper = bounds.1.map(|key| user_key(key).to_vec());
         let options = ReadOptions {
@@ -87,7 +81,7 @@ proptest! {
             let at = SequenceNumber::new(u64::try_from(snapshot).unwrap()).unwrap();
             let state = model(&ops, snapshot);
             let mut iterator = DbIterator::new(&view, KeyspaceId::DEFAULT, at, &options, None).unwrap();
-            let (all, from_target) = run(async {
+            let (all, from_target) = block_on(async {
                 iterator.seek_to_first().await.unwrap();
                 let all = walk(&mut iterator).await;
                 iterator.seek(&target).await.unwrap();
@@ -181,6 +175,7 @@ proptest! {
         ops in proptest::collection::vec((0_u8..12, proptest::option::of(any::<u16>())), 3..50),
         cuts in (any::<prop::sample::Index>(), any::<prop::sample::Index>()),
         flushed in 0_usize..=2,
+        capacity in cache_bytes(),
         bounds in (proptest::option::of(0_u8..13), proptest::option::of(0_u8..13)),
         target in 0_u8..13,
         moves in proptest::collection::vec(any::<bool>(), 0..30),
@@ -188,7 +183,7 @@ proptest! {
     ) {
         let first = 1 + cuts.0.index(ops.len() - 2);
         let second = first + 1 + cuts.1.index(ops.len() - first - 1);
-        let view = view(&ops, first, second, flushed);
+        let view = view(&ops, first, second, flushed, capacity);
         let lower = bounds.0.map(|key| user_key(key).to_vec());
         let upper = bounds.1.map(|key| user_key(key).to_vec());
         let options = ReadOptions {
@@ -202,7 +197,7 @@ proptest! {
             let entries = expected(&model(&ops, snapshot), b"", lower.as_deref(), upper.as_deref());
             let mut iterator = DbIterator::new(&view, KeyspaceId::DEFAULT, at, &options, None).unwrap();
             let mut position = start.index(entries.len().max(1));
-            let (backward, previous, walked) = run(async {
+            let (backward, previous, walked) = block_on(async {
                 iterator.seek_to_last().await.unwrap();
                 let backward = walk_back(&mut iterator, entries.len()).await;
                 iterator.seek_for_prev(&target).await.unwrap();

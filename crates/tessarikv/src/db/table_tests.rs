@@ -1,8 +1,12 @@
+use std::sync::Arc;
+
 use proptest::prelude::*;
 use tessarikv_format::{Compression, TableOptions};
 use tessarikv_types::{SequenceNumber, ValueKind};
 
-use super::tables::{TableLookup, build, lookup, open};
+use super::block_cache::BlockCache;
+use super::read_tests::{block_on, cache_bytes, table_file};
+use super::tables::{TableLookup, build, lookup};
 use crate::memtable::{Lookup, Memtable};
 
 fn options(compression: Compression) -> TableOptions {
@@ -27,6 +31,7 @@ proptest! {
     fn a_built_table_answers_every_key_at_every_snapshot_as_its_memtable(
         ops in proptest::collection::vec((0_u8..12, proptest::option::of(any::<u16>())), 1..60),
         lz4 in any::<bool>(),
+        capacity in cache_bytes(),
     ) {
         let memtable = Memtable::new();
         for (index, (key, value)) in ops.iter().enumerate() {
@@ -47,13 +52,14 @@ proptest! {
         let (low, high) = (keys.iter().min().copied(), keys.iter().max().copied());
         prop_assert_eq!(built.smallest.get(..2), Some(&[b'k', low.unwrap()][..]));
         prop_assert_eq!(built.largest.get(..2), Some(&[b'k', high.unwrap()][..]));
-        let table = open(built.bytes, None).unwrap();
+        let cache = Arc::new(BlockCache::new(capacity));
+        let file = table_file(built.bytes.clone(), &built, 1, &cache);
         for snapshot in 0..=u64::try_from(ops.len()).unwrap() {
             let snapshot = SequenceNumber::new(snapshot).unwrap();
             for key in 0_u8..13 {
                 let user_key = [b'k', key];
                 prop_assert_eq!(
-                    lookup(&table, &user_key, snapshot).unwrap(),
+                    block_on(lookup(&file, &user_key, snapshot, true)).unwrap(),
                     expected(&memtable, &user_key, snapshot),
                     "key {} at snapshot {}", key, snapshot.get()
                 );

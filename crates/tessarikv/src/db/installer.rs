@@ -29,6 +29,7 @@ use tessarikv_sync::Sequencer;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use super::block_cache::BlockCache;
 use super::flush_job::{Job, table_options};
 use super::flush_signals::FlushSignals;
 use super::view::{TableFile, View};
@@ -48,6 +49,8 @@ pub(super) struct Flusher {
     pub(super) manifest: Option<ManifestStore>,
     pub(super) log: LogRelease,
     pub(super) keyspace: KeyspaceOptions,
+    /// The cache flushed table files read their data blocks through.
+    pub(super) cache: Arc<BlockCache>,
 }
 
 /// A frozen table waiting for its flush.
@@ -178,6 +181,7 @@ impl Flusher {
             options: table_options(&self.keyspace)?,
             table: Arc::clone(&oldest.table),
             flushed: oldest.flushed,
+            cache: Arc::clone(&self.cache),
         };
         let (sequencer, signals) = (Arc::clone(&self.sequencer), Arc::clone(signals));
         Ok(tokio::spawn(async move {

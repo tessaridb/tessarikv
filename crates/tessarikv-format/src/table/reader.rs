@@ -1,20 +1,22 @@
-//! Reading a table: opening it, testing its filter, and walking it in key order.
+//! Opening a table: its footer and metadata blocks, read once and kept in memory.
 
-use std::cmp::Ordering;
 use std::sync::Arc;
 
-use super::block::{Block, BlockIter, Compare};
+use super::block::{Block, Compare};
 use super::builder::{ENTRIES_PROPERTY, RANGE_DELETES_PROPERTY};
 use super::filter::BloomFilter;
-use super::handle::{BlockHandle, Footer, read_block};
+use super::handle::{BlockHandle, FOOTER_BYTES, Footer, unseal};
+use super::iter::TableIter;
+use super::source::{BlockSource, OpenError, Resident};
 use crate::error::{Error, Result};
 
-/// An open table. Cloning it shares its bytes and decoded metadata.
+/// An open table: its index, filter and properties in memory, its data blocks read through a
+/// [`BlockSource`]. Cloning it shares everything it holds.
 #[derive(Debug, Clone)]
 pub struct Table {
-    file: Arc<[u8]>,
+    source: Arc<dyn BlockSource>,
     index: Block,
-    filter: BloomFilter,
+    filter: Arc<BloomFilter>,
     filter_key: fn(&[u8]) -> &[u8],
     compare: Compare,
     entries: u64,
@@ -23,54 +25,98 @@ pub struct Table {
 
 impl Table {
     /// Opens the table in `file`, ordered by `compare`, whose filter was built from
-    /// `filter_key` of each key. The footer, index, filter and properties are verified now; each
-    /// data block is verified when it is read.
+    /// `filter_key` of each key. The whole file stays in memory, so every data block is always
+    /// at hand. The footer, index, filter and properties are verified now; each data block is
+    /// verified when it is read.
     ///
     /// # Errors
     ///
     /// [`Error::Truncated`], [`Error::Malformed`] or [`Error::UnsupportedVersion`] for a file
     /// that is not a whole table of this format.
     pub fn open(file: Vec<u8>, compare: Compare, filter_key: fn(&[u8]) -> &[u8]) -> Result<Self> {
-        let footer = Footer::decode(&file)?;
-        let index = Block::new(read_block(&file, footer.index)?, compare)?;
-        let filter = BloomFilter::new(read_block(&file, footer.filter)?)?;
-        let properties = Block::new(read_block(&file, footer.properties)?, |left, right| {
-            left.cmp(right)
-        })?;
-        let mut property = properties.iter();
-        property.seek(ENTRIES_PROPERTY);
-        let entries = if property.valid() && property.key() == ENTRIES_PROPERTY {
-            property
-                .value()
-                .try_into()
-                .map(u64::from_le_bytes)
-                .map_err(|_| Error::Malformed {
-                    what: "table properties",
-                    reason: "entry count is not eight bytes",
-                })?
-        } else {
-            return Err(Error::Malformed {
-                what: "table properties",
-                reason: "no entry count",
-            });
-        };
-        property.seek(RANGE_DELETES_PROPERTY);
-        let range_deletes = if property.valid() && property.key() == RANGE_DELETES_PROPERTY {
-            let handle = BlockHandle::decode(property.value())?;
-            Some(Block::new(read_block(&file, handle)?, compare)?)
-        } else {
-            None
-        };
-        property.status()?;
-        Ok(Self {
-            file: file.into(),
-            index,
-            filter,
-            filter_key,
+        let file: Arc<[u8]> = file.into();
+        let len = u64::try_from(file.len()).unwrap_or(u64::MAX);
+        let resident = Arc::new(Resident {
+            file: Arc::clone(&file),
             compare,
-            entries,
-            range_deletes,
+        });
+        let read = |offset: u64, buf: &mut [u8]| {
+            let copied = usize::try_from(offset)
+                .ok()
+                .and_then(|start| file.get(start..start.checked_add(buf.len())?))
+                .map(|bytes| buf.copy_from_slice(bytes));
+            copied.ok_or(())
+        };
+        Self::open_with(len, read, resident, compare, filter_key).map_err(|error| match error {
+            OpenError::Format(error) => error,
+            // Reads come from the bytes themselves and stay inside them: the footer and every
+            // handle are checked against the length before a read.
+            OpenError::Read(()) => Error::Malformed {
+                what: "table",
+                reason: "a block lies outside the file",
+            },
         })
+    }
+
+    /// Opens a table file of `len` bytes through `read`, which fills a buffer from a position
+    /// of the file; data blocks then come from `source`. The footer, index, filter, properties
+    /// and range deletes are read and verified now, once, and stay in memory. Every position
+    /// read is checked against `len` first, so a damaged footer cannot ask for more bytes than
+    /// the file holds.
+    ///
+    /// # Errors
+    ///
+    /// [`OpenError::Read`] with `read`'s error, and [`OpenError::Format`] for a file that is not
+    /// a whole table of this format.
+    pub fn open_with<E>(
+        len: u64,
+        mut read: impl FnMut(u64, &mut [u8]) -> std::result::Result<(), E>,
+        source: Arc<dyn BlockSource>,
+        compare: Compare,
+        filter_key: fn(&[u8]) -> &[u8],
+    ) -> std::result::Result<Self, OpenError<E>> {
+        let footer_bytes = u64::try_from(FOOTER_BYTES).unwrap_or(u64::MAX);
+        let Some(footer_at) = len.checked_sub(footer_bytes) else {
+            return Err(OpenError::Format(Error::Truncated {
+                what: "table",
+                needed: footer_bytes,
+                available: len,
+            }));
+        };
+        let mut tail = [0; FOOTER_BYTES];
+        read(footer_at, &mut tail).map_err(OpenError::Read)?;
+        let footer = Footer::decode(&tail).map_err(OpenError::Format)?;
+        let mut block = |handle: BlockHandle| -> std::result::Result<Vec<u8>, OpenError<E>> {
+            let end = handle.end_within(footer_at).map_err(OpenError::Format)?;
+            let size = usize::try_from(end.saturating_sub(handle.offset())).map_err(|_| {
+                OpenError::Format(Error::Malformed {
+                    what: "table block",
+                    reason: "larger than memory can address",
+                })
+            })?;
+            let mut sealed = vec![0; size];
+            read(handle.offset(), &mut sealed).map_err(OpenError::Read)?;
+            unseal(&sealed).map_err(OpenError::Format)
+        };
+        let index = block(footer.index)?;
+        let filter = block(footer.filter)?;
+        let properties = block(footer.properties)?;
+        let (entries, range_deletes) = properties_of(properties).map_err(OpenError::Format)?;
+        let range_deletes = range_deletes.map(&mut block).transpose()?;
+        let decoded = (|| {
+            Ok(Self {
+                source,
+                index: Block::new(index, compare)?,
+                filter: Arc::new(BloomFilter::new(filter)?),
+                filter_key,
+                compare,
+                entries,
+                range_deletes: range_deletes
+                    .map(|payload| Block::new(payload, compare))
+                    .transpose()?,
+            })
+        })();
+        decoded.map_err(OpenError::Format)
     }
 
     /// The table's range deletes as `(key, end)`, in key order.
@@ -105,168 +151,36 @@ impl Table {
 
     /// An iterator over the table, positioned nowhere until a seek.
     pub fn iter(&self) -> TableIter {
-        TableIter {
-            file: Arc::clone(&self.file),
-            compare: self.compare,
-            index: self.index.iter(),
-            data: None,
-            error: None,
-        }
+        TableIter::new(Arc::clone(&self.source), self.compare, self.index.iter())
     }
 }
 
-/// A position in a [`Table`]: on an entry, or past the end. A damaged block ends the iteration
-/// and [`TableIter::status`] reports it.
-#[derive(Debug)]
-pub struct TableIter {
-    file: Arc<[u8]>,
-    compare: Compare,
-    index: BlockIter,
-    data: Option<BlockIter>,
-    error: Option<Error>,
-}
-
-impl TableIter {
-    /// Whether the iterator is on an entry.
-    pub fn valid(&self) -> bool {
-        self.error.is_none() && self.data.as_ref().is_some_and(BlockIter::valid)
-    }
-
-    /// The current key; empty when not on an entry.
-    pub fn key(&self) -> &[u8] {
-        if self.valid() {
-            self.data.as_ref().map_or(&[], BlockIter::key)
-        } else {
-            &[]
-        }
-    }
-
-    /// The current value; empty when not on an entry.
-    pub fn value(&self) -> &[u8] {
-        if self.valid() {
-            self.data.as_ref().map_or(&[], BlockIter::value)
-        } else {
-            &[]
-        }
-    }
-
-    /// Why the iteration stopped early, if it did.
-    ///
-    /// # Errors
-    ///
-    /// The error of the damaged block.
-    pub fn status(&self) -> Result<()> {
-        if let Some(error) = &self.error {
-            return Err(error.clone());
-        }
-        self.index.status()?;
-        self.data.as_ref().map_or(Ok(()), BlockIter::status)
-    }
-
-    /// Moves to the first entry.
-    pub fn seek_to_first(&mut self) {
-        self.index.seek_to_first();
-        self.load();
-        if let Some(data) = &mut self.data {
-            data.seek_to_first();
-        }
-        self.skip_finished_blocks();
-    }
-
-    /// Moves to the first entry whose key is not less than `target`.
-    pub fn seek(&mut self, target: &[u8]) {
-        self.index.seek(target);
-        self.load();
-        if let Some(data) = &mut self.data {
-            data.seek(target);
-        }
-        self.skip_finished_blocks();
-    }
-
-    /// Moves to the next entry.
-    pub fn next(&mut self) {
-        if let Some(data) = &mut self.data {
-            data.next();
-        }
-        self.skip_finished_blocks();
-    }
-
-    /// Moves to the last entry.
-    pub fn seek_to_last(&mut self) {
-        self.index.seek_to_last();
-        self.load();
-        if let Some(data) = &mut self.data {
-            data.seek_to_last();
-        }
-        self.skip_finished_blocks_backward();
-    }
-
-    /// Moves to the last entry whose key is not greater than `target`.
-    pub fn seek_for_prev(&mut self, target: &[u8]) {
-        self.seek(target);
-        if self.valid() {
-            if (self.compare)(self.key(), target) == Ordering::Greater {
-                self.prev();
-            }
-        } else if self.status().is_ok() {
-            self.seek_to_last();
-        }
-    }
-
-    /// Moves to the previous entry; before the first one the iterator is no longer valid.
-    pub fn prev(&mut self) {
-        if let Some(data) = &mut self.data {
-            data.prev();
-        }
-        self.skip_finished_blocks_backward();
-    }
-
-    /// Opens the data block the index is on, or none past the last.
-    fn load(&mut self) {
-        self.data = None;
-        if self.error.is_some() || !self.index.valid() {
-            return;
-        }
-        let block = BlockHandle::decode(self.index.value())
-            .and_then(|handle| read_block(&self.file, handle))
-            .and_then(|payload| Block::new(payload, self.compare));
-        match block {
-            Ok(block) => self.data = Some(block.iter()),
-            Err(error) => self.error = Some(error),
-        }
-    }
-
-    /// Moves past data blocks that have no entries left, stopping at an error.
-    fn skip_finished_blocks(&mut self) {
-        loop {
-            match &self.data {
-                Some(data) if data.valid() => return,
-                Some(data) if data.status().is_err() => return,
-                None => return,
-                Some(_) => {}
-            }
-            self.index.next();
-            self.load();
-            if let Some(data) = &mut self.data {
-                data.seek_to_first();
-            }
-        }
-    }
-
-    /// Moves back past data blocks that have no entries left, stopping at an error.
-    fn skip_finished_blocks_backward(&mut self) {
-        loop {
-            match &self.data {
-                Some(data) if data.valid() => return,
-                Some(data) if data.status().is_err() => return,
-                None => return,
-                Some(_) => {}
-            }
-            self.index.prev();
-            self.load();
-            if let Some(data) = &mut self.data {
-                data.seek_to_last();
-            }
-        }
-    }
+/// The entry count and the range-delete block's handle, from the properties block.
+fn properties_of(payload: Vec<u8>) -> Result<(u64, Option<BlockHandle>)> {
+    let properties = Block::new(payload, |left, right| left.cmp(right))?;
+    let mut property = properties.iter();
+    property.seek(ENTRIES_PROPERTY);
+    let entries = if property.valid() && property.key() == ENTRIES_PROPERTY {
+        property
+            .value()
+            .try_into()
+            .map(u64::from_le_bytes)
+            .map_err(|_| Error::Malformed {
+                what: "table properties",
+                reason: "entry count is not eight bytes",
+            })?
+    } else {
+        return Err(Error::Malformed {
+            what: "table properties",
+            reason: "no entry count",
+        });
+    };
+    property.seek(RANGE_DELETES_PROPERTY);
+    let range_deletes = if property.valid() && property.key() == RANGE_DELETES_PROPERTY {
+        Some(BlockHandle::decode(property.value())?)
+    } else {
+        None
+    };
+    property.status()?;
+    Ok((entries, range_deletes))
 }

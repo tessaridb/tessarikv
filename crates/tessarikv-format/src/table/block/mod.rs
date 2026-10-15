@@ -189,6 +189,11 @@ impl Block {
         })
     }
 
+    /// Bytes the block holds in memory.
+    pub fn size_bytes(&self) -> usize {
+        self.bytes.len()
+    }
+
     /// An iterator over the block's entries, positioned nowhere until a seek. It shares the
     /// block's bytes, so it may outlive this handle.
     pub fn iter(&self) -> BlockIter {

@@ -8,14 +8,15 @@ use tessarikv_constants::{COMMIT_RING_SLOTS, LEVELS};
 use tessarikv_sync::Sequencer;
 
 use super::Db;
+use super::block_cache::BlockCache;
 use super::flush_job::table_path;
 use super::installer::{Flusher, Installer};
 use super::recover::recover;
-use super::tables::open;
+use super::table_blocks::open_table;
 use super::view::{TableFile, View};
 use crate::log::LogWriter;
 use crate::memtable::Memtable;
-use crate::storage::{Storage, read_all};
+use crate::storage::Storage;
 use crate::version::Version;
 use crate::version::manifest::ManifestStore;
 use crate::{DbOptions, Error, Result};
@@ -37,14 +38,16 @@ impl Db {
         let recovery = options.wal_recovery();
         let segment_bytes = options.wal_segment_bytes();
         let keyspace = options.default_keyspace().clone();
+        let cache = Arc::new(BlockCache::new(options.block_cache_bytes()));
         let opened = {
             let storage = Arc::clone(&storage);
             let path = path.clone();
+            let cache = Arc::clone(&cache);
             tokio::task::spawn_blocking(move || {
                 let lock = prepare(storage.as_ref(), &path, &options)?;
                 let (version, number) = ManifestStore::recover(storage.as_ref(), &path)?
                     .unwrap_or_else(|| (Version::empty(), 0));
-                let files = restore_tables(storage.as_ref(), &path, &version)?;
+                let files = restore_tables(storage.as_ref(), &path, &version, &cache)?;
                 let table = Memtable::new();
                 let flushed = version.flushed_sequence();
                 let recovered = recover(storage.as_ref(), &path, &table, recovery, flushed)?;
@@ -86,6 +89,7 @@ impl Db {
             manifest: Some(manifest),
             log: log.releaser(),
             keyspace,
+            cache,
         });
         Ok(Self {
             sequencer,
@@ -100,18 +104,24 @@ impl Db {
     }
 }
 
-/// Opens every table file `version` names, newest first, and removes the table files it does
-/// not name: those a crash left between writing a table and naming it in the manifest. Runs on
-/// a blocking thread.
-fn restore_tables(storage: &dyn Storage, dir: &Path, version: &Version) -> Result<Vec<TableFile>> {
+/// Opens every table file `version` names, newest first, reading their data blocks through
+/// `cache`, and removes the table files it does not name: those a crash left between writing a
+/// table and naming it in the manifest. Runs on a blocking thread.
+fn restore_tables(
+    storage: &dyn Storage,
+    dir: &Path,
+    version: &Version,
+    cache: &Arc<BlockCache>,
+) -> Result<Vec<TableFile>> {
     let mut files = Vec::new();
     for level in 0..LEVELS {
         for meta in version.tables(0, level) {
             let path = table_path(dir, meta.id);
-            let bytes = read_all(storage, &path, "table")?;
+            let (table, blocks) = open_table(storage, &path, meta.id, cache, None)?;
             files.push(TableFile {
                 meta: Arc::clone(meta),
-                table: open(bytes, Some(&path))?,
+                table,
+                blocks,
             });
         }
     }

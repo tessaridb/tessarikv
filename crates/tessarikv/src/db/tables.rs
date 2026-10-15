@@ -1,5 +1,5 @@
-//! Table files as the database uses them: built from a frozen in-memory table, opened for
-//! reading, and searched for the newest version of a key at a snapshot.
+//! Table files as the database uses them: built from a frozen in-memory table and searched for
+//! the newest version of a key at a snapshot.
 //!
 //! A table holds every version of its in-memory table under its internal key, so a table answers
 //! a read at any snapshot exactly as the in-memory table did; versions are dropped only by
@@ -14,6 +14,7 @@ use tessarikv_types::{
     seek_trailer,
 };
 
+use super::view::TableFile;
 use crate::memtable::Memtable;
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
@@ -39,7 +40,7 @@ pub(crate) struct BuiltTable {
 }
 
 /// The user key of an internal key: everything before the trailer.
-fn user_key(internal: &[u8]) -> &[u8] {
+pub(crate) fn user_key(internal: &[u8]) -> &[u8] {
     internal
         .get(..internal.len().saturating_sub(TRAILER_BYTES))
         .unwrap_or(internal)
@@ -121,15 +122,6 @@ pub(crate) fn build(memtable: &Memtable, options: TableOptions) -> Result<BuiltT
     })
 }
 
-/// Opens the table in `bytes`, read from `path` when it came from a file.
-///
-/// # Errors
-///
-/// [`Error::Corruption`] when the bytes are not a whole table of this format.
-pub(crate) fn open(bytes: Vec<u8>, path: Option<&Path>) -> Result<Table> {
-    Table::open(bytes, compare_internal, user_key).map_err(|error| format_error(&error, path))
-}
-
 /// The range deletes of `table`, appended to `out`.
 ///
 /// # Errors
@@ -156,19 +148,27 @@ pub(crate) fn tombstones(table: &Table, out: &mut Vec<RangeTombstone>) -> Result
     Ok(())
 }
 
-/// The newest version of `key` in `table` at `snapshot`.
+/// The newest version of `key` in `file` at `snapshot`, keeping the blocks it reads in the
+/// cache unless `fill_cache` is false.
 ///
 /// # Errors
 ///
-/// [`Error::Corruption`] when a block on the way is damaged.
-pub(crate) fn lookup(table: &Table, key: &[u8], snapshot: SequenceNumber) -> Result<TableLookup> {
+/// [`Error::Corruption`] when a block on the way is damaged, and the errors of
+/// [`super::table_blocks::TableBlocks::load`].
+pub(crate) async fn lookup(
+    file: &TableFile,
+    key: &[u8],
+    snapshot: SequenceNumber,
+    fill_cache: bool,
+) -> Result<TableLookup> {
     let mut target = Vec::with_capacity(key.len().saturating_add(TRAILER_BYTES));
     encode_internal(key, seek_trailer(snapshot), &mut target);
-    if !table.may_contain(&target) {
+    if !file.table.may_contain(&target) {
         return Ok(TableLookup::Absent);
     }
-    let mut versions = table.iter();
+    let mut versions = file.table.iter();
     versions.seek(&target);
+    file.blocks.complete(&mut versions, fill_cache).await?;
     versions
         .status()
         .map_err(|error| format_error(&error, None))?;
@@ -188,7 +188,7 @@ pub(crate) fn lookup(table: &Table, key: &[u8], snapshot: SequenceNumber) -> Res
     Ok(match found.trailer().kind() {
         Ok(ValueKind::Value) => TableLookup::Value(versions.value().to_vec()),
         Ok(ValueKind::Delete) => TableLookup::Deleted,
-        // Range deletes never reach a table yet: batches refuse them.
+        // Range deletes are kept in their own block, never among the versions.
         Ok(ValueKind::RangeDelete) | Err(_) => {
             return Err(Error::Corruption {
                 what: "table",

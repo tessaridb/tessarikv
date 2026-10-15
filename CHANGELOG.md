@@ -53,6 +53,11 @@ All notable changes to this project are documented here. The format follows
 - Range deletes: `WriteBatch::delete_range` removes every key in `[start, end)` written before it; point reads,
   scans and iterators honour it at every snapshot, and it survives flushes and reopening. The batch encoding moves to
   version 2 and table files to format version 2 (a range-delete block); version 1 of both is still read.
+- Block cache: a table file keeps its index, filter and properties in memory and reads data blocks on demand
+  through a cache of `DbOptions::block_cache_bytes` (zero disables it); a block that is not cached is read on a
+  blocking thread, and `ReadOptions::fill_cache = false` leaves the cache as it was. `Table::open_with` opens a
+  table through positional reads with its data blocks served by a `BlockSource`, and `TableIter::pending` /
+  `resume` let a walk wait for a block. A block read whose thread stops returns `Error::ReadFailed`.
 - Write stall: full in-memory tables queue for their flushes, up to `KeyspaceOptions::max_immutable_memtables`; past
   that a write waits for the next flush, or returns `Error::WriteStalled` when `WriteOptions::no_slowdown` is set.
 - Options: `DbOptions`, `KeyspaceOptions` with the `point_lookup`, `write_heavy` and `bulk_load`

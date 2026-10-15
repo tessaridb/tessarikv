@@ -31,4 +31,7 @@ pub use log::{
 pub use manifest::{ManifestEdit, TableMeta, TableRef};
 pub use table::block::{Block, BlockBuilder, BlockIter, Compare};
 pub use table::filter::{BloomBuilder, BloomFilter};
-pub use table::{Compression, FOOTER_BYTES, Table, TableBuilder, TableIter, TableOptions};
+pub use table::{
+    BlockHandle, BlockSource, Compression, FOOTER_BYTES, OpenError, Table, TableBuilder, TableIter,
+    TableOptions, unseal_block,
+};

@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use tessarikv_format::{Table, TableMeta};
 
+use super::table_blocks::TableBlocks;
 use super::tables;
 use crate::memtable::Memtable;
 use crate::tombstones::RangeTombstone;
@@ -31,11 +32,13 @@ pub(crate) struct View {
     files: Vec<TableFile>,
 }
 
-/// A table file a view reads, and what the manifest records about it.
+/// A table file a view reads, what the manifest records about it, and where its data blocks
+/// come from.
 #[derive(Clone)]
 pub(crate) struct TableFile {
     pub(crate) meta: Arc<TableMeta>,
     pub(crate) table: Table,
+    pub(crate) blocks: Arc<TableBlocks>,
 }
 
 /// A table and the epoch whose writes it holds.

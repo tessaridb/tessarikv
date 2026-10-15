@@ -2,15 +2,14 @@
 //! snapshot, across in-memory tables and table files.
 
 use std::collections::BTreeMap;
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
 
 use proptest::prelude::*;
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
+use super::block_cache::BlockCache;
 use super::iterator::DbIterator;
 use super::read::{get_in, scan_in};
-use super::read_tests::{file, user_key};
+use super::read_tests::{block_on, cache_bytes, file, from, user_key};
 use super::view::View;
 use crate::ReadOptions;
 use crate::memtable::Memtable;
@@ -83,7 +82,8 @@ fn model(writes: &[Write], count: usize) -> BTreeMap<Vec<u8>, Vec<u8>> {
 
 /// Three in-memory tables holding `writes` split at `first` and `second`, the oldest `flushed`
 /// of them moved to table files.
-fn view(writes: &[Write], first: usize, second: usize, flushed: usize) -> View {
+fn view(writes: &[Write], first: usize, second: usize, flushed: usize, capacity: u64) -> View {
+    let cache = std::sync::Arc::new(BlockCache::new(capacity));
     let mut view = View::new(0, Memtable::new());
     fill(view.table(0).unwrap(), 1, &writes[..first]);
     view = view.with_next_table();
@@ -91,22 +91,10 @@ fn view(writes: &[Write], first: usize, second: usize, flushed: usize) -> View {
     view = view.with_next_table();
     fill(view.table(2).unwrap(), second + 1, &writes[second..]);
     for epoch in 0..u8::try_from(flushed).unwrap() {
-        let table = file(view.table(epoch).unwrap(), u64::from(epoch) + 1);
+        let table = file(view.table(epoch).unwrap(), u64::from(epoch) + 1, &cache);
         view = view.after_flush(epoch, Some(table)).unwrap();
     }
     view
-}
-
-/// Runs a future that must not wait.
-fn run<T>(future: impl Future<Output = T>) -> T {
-    let mut future = pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("an iterator over memory waited"),
-    }
 }
 
 proptest! {
@@ -115,10 +103,11 @@ proptest! {
         writes in proptest::collection::vec(write(), 3..40),
         cuts in (any::<prop::sample::Index>(), any::<prop::sample::Index>()),
         flushed in 0_usize..=2,
+        capacity in cache_bytes(),
     ) {
         let first = 1 + cuts.0.index(writes.len() - 2);
         let second = first + 1 + cuts.1.index(writes.len() - first - 1);
-        let view = view(&writes, first, second, flushed);
+        let view = view(&writes, first, second, flushed, capacity);
         let default = KeyspaceId::DEFAULT;
         for snapshot in 0..=writes.len() {
             let at = SequenceNumber::new(u64::try_from(snapshot).unwrap()).unwrap();
@@ -127,15 +116,16 @@ proptest! {
             for key in 0_u8..13 {
                 let key = user_key(key);
                 prop_assert_eq!(
-                    get_in(&view, default, &key, at).unwrap(),
+                    block_on(get_in(&view, default, &key, at, true)).unwrap(),
                     state.get(key.as_slice()).cloned(),
                     "key {:?} at {}", key, snapshot
                 );
             }
-            prop_assert_eq!(&scan_in(&view, default, b"", None, usize::MAX, at).unwrap().entries, &listed);
+            let page = block_on(scan_in(&view, default, from(b"", usize::MAX), at, true)).unwrap();
+            prop_assert_eq!(&page.entries, &listed);
             let options = ReadOptions::default();
             let mut iterator = DbIterator::new(&view, default, at, &options, None).unwrap();
-            let (forward, backward) = run(async {
+            let (forward, backward) = block_on(async {
                 let mut forward = Vec::new();
                 iterator.seek_to_first().await.unwrap();
                 while iterator.valid() && forward.len() <= listed.len() {

@@ -11,22 +11,30 @@
 //! (its entry count), and the footer locates the other three and names the format version.
 //! Every block is sealed with a checksum verified on every read (see the handle module docs).
 //!
-//! A table is written once by [`TableBuilder`] and never changed; [`Table`] reads it from its
-//! bytes, and any number of [`TableIter`]s may walk it at once.
+//! A table is written once by [`TableBuilder`] and never changed. [`Table`] opens it from its
+//! bytes, or through reads of a file it keeps only the metadata of; data blocks then come from a
+//! [`BlockSource`], which may make a walk wait for a block (see the source module). Any number of
+//! [`TableIter`]s may walk a table at once.
 
 pub mod block;
 pub mod filter;
 
 mod builder;
 mod handle;
+mod iter;
 mod reader;
+mod source;
 
+#[cfg(test)]
+mod source_tests;
 #[cfg(test)]
 mod tests;
 
 pub use builder::TableBuilder;
-pub use handle::FOOTER_BYTES;
-pub use reader::{Table, TableIter};
+pub use handle::{BlockHandle, FOOTER_BYTES};
+pub use iter::TableIter;
+pub use reader::Table;
+pub use source::{BlockSource, OpenError, unseal_block};
 
 /// How a block's bytes are stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

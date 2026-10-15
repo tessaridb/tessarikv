@@ -80,9 +80,9 @@ impl Snapshot<'_> {
         &self,
         keyspace: KeyspaceId,
         key: &[u8],
-        _options: &ReadOptions,
+        options: &ReadOptions,
     ) -> Result<Option<Vec<u8>>> {
-        self.db.get_at(keyspace, key, self.sequence)
+        self.db.get_at(keyspace, key, self.sequence, options).await
     }
 
     /// An iterator over `keyspace` at this snapshot; the snapshot outlives it.
@@ -113,9 +113,11 @@ impl Snapshot<'_> {
         start: &[u8],
         end: Option<&[u8]>,
         limit: usize,
-        _options: &ReadOptions,
+        options: &ReadOptions,
     ) -> Result<ScanPage> {
-        self.db.scan_at(keyspace, start, end, limit, self.sequence)
+        self.db
+            .scan_at(keyspace, start, end, limit, self.sequence, options)
+            .await
     }
 }
 
