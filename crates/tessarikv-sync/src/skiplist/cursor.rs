@@ -8,7 +8,7 @@ use super::{KeyComparator, SkipList};
 /// documentation): it never shows an entry out of order or partly written.
 pub struct Cursor<'a, C> {
     list: &'a SkipList<C>,
-    node: Option<Node>,
+    node: Option<Node<'a>>,
 }
 
 impl<C: KeyComparator> SkipList<C> {
@@ -30,7 +30,7 @@ impl<C: KeyComparator> SkipList<C> {
     }
 
     /// The published node at `reference`, or none for the null link.
-    fn published(&self, reference: u64) -> Option<Node> {
+    fn published(&self, reference: u64) -> Option<Node<'_>> {
         if reference == 0 {
             None
         } else {
@@ -74,7 +74,7 @@ impl<'a, C: KeyComparator> Cursor<'a, C> {
                 position = Position::from(&next);
             }
         }
-        self.node = self.list.published(position.reference);
+        self.node = position.node;
     }
 
     /// Moves to the next key; becomes invalid past the last one.
@@ -92,7 +92,7 @@ impl<'a, C: KeyComparator> Cursor<'a, C> {
             .list
             .with_key(&node, |key| self.list.last_before(key, false))
             .flatten();
-        self.node = before.and_then(|(position, _)| self.list.published(position.reference));
+        self.node = before.and_then(|(position, _)| position.node);
     }
 
     /// A copy of the current key.
@@ -121,22 +121,12 @@ impl<'a, C: KeyComparator> Cursor<'a, C> {
     }
 
     /// The bytes at `(offset in record, len)` of the current node.
-    fn bytes(&self, range: impl FnOnce(&Node) -> Option<(usize, u32)>) -> &'a [u8] {
-        let Some(node) = self.node else { return &[] };
-        let list: &'a SkipList<C> = self.list;
-        let Some((relative, len)) = range(&node) else {
-            return &[];
-        };
-        let resolved = list
-            .bytes
-            .resolve(node.reference)
-            .and_then(|(cells, offset)| {
-                let at = offset.checked_add(relative)?;
-                // SAFETY: the node was reached through an Acquire load of the link whose Release CAS
-                // published the complete record; records are never written again, and the arena
-                // outlives `'a`.
-                unsafe { cells.slice(at, usize::try_from(len).ok()?) }
-            });
-        resolved.unwrap_or(&[])
+    fn bytes(&self, range: impl FnOnce(&Node<'a>) -> Option<(usize, u32)>) -> &'a [u8] {
+        self.node
+            .and_then(|node| {
+                let (relative, len) = range(&node)?;
+                node.slice(relative, len)
+            })
+            .unwrap_or(&[])
     }
 }

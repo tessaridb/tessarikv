@@ -8,30 +8,32 @@ use super::node::Node;
 use super::{KeyComparator, SkipList};
 use crate::shim::Ordering;
 
-/// A position to walk from: the head (`reference == 0`) or a node.
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct Position {
-    pub(super) reference: u64,
-    /// The node's height, which bounds the levels it has links at (unused for the head).
-    pub(super) height: u32,
+/// A position to walk from: the head (no node) or a located node.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Position<'a> {
+    pub(super) node: Option<Node<'a>>,
 }
 
-impl From<&Node> for Position {
-    fn from(node: &Node) -> Self {
-        Self {
-            reference: node.reference,
-            height: node.height,
-        }
+impl Position<'_> {
+    /// The node's arena reference; 0 for the head.
+    pub(super) fn reference(&self) -> u64 {
+        self.node.map_or(0, |node| node.reference)
+    }
+}
+
+impl<'a> From<&Node<'a>> for Position<'a> {
+    fn from(node: &Node<'a>) -> Self {
+        Self { node: Some(*node) }
     }
 }
 
 /// Where a key belongs at every level: the last position before it and the link after that.
-pub(super) struct Splice {
-    pub(super) preds: [Position; SKIPLIST_MAX_HEIGHT],
+pub(super) struct Splice<'a> {
+    pub(super) preds: [Position<'a>; SKIPLIST_MAX_HEIGHT],
     pub(super) succs: [u64; SKIPLIST_MAX_HEIGHT],
 }
 
-impl Splice {
+impl Splice<'_> {
     pub(super) fn new() -> Self {
         Self {
             preds: [Position::default(); SKIPLIST_MAX_HEIGHT],
@@ -42,25 +44,25 @@ impl Splice {
 
 impl<C: KeyComparator> SkipList<C> {
     /// Compares a published node's key with `key`.
-    pub(super) fn compare_node(&self, node: &Node, key: &[u8]) -> Option<KeyOrder> {
+    pub(super) fn compare_node(&self, node: &Node<'_>, key: &[u8]) -> Option<KeyOrder> {
         self.with_key(node, |node_key| self.comparator.compare(node_key, key))
     }
 
     /// The level-0 successor reference of `position` (0 = none).
-    pub(super) fn next_at(&self, position: Position, level: usize) -> Option<u64> {
+    pub(super) fn next_at<'a>(&'a self, position: Position<'a>, level: usize) -> Option<u64> {
         // Acquire: the loaded node's record and tower were published by its linking CAS.
         Some(self.link(position, level)?.load(Ordering::Acquire))
     }
 
     /// From `start`, moves right at `level` while the next key is less than `key` (or, with
     /// `or_equal`, not greater). Returns the last position passed and the link after it.
-    pub(super) fn walk(
-        &self,
+    pub(super) fn walk<'a>(
+        &'a self,
         level: usize,
-        start: Position,
+        start: Position<'a>,
         key: &[u8],
         or_equal: bool,
-    ) -> Option<(Position, u64)> {
+    ) -> Option<(Position<'a>, u64)> {
         let mut position = start;
         loop {
             let next = self.next_at(position, level)?;
@@ -79,7 +81,12 @@ impl<C: KeyComparator> SkipList<C> {
 
     /// Where `key` belongs at levels `0..levels` (searched from the top of the list or of
     /// `levels`, whichever is higher, since a taller list must be walked from its top).
-    pub(super) fn splice(&self, key: &[u8], levels: usize, splice: &mut Splice) -> Option<()> {
+    pub(super) fn splice<'a>(
+        &'a self,
+        key: &[u8],
+        levels: usize,
+        splice: &mut Splice<'a>,
+    ) -> Option<()> {
         // Relaxed: only chooses the starting level.
         let current = usize::try_from(self.max_height.load(Ordering::Relaxed)).ok()?;
         let top = current.max(levels).clamp(1, SKIPLIST_MAX_HEIGHT);
@@ -99,7 +106,7 @@ impl<C: KeyComparator> SkipList<C> {
 
     /// The last position whose key is less than `key` (or, with `or_equal`, not greater), and
     /// the level-0 link the search saw after it: the successor as of the linearization point.
-    pub(super) fn last_before(&self, key: &[u8], or_equal: bool) -> Option<(Position, u64)> {
+    pub(super) fn last_before(&self, key: &[u8], or_equal: bool) -> Option<(Position<'_>, u64)> {
         let current = usize::try_from(self.max_height.load(Ordering::Relaxed)).ok()?;
         let mut position = Position::default();
         let mut after = 0;

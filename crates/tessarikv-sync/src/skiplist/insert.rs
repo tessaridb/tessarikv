@@ -75,7 +75,12 @@ impl<C: KeyComparator> SkipList<C> {
     }
 
     /// Fills `splice` for `key`; `true` when an equal key is already linked at level 0.
-    fn locate(&self, key: &[u8], height: usize, splice: &mut Splice) -> Result<bool, ArenaError> {
+    fn locate<'a>(
+        &'a self,
+        key: &[u8],
+        height: usize,
+        splice: &mut Splice<'a>,
+    ) -> Result<bool, ArenaError> {
         self.splice(key, height, splice)
             .ok_or(ArenaError::Internal)?;
         let succ = splice.succs.first().copied().unwrap_or(0);
@@ -87,12 +92,12 @@ impl<C: KeyComparator> SkipList<C> {
     }
 
     /// Links the published node `me` at `level`, re-walking from the old predecessor on conflict.
-    fn link_upper(
-        &self,
+    fn link_upper<'a>(
+        &'a self,
         key: &[u8],
-        me: Position,
+        me: Position<'a>,
         level: usize,
-        splice: &mut Splice,
+        splice: &mut Splice<'a>,
     ) -> Result<(), ArenaError> {
         let (mut pred, mut succ) = match (splice.preds.get(level), splice.succs.get(level)) {
             (Some(&pred), Some(&succ)) => (pred, succ),
@@ -103,7 +108,7 @@ impl<C: KeyComparator> SkipList<C> {
             // Success Release: publishes this level of the tower. Failure Relaxed: the value
             // is discarded and `walk` reloads with Acquire.
             if slot
-                .compare_exchange(succ, me.reference, Ordering::Release, Ordering::Relaxed)
+                .compare_exchange(succ, me.reference(), Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
                 return Ok(());
