@@ -36,6 +36,8 @@ All notable changes to this project are documented here. The format follows
   back to its valid prefix, `WalRecovery::Absolute` refuses to open. `Db::close` syncs and releases it.
 - `Db`: an in-memory database with async `open`, atomic batch `write`, `get` and paged `scan` at a
   consistent snapshot; a scan never shows part of a batch.
+- `ManifestEdit`: a versioned record of tables added and removed, the flushed sequence and the next file
+  number; unknown versions and fields, repeated fields and lengths past the record are refused.
 - `Db::snapshot`: a `Snapshot` reads `get` and `scan` at a fixed point in history until it is dropped.
 - Options: `DbOptions`, `KeyspaceOptions` with the `point_lookup`, `write_heavy` and `bulk_load`
   presets, `ReadOptions` and `WriteOptions` with three durability levels.

@@ -18,6 +18,7 @@
 mod batch;
 mod error;
 mod log;
+mod manifest;
 mod table;
 mod varint;
 
@@ -27,6 +28,7 @@ pub use log::{
     EndKind, FRAME_HEADER_BYTES, FrameReader, LogEnd, LogRead, concat_checksum, encode_frame,
     frame_bytes, frame_header, payload_checksum,
 };
+pub use manifest::{ManifestEdit, TableMeta, TableRef};
 pub use table::block::{Block, BlockBuilder, BlockIter, Compare};
 pub use table::filter::{BloomBuilder, BloomFilter};
 pub use table::{Compression, FOOTER_BYTES, Table, TableBuilder, TableIter, TableOptions};

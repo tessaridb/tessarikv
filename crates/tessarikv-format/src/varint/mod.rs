@@ -29,5 +29,33 @@ pub(crate) fn get_u32(bytes: &[u8]) -> Option<(u32, usize)> {
     None
 }
 
+/// Appends `value` to `out`.
+pub(crate) fn put_u64(out: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        out.push(u8::try_from(value & 0x7F).unwrap_or(0) | 0x80);
+        value >>= 7;
+    }
+    out.push(u8::try_from(value).unwrap_or(0));
+}
+
+/// The value encoded at the start of `bytes` and the bytes it took, or `None` when the input
+/// ends first or the value does not fit in 64 bits.
+pub(crate) fn get_u64(bytes: &[u8]) -> Option<(u64, usize)> {
+    let mut value = 0_u64;
+    for (index, byte) in bytes.iter().take(10).enumerate() {
+        let shift = u32::try_from(index).ok()?.checked_mul(7)?;
+        let bits = u64::from(byte & 0x7F);
+        // The tenth byte may carry only the top bit of a u64.
+        if shift == 63 && bits > 0x01 {
+            return None;
+        }
+        value |= bits.checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some((value, index.checked_add(1)?));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests;

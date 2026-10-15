@@ -77,6 +77,9 @@ pub const MIN_WAL_SEGMENT_BYTES: u64 = 1024 * 1024;
 /// Largest log segment (4 GiB): an offset inside one segment fits in 32 bits.
 pub const MAX_WAL_SEGMENT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
+/// Levels of a keyspace's table tree: level 0 takes flushed tables, levels 1 to 6 compacted ones.
+pub const LEVELS: usize = 7;
+
 /// Default number of background threads for flush and compaction.
 pub const DEFAULT_BACKGROUND_THREADS: u32 = 4;
 
