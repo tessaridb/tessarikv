@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
 
 use super::SnapshotRegistry;
 
@@ -58,13 +58,18 @@ fn concurrent_registrations_are_never_missed_by_a_horizon() {
     let registry = Arc::new(SnapshotRegistry::new());
     let visible = Arc::new(AtomicU64::new(1));
     let stop = Arc::new(AtomicBool::new(false));
+    // Every thread starts together: a compactor scheduled after the readers finish takes no
+    // horizon while they register, and the run checks nothing.
+    let start = Arc::new(Barrier::new(4));
     let compactor = {
-        let (registry, visible, stop) = (
+        let (registry, visible, stop, start) = (
             Arc::clone(&registry),
             Arc::clone(&visible),
             Arc::clone(&stop),
+            Arc::clone(&start),
         );
         std::thread::spawn(move || {
+            start.wait();
             let mut horizons = Vec::new();
             while !stop.load(Ordering::Relaxed) {
                 let horizon = registry.horizon(visible.load(Ordering::Acquire));
@@ -75,8 +80,13 @@ fn concurrent_registrations_are_never_missed_by_a_horizon() {
     };
     let readers: Vec<_> = (0..3)
         .map(|_| {
-            let (registry, visible) = (Arc::clone(&registry), Arc::clone(&visible));
+            let (registry, visible, start) = (
+                Arc::clone(&registry),
+                Arc::clone(&visible),
+                Arc::clone(&start),
+            );
             std::thread::spawn(move || {
+                start.wait();
                 for _ in 0..rounds {
                     visible.fetch_add(1, Ordering::AcqRel);
                     let snapshot = registry
