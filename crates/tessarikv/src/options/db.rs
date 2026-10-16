@@ -50,6 +50,7 @@ pub struct DbOptions {
     pub(super) max_open_files: u32,
     pub(super) encryption: Option<super::Encryption>,
     pub(super) encryption_cipher: Option<tessarikv_format::Cipher>,
+    pub(super) max_manifest_bytes: u64,
     pub(super) statistics: bool,
     default_keyspace: KeyspaceOptions,
     /// Named keyspaces beside the default one (see `keyspaces.rs`).
@@ -74,6 +75,7 @@ impl Default for DbOptions {
             max_open_files: 0,
             encryption: None,
             encryption_cipher: None,
+            max_manifest_bytes: limits::DEFAULT_MAX_MANIFEST_BYTES,
             statistics: false,
             default_keyspace: KeyspaceOptions::default(),
             keyspaces: Vec::new(),
@@ -291,6 +293,7 @@ impl DbOptionsBuilder {
             )?;
         }
         super::memory::check(&options)?;
+        super::manifest::check(&options)?;
         super::keyspaces::check(&options)?;
         Ok(options)
     }

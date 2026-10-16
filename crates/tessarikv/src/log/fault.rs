@@ -203,17 +203,21 @@ impl Storage for FaultStorage {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let _change = self.change();
-        self.files.rename(from, to)?;
-        // What was synced stays synced: the bytes follow the file to its new name. (Whether the
-        // new NAME survives a power loss before the directory is synced is not modelled.)
-        let synced = self.state.synced.pin();
-        let len = synced.get(from).copied();
-        synced.remove(from);
-        match len {
-            Some(len) => synced.insert(to.to_path_buf(), len),
-            None => synced.remove(to),
-        };
+        {
+            let _change = self.change();
+            self.files.rename(from, to)?;
+            // What was synced stays synced: the bytes follow the file to its new name. (Whether the
+            // new NAME survives a power loss before the directory is synced is not modelled.)
+            let synced = self.state.synced.pin();
+            let len = synced.get(from).copied();
+            synced.remove(from);
+            match len {
+                Some(len) => synced.insert(to.to_path_buf(), len),
+                None => synced.remove(to),
+            };
+        }
+        // Outside the change, as for a removal: an image takes the whole store.
+        self.capture(to, "renamed");
         Ok(())
     }
 

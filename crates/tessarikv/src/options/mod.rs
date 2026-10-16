@@ -13,6 +13,7 @@ mod keyspace;
 mod keyspace_bounds;
 mod keyspace_builder;
 mod keyspaces;
+mod manifest;
 mod memory;
 mod read;
 mod statistics;

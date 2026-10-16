@@ -22,7 +22,7 @@ const WRITES: u32 = 400;
 /// The keyspace beside the default one that flushes write as well.
 const USERS: &str = "users";
 
-/// Tiny memtables; with `compacting`, a level-0 trigger of two and small levels as well. The users
+/// Tiny memtables and a small manifest limit; with `compacting`, a level-0 trigger of two and small levels as well. The users
 /// keyspace is held either way and written only without `compacting`.
 fn options(compacting: bool) -> DbOptions {
     let keyspace = KeyspaceOptions::builder().memtable_bytes(64 * 1024);
@@ -41,6 +41,8 @@ fn options(compacting: bool) -> DbOptions {
         .keyspace(USERS, keyspace)
         .create_missing_keyspaces(true)
         .wal_segment_bytes(1024 * 1024)
+        // Small enough that the manifest rolls several times, so rolls are crashed at too.
+        .max_manifest_bytes(3072)
         .build()
         .expect("valid")
 }
@@ -163,6 +165,9 @@ async fn a_crash_at_any_install_step_keeps_every_acknowledged_write() {
         ("before syncing", "MANIFEST"),
         ("after syncing", "MANIFEST"),
         ("removed", ".log"),
+        // A manifest roll: the new manifest named current, then the old one removed.
+        ("renamed", "CURRENT"),
+        ("removed", "MANIFEST"),
     ] {
         assert!(
             steps

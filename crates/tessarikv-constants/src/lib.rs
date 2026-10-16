@@ -193,6 +193,15 @@ pub const MIN_WAL_SEGMENT_BYTES: u64 = 1024 * 1024;
 /// Largest log segment (4 GiB): an offset inside one segment fits in 32 bits.
 pub const MAX_WAL_SEGMENT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
+/// Default size past which the manifest is replaced by one holding the whole version (64 MiB).
+pub const DEFAULT_MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Smallest manifest limit (1 KiB): a smaller one rolls on nearly every edit.
+pub const MIN_MAX_MANIFEST_BYTES: u64 = 1024;
+
+/// Largest manifest limit (16 GiB).
+pub const MAX_MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
 /// Levels of a keyspace's table tree: level 0 takes flushed tables, levels 1 to 6 compacted ones.
 pub const LEVELS: usize = 7;
 

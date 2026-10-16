@@ -154,3 +154,53 @@ fn an_appended_edit_and_the_current_name_survive_a_power_loss() {
         .unwrap();
     assert_eq!((ids(&version), number), (vec![1], 1));
 }
+
+/// The names of the manifests in the directory.
+fn manifests(storage: &dyn Storage) -> Vec<String> {
+    storage
+        .list(dir())
+        .unwrap()
+        .into_iter()
+        .filter(|name| name.starts_with("MANIFEST-"))
+        .collect()
+}
+
+/// Past its limit a manifest is replaced by a new one holding the version as one edit: the
+/// directory keeps one manifest, it stays near the limit, and every edit survives a reopen.
+#[test]
+fn a_manifest_past_its_limit_rolls_into_a_new_one() {
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let mut store = ManifestStore::create(Arc::clone(&storage), dir(), &Version::empty(), 1, None)
+        .unwrap()
+        .rolling_at(2048, None);
+    for id in 1..=200 {
+        store.append(&flush(id, id * 10)).unwrap();
+        assert_eq!(manifests(storage.as_ref()).len(), 1, "after edit {id}");
+    }
+    let (version, number) = ManifestStore::recover(storage.as_ref(), dir(), None)
+        .unwrap()
+        .unwrap();
+    assert!(number > 1, "rolled: manifest {number}");
+    assert_eq!(ids(&version), ids(&store.version()));
+    assert_eq!(version.tables(0, 0).len(), 200);
+    assert_eq!(version.flushed_sequence(), 2000);
+    let path = dir().join(&manifests(storage.as_ref())[0]);
+    let len = storage.open(&path).unwrap().len().unwrap();
+    // One edit holding every table can itself pass the limit; the next append rolls again.
+    assert!(len < 2048 + 200 * 64, "{len} bytes");
+}
+
+/// Without a limit nothing rolls.
+#[test]
+fn a_manifest_without_a_limit_never_rolls() {
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let mut store =
+        ManifestStore::create(Arc::clone(&storage), dir(), &Version::empty(), 1, None).unwrap();
+    for id in 1..=200 {
+        store.append(&flush(id, id * 10)).unwrap();
+    }
+    let (_, number) = ManifestStore::recover(storage.as_ref(), dir(), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(number, 1);
+}

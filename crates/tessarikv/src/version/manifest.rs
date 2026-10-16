@@ -45,6 +45,12 @@ pub(crate) struct ManifestStore {
     version: Arc<Version>,
     /// The manifest's key, when the database is encrypted.
     sealer: Option<Arc<FileSealer>>,
+    storage: Arc<dyn Storage>,
+    dir: PathBuf,
+    /// Bytes past which the manifest is replaced by a new one holding the version as one edit.
+    limit: u64,
+    /// How a new manifest is encrypted, when the database is.
+    sealing: Option<Arc<Sealing>>,
 }
 
 impl ManifestStore {
@@ -63,23 +69,7 @@ impl ManifestStore {
         sealing: Option<&Sealing>,
     ) -> Result<Self> {
         let previous = read_current(storage.as_ref(), dir)?;
-        let mut file = storage.create(&manifest_path(dir, number))?;
-        let sealer = match sealing {
-            Some(sealing) => {
-                let (header, sealer) = sealing.new_file(FileKind::Manifest)?;
-                file.append(&header.encode())?;
-                Some(sealer)
-            }
-            None => None,
-        };
-        append_edit(file.as_mut(), number, &version.as_edit(), sealer.as_deref())?;
-        let temporary = dir.join(CURRENT_TEMPORARY);
-        let mut current = storage.create(&temporary)?;
-        current.append(format!("{}\n", manifest_name(number)).as_bytes())?;
-        current.sync()?;
-        drop(current);
-        storage.rename(&temporary, &dir.join(CURRENT))?;
-        storage.sync_dir(dir)?;
+        let (file, sealer) = start(storage.as_ref(), dir, version, number, sealing)?;
         if let Some(previous) = previous.filter(|previous| *previous != number) {
             storage.remove(&manifest_path(dir, previous))?;
         }
@@ -88,7 +78,39 @@ impl ManifestStore {
             file,
             version: Arc::new(version.clone()),
             sealer,
+            storage,
+            dir: dir.to_path_buf(),
+            limit: u64::MAX,
+            sealing: None,
         })
+    }
+
+    /// Replaces the manifest by a new one, encrypted with `sealing` when there is one, once an
+    /// append leaves it past `limit` bytes.
+    pub(crate) fn rolling_at(mut self, limit: u64, sealing: Option<Arc<Sealing>>) -> Self {
+        self.limit = limit;
+        self.sealing = sealing;
+        self
+    }
+
+    /// Starts the next manifest holding the version as one edit and makes it current, then lets
+    /// go of this one and removes it: a crash leaves `CURRENT` naming one whole manifest or the
+    /// other. Runs on a blocking thread.
+    fn roll(&mut self) -> Result<()> {
+        let next = self.number.checked_add(1).ok_or(Error::SequenceExhausted)?;
+        let sealing = self.sealing.as_deref();
+        let (file, sealer) = start(
+            self.storage.as_ref(),
+            &self.dir,
+            &self.version,
+            next,
+            sealing,
+        )?;
+        // The old handle goes first: a file still open cannot be removed everywhere.
+        drop(std::mem::replace(&mut self.file, file));
+        let previous = std::mem::replace(&mut self.number, next);
+        self.sealer = sealer;
+        self.storage.remove(&manifest_path(&self.dir, previous))
     }
 
     /// The version as of the last edit appended.
@@ -112,6 +134,9 @@ impl ManifestStore {
             self.sealer.as_deref(),
         )?;
         self.version = Arc::new(next);
+        if self.file.len() > self.limit {
+            self.roll()?;
+        }
         Ok(())
     }
 
@@ -174,6 +199,38 @@ impl ManifestStore {
         }
         Ok(Some((version, number)))
     }
+}
+
+/// A manifest just written and made current: open for appends, with its key when encrypted.
+type Started = (Box<dyn WritableFile>, Option<Arc<FileSealer>>);
+
+/// Writes manifest `number` in `dir` holding `version` as one edit, encrypted under a key of its
+/// own when there is `sealing`, synced, and makes it current; returns it open for appends.
+fn start(
+    storage: &dyn Storage,
+    dir: &Path,
+    version: &Version,
+    number: u64,
+    sealing: Option<&Sealing>,
+) -> Result<Started> {
+    let mut file = storage.create(&manifest_path(dir, number))?;
+    let sealer = match sealing {
+        Some(sealing) => {
+            let (header, sealer) = sealing.new_file(FileKind::Manifest)?;
+            file.append(&header.encode())?;
+            Some(sealer)
+        }
+        None => None,
+    };
+    append_edit(file.as_mut(), number, &version.as_edit(), sealer.as_deref())?;
+    let temporary = dir.join(CURRENT_TEMPORARY);
+    let mut current = storage.create(&temporary)?;
+    current.append(format!("{}\n", manifest_name(number)).as_bytes())?;
+    current.sync()?;
+    drop(current);
+    storage.rename(&temporary, &dir.join(CURRENT))?;
+    storage.sync_dir(dir)?;
+    Ok((file, sealer))
 }
 
 /// Frames `edit` as a record of manifest `number`, sealed as the unit at the frame's offset

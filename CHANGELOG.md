@@ -72,6 +72,8 @@ All notable changes to this project are documented here. The format follows
   files take the current one, and an old key is needed only until no file names it.
 - `KeyspaceOptions::disable_auto_compactions`: the engine starts no compaction of the keyspace by itself, for
   bulk loads; `Db::compact_range` still runs.
+- `DbOptions::max_manifest_bytes` (default 64 MiB): past it the manifest is replaced by a new one holding the
+  current set of tables as one change, so an open does not read an unbounded history.
 - `DbOptionsBuilder::encryption_cipher`: pins the cipher new files are encrypted with (`Cipher`); files written
   under another cipher still open.
 - `StripedCounters`: counters split over per-thread 128-byte stripes, with wait-free adds, sums exact once adds

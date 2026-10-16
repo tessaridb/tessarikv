@@ -66,11 +66,12 @@ impl Db {
         let cache = Arc::new(
             BlockCache::new(options.block_cache_bytes(), keyspace.block_bytes())
                 .with_open_files(options.max_open_files(), Arc::clone(&storage))
-                .with_sealing(sealing)
+                .with_sealing(sealing.clone())
                 .with_statistics(statistics.clone()),
         );
         let opened = {
             let storage = Arc::clone(&storage);
+            let max_manifest_bytes = options.max_manifest_bytes();
             let path = path.clone();
             let cache = Arc::clone(&cache);
             tokio::task::spawn_blocking(move || {
@@ -104,7 +105,8 @@ impl Db {
                     &version,
                     number,
                     cache.sealing(),
-                )?;
+                )?
+                .rolling_at(max_manifest_bytes, sealing);
                 reconcile_keyspaces(&mut manifest, &options)?;
                 super::options_file::record(
                     storage.as_ref(),
