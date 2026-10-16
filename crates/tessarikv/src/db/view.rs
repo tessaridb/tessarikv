@@ -85,7 +85,10 @@ impl View {
         let mut tables = Vec::with_capacity(self.tables.len().saturating_add(1));
         tables.push(EpochTable {
             epoch: next_epoch(self.newest_epoch()),
-            table: Arc::new(Memtable::new()),
+            table: Arc::new(self.tables.first().map_or_else(
+                || Memtable::sized(tessarikv_constants::DEFAULT_MEMTABLE_BYTES),
+                |newest| newest.table.successor(),
+            )),
         });
         tables.extend(self.tables.iter().map(|older| EpochTable {
             epoch: older.epoch,

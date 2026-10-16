@@ -149,7 +149,10 @@ impl Db {
         match options.storage() {
             StorageMode::Memory => Ok(Self {
                 sequencer: Arc::new(Sequencer::new(0, COMMIT_RING_SLOTS)),
-                view: Arc::new(ArcSwap::from_pointee(View::new(0, Memtable::new()))),
+                view: Arc::new(ArcSwap::from_pointee(View::new(
+                    0,
+                    Memtable::sized(options.default_keyspace().memtable_bytes()),
+                ))),
                 snapshots: Arc::new(SnapshotRegistry::new()),
                 #[cfg(test)]
                 switching: std::sync::atomic::AtomicBool::new(false),

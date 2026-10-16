@@ -8,6 +8,12 @@
 //! The table is a lock-free skiplist: inserts from many writers run concurrently, and reads never
 //! wait for them. Inserting the same version twice keeps the first, so a batch may be applied
 //! again after an interruption without changing the table.
+//!
+//! A whole-key bloom filter beside the skiplist lets a read of a key the table does not hold
+//! skip the walk. An insert sets the key's bits before it links the entry, and the entry becomes
+//! visible to a read only through the publication of its sequence, which comes later still; so
+//! a read whose snapshot can see an entry finds its key's bits. A table that outgrows its filter
+//! answers correctly and only skips less.
 
 mod iter;
 
@@ -17,7 +23,8 @@ mod tests;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 
-use tessarikv_sync::{ArenaError, KeyComparator, SkipList};
+use tessarikv_format::key_hash;
+use tessarikv_sync::{ArenaError, ConcurrentBloom, KeyComparator, SkipList};
 use tessarikv_types::{
     InternalKeyRef, SequenceNumber, Trailer, ValueKind, compare_internal, encode_internal,
     seek_trailer,
@@ -58,14 +65,36 @@ pub(crate) struct Memtable {
     entries: SkipList<InternalKeyComparator>,
     /// Range deletes, apart from the point entries: key internal(start, sequence), value end.
     range_deletes: SkipList<InternalKeyComparator>,
+    /// The user keys of the point entries, values and deletes alike.
+    keys: ConcurrentBloom,
 }
 
+/// Table bytes per filter bit: about 1.5 % of the table, some 19 bits per 150-byte entry.
+const BYTES_PER_FILTER_BIT: u64 = 8;
+
 impl Memtable {
-    /// An empty table.
+    /// An empty table with a filter for a small table, as tests use.
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::sized(64 * 1024)
+    }
+
+    /// An empty table whose key filter suits a table of `table_bytes`.
+    pub(crate) fn sized(table_bytes: u64) -> Self {
+        let bits = usize::try_from(table_bytes / BYTES_PER_FILTER_BIT).unwrap_or(usize::MAX);
+        Self::with_filter_bits(bits)
+    }
+
+    /// An empty table with a key filter the size of this one's, to take its place.
+    pub(crate) fn successor(&self) -> Self {
+        Self::with_filter_bits(self.keys.bits())
+    }
+
+    fn with_filter_bits(bits: usize) -> Self {
         Self {
             entries: SkipList::new(InternalKeyComparator),
             range_deletes: SkipList::new(InternalKeyComparator),
+            keys: ConcurrentBloom::new(bits),
         }
     }
 
@@ -87,6 +116,10 @@ impl Memtable {
             ValueKind::Delete => (&self.entries, &[][..]),
             ValueKind::RangeDelete => (&self.range_deletes, value),
         };
+        if kind != ValueKind::RangeDelete {
+            // Before the entry is linked: see the module documentation.
+            self.keys.insert(key_hash(key));
+        }
         SCRATCH
             .with_borrow_mut(|internal| {
                 internal.clear();
@@ -99,6 +132,9 @@ impl Memtable {
 
     /// The newest version of `key` whose sequence is at most `snapshot`.
     pub(crate) fn get(&self, key: &[u8], snapshot: SequenceNumber) -> Lookup<'_> {
+        if !self.keys.may_contain(key_hash(key)) {
+            return Lookup::Absent;
+        }
         let mut cursor = self.entries.cursor();
         SCRATCH.with_borrow_mut(|internal| {
             internal.clear();

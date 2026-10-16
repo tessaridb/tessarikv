@@ -20,6 +20,7 @@
 
 mod append_buffer;
 mod arena;
+mod bloom;
 mod clock_cache;
 mod error;
 mod sequencer;
@@ -29,6 +30,7 @@ mod slot_directory;
 mod snapshots;
 
 pub use append_buffer::{AppendReader, AppendWriter, append_buffer};
+pub use bloom::ConcurrentBloom;
 pub use clock_cache::{Admission, ClockCache};
 pub use error::{ArenaError, BufferError};
 pub use sequencer::{Claim, Sequencer, Switch, next_epoch};

@@ -173,8 +173,9 @@ fn byte_index(line: usize, bit: u32) -> Option<usize> {
 }
 
 /// The filter's 64-bit hash of a key: eight bytes at a time folded by multiplication, then
-/// finished with an avalanche so every input bit affects every output bit.
-pub(crate) fn hash(key: &[u8]) -> u64 {
+/// finished with an avalanche so every input bit affects every output bit. In-memory filters
+/// over the same keys use it too, so one hash serves every filter a read consults.
+pub fn hash(key: &[u8]) -> u64 {
     const MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
     let mut state = u64::try_from(key.len())
         .unwrap_or(u64::MAX)

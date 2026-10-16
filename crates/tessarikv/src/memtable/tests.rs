@@ -194,3 +194,46 @@ fn concurrent_inserts_match_a_sequential_model() {
         );
     }
 }
+
+#[test]
+fn a_key_held_only_as_a_delete_reads_as_deleted_not_absent() {
+    // An absent answer would let an older table's value show through the delete.
+    let table = Memtable::sized(1024 * 1024);
+    for key in 0_u32..1000 {
+        table
+            .insert(seq(1), ValueKind::Delete, &key.to_be_bytes(), b"")
+            .unwrap();
+    }
+    assert!((0_u32..1000).all(|key| table.get(&key.to_be_bytes(), seq(1)) == Lookup::Deleted));
+}
+
+#[test]
+fn a_table_that_outgrows_its_filter_still_answers_every_key() {
+    // One 512-bit line for 2000 keys: every bit set, so the filter passes everything.
+    let table = Memtable::sized(0);
+    for key in 0_u32..2000 {
+        table
+            .insert(
+                seq(1),
+                ValueKind::Value,
+                &key.to_be_bytes(),
+                &key.to_le_bytes(),
+            )
+            .unwrap();
+    }
+    for key in 0_u32..4000 {
+        let expected = (key < 2000).then(|| Some(key.to_le_bytes().to_vec()));
+        assert_eq!(
+            value(table.get(&key.to_be_bytes(), seq(1))),
+            expected,
+            "key {key}"
+        );
+    }
+}
+
+#[test]
+fn a_successor_table_keeps_its_predecessors_filter_size() {
+    let table = Memtable::sized(1024 * 1024);
+    assert_eq!(table.keys.bits(), 1024 * 1024 / 8);
+    assert_eq!(table.successor().keys.bits(), table.keys.bits());
+}

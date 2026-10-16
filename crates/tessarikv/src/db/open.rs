@@ -49,6 +49,7 @@ impl Db {
             options.block_cache_bytes(),
             keyspace.block_bytes(),
         ));
+        let memtable_bytes = keyspace.memtable_bytes();
         let opened = {
             let storage = Arc::clone(&storage);
             let path = path.clone();
@@ -58,7 +59,7 @@ impl Db {
                 let (version, number) = ManifestStore::recover(storage.as_ref(), &path)?
                     .unwrap_or_else(|| (Version::empty(), 0));
                 let files = restore_tables(storage.as_ref(), &path, &version, &cache)?;
-                let table = Memtable::new();
+                let table = Memtable::sized(memtable_bytes);
                 let flushed = version.flushed_sequence();
                 let recovered = recover(storage.as_ref(), &path, &table, recovery, flushed)?;
                 let number = number.checked_add(1).ok_or(Error::SequenceExhausted)?;
