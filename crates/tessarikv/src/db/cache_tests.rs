@@ -102,7 +102,10 @@ fn flushed(cache: &Arc<BlockCache>) -> View {
 
 #[tokio::test]
 async fn a_read_that_asks_not_to_fill_the_cache_leaves_it_as_it_was() {
-    let cache = Arc::new(BlockCache::new(1 << 20));
+    let cache = Arc::new(BlockCache::new(
+        1 << 20,
+        tessarikv_constants::DEFAULT_BLOCK_BYTES,
+    ));
     let view = flushed(&cache);
     let (default, at) = (KeyspaceId::DEFAULT, SequenceNumber::new(100).unwrap());
     let options = ReadOptions {
@@ -153,7 +156,7 @@ async fn read_futures_can_move_between_threads() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_move_dropped_while_it_waits_for_storage_leaves_the_iterator_not_valid() {
     // No cache: every block a move reaches is read from storage.
-    let cache = Arc::new(BlockCache::new(0));
+    let cache = Arc::new(BlockCache::new(0, tessarikv_constants::DEFAULT_BLOCK_BYTES));
     let view = flushed(&cache);
     let at = SequenceNumber::new(100).unwrap();
     let options = ReadOptions::default();

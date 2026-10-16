@@ -56,7 +56,8 @@ All notable changes to this project are documented here. The format follows
   scans and iterators honour it at every snapshot, and it survives flushes and reopening. The batch encoding moves to
   version 2 and table files to format version 2 (a range-delete block); version 1 of both is still read.
 - Block cache: a table file keeps its index, filter and properties in memory and reads data blocks on demand
-  through a cache of `DbOptions::block_cache_bytes` (zero disables it); a block that is not cached is read on a
+  through a cache of `DbOptions::block_cache_bytes` (zero disables it) whose lookups and inserts never wait, sized
+  for the keyspace's block size; a block that is not cached is read on a
   blocking thread, and `ReadOptions::fill_cache = false` leaves the cache as it was. `Table::open_with` opens a
   table through positional reads with its data blocks served by a `BlockSource`, and `TableIter::pending` /
   `resume` let a walk wait for a block. A block read whose thread stops returns `Error::ReadFailed`.

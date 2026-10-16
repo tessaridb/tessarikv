@@ -146,7 +146,7 @@ proptest! {
         cuts in (any::<prop::sample::Index>(), any::<prop::sample::Index>()),
         capacity in cache_bytes(),
     ) {
-        let cache = Arc::new(BlockCache::new(capacity));
+        let cache = Arc::new(BlockCache::new(capacity, tessarikv_constants::DEFAULT_BLOCK_BYTES));
         // Both older tables hold at least one write: an empty table is never flushed.
         let first = 1 + cuts.0.index(ops.len() - 2);
         let second = first + 1 + cuts.1.index(ops.len() - first - 1);
@@ -201,7 +201,12 @@ async fn a_damaged_table_file_fails_the_scan_instead_of_shortening_it() {
         .with_next_table()
         .after_flush(
             0,
-            Some(table_file(bytes, &built, 1, &Arc::new(BlockCache::new(0)))),
+            Some(table_file(
+                bytes,
+                &built,
+                1,
+                &Arc::new(BlockCache::new(0, tessarikv_constants::DEFAULT_BLOCK_BYTES)),
+            )),
         )
         .unwrap();
     let at = SequenceNumber::new(100).unwrap();

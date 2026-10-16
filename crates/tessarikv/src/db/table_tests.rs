@@ -52,7 +52,7 @@ proptest! {
         let (low, high) = (keys.iter().min().copied(), keys.iter().max().copied());
         prop_assert_eq!(built.smallest.get(..2), Some(&[b'k', low.unwrap()][..]));
         prop_assert_eq!(built.largest.get(..2), Some(&[b'k', high.unwrap()][..]));
-        let cache = Arc::new(BlockCache::new(capacity));
+        let cache = Arc::new(BlockCache::new(capacity, tessarikv_constants::DEFAULT_BLOCK_BYTES));
         let file = table_file(built.bytes.clone(), &built, 1, &cache);
         for snapshot in 0..=u64::try_from(ops.len()).unwrap() {
             let snapshot = SequenceNumber::new(snapshot).unwrap();

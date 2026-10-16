@@ -32,7 +32,7 @@ fn key(file: u64, offset: u64) -> BlockKey {
 
 #[test]
 fn a_cache_of_no_bytes_keeps_nothing() {
-    let cache = BlockCache::new(0);
+    let cache = BlockCache::new(0, tessarikv_constants::DEFAULT_BLOCK_BYTES);
     cache.insert(key(1, 0), block(key(1, 0), 100));
     assert!(cache.get(key(1, 0)).is_none());
     assert_eq!(cache.used_bytes(), 0);
@@ -40,7 +40,7 @@ fn a_cache_of_no_bytes_keeps_nothing() {
 
 #[test]
 fn a_block_is_found_under_its_own_key_only() {
-    let cache = BlockCache::new(1 << 20);
+    let cache = BlockCache::new(1 << 20, tessarikv_constants::DEFAULT_BLOCK_BYTES);
     cache.insert(key(1, 0), block(key(1, 0), 100));
     cache.insert(key(2, 0), block(key(2, 0), 100));
     assert_eq!(named(&cache.get(key(1, 0)).unwrap()), key(1, 0));
@@ -49,23 +49,27 @@ fn a_block_is_found_under_its_own_key_only() {
 }
 
 #[test]
-fn the_cache_never_holds_more_than_its_capacity_and_drops_the_oldest_first() {
+fn the_cache_never_holds_more_than_its_capacity_and_keeps_the_block_being_read() {
     let capacity = 8 * 1024;
-    let cache = BlockCache::new(capacity);
-    for offset in 0..64 {
+    let cache = BlockCache::new(capacity, tessarikv_constants::DEFAULT_BLOCK_BYTES);
+    cache.insert(key(1, 0), block(key(1, 0), 1000));
+    for offset in 1..64 {
+        assert!(
+            cache.get(key(1, 0)).is_some(),
+            "the block read was dropped at {offset}"
+        );
         cache.insert(key(1, offset), block(key(1, offset), 1000));
-        assert!(cache.used_bytes() <= 8 * 1024, "at {offset}");
+        assert!(cache.used_bytes() <= capacity, "at {offset}");
     }
-    assert!(cache.get(key(1, 0)).is_none(), "the first block was kept");
-    assert!(
-        cache.get(key(1, 63)).is_some(),
-        "the last block was dropped"
-    );
+    let kept = (1..63)
+        .filter(|&offset| cache.get(key(1, offset)).is_some())
+        .count();
+    assert!(kept < 62, "nothing was evicted");
 }
 
 #[test]
 fn a_block_larger_than_the_cache_is_not_kept() {
-    let cache = BlockCache::new(4096);
+    let cache = BlockCache::new(4096, tessarikv_constants::DEFAULT_BLOCK_BYTES);
     cache.insert(key(1, 0), block(key(1, 0), 100));
     cache.insert(key(1, 1), block(key(1, 1), 10_000));
     assert!(cache.get(key(1, 1)).is_none());
@@ -77,7 +81,7 @@ fn a_block_larger_than_the_cache_is_not_kept() {
 
 #[test]
 fn inserting_a_block_twice_charges_it_once() {
-    let cache = BlockCache::new(1 << 20);
+    let cache = BlockCache::new(1 << 20, tessarikv_constants::DEFAULT_BLOCK_BYTES);
     cache.insert(key(1, 0), block(key(1, 0), 1000));
     let once = cache.used_bytes();
     cache.insert(key(1, 0), block(key(1, 0), 1000));
@@ -86,7 +90,7 @@ fn inserting_a_block_twice_charges_it_once() {
 
 #[test]
 fn a_reader_keeps_its_block_after_the_cache_drops_it() {
-    let cache = BlockCache::new(4096);
+    let cache = BlockCache::new(4096, tessarikv_constants::DEFAULT_BLOCK_BYTES);
     cache.insert(key(1, 0), block(key(1, 0), 2000));
     let held = cache.get(key(1, 0)).unwrap();
     for offset in 1..16 {
@@ -99,7 +103,10 @@ fn a_reader_keeps_its_block_after_the_cache_drops_it() {
 #[test]
 fn concurrent_readers_and_writers_see_only_the_block_of_their_key() {
     let capacity = 64 * 1024;
-    let cache = Arc::new(BlockCache::new(capacity));
+    let cache = Arc::new(BlockCache::new(
+        capacity,
+        tessarikv_constants::DEFAULT_BLOCK_BYTES,
+    ));
     let threads: Vec<_> = (0..8_u64)
         .map(|thread| {
             let cache = Arc::clone(&cache);
@@ -110,7 +117,8 @@ fn concurrent_readers_and_writers_see_only_the_block_of_their_key() {
                         Some(found) => assert_eq!(named(&found), wanted),
                         None => cache.insert(wanted, block(wanted, 700)),
                     }
-                    assert!(cache.used_bytes() <= capacity);
+                    // Each racing insert may count its block before it is kept or evicted.
+                    assert!(cache.used_bytes() <= capacity + 8 * 1024);
                 }
             })
         })

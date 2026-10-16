@@ -38,7 +38,10 @@ impl Db {
         let recovery = options.wal_recovery();
         let segment_bytes = options.wal_segment_bytes();
         let keyspace = options.default_keyspace().clone();
-        let cache = Arc::new(BlockCache::new(options.block_cache_bytes()));
+        let cache = Arc::new(BlockCache::new(
+            options.block_cache_bytes(),
+            keyspace.block_bytes(),
+        ));
         let opened = {
             let storage = Arc::clone(&storage);
             let path = path.clone();

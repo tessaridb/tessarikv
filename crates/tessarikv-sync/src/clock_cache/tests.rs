@@ -58,6 +58,24 @@ fn an_entry_read_since_the_last_sweep_outlives_one_that_was_not() {
 }
 
 #[test]
+fn a_full_window_spares_an_entry_read_since_the_last_sweep() {
+    for _ in 0..50 {
+        // Sized for two entries of 50, so four slots; entries of 1 fill the slots long before
+        // the charge bound, and every insert must replace an entry of its window.
+        let cache = ClockCache::new(100, 50);
+        assert_eq!(cache.insert(0_u32, 0_u32, 1), Admission::Admitted);
+        for key in 1..64 {
+            assert_eq!(
+                cache.get(&0),
+                Some(0),
+                "the entry read was replaced at {key}"
+            );
+            assert_eq!(cache.insert(key, key, 1), Admission::Admitted);
+        }
+    }
+}
+
+#[test]
 fn every_value_is_dropped_exactly_once_and_a_reader_keeps_its_clone() {
     let drops = Arc::new(AtomicU64::new(0));
     let cache = ClockCache::new(30, 10);

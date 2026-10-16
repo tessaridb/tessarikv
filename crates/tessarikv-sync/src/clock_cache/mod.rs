@@ -170,8 +170,12 @@ impl<K: Copy + Eq + Hash, V: Clone> ClockCache<K, V> {
         }
         let claimed = match self.window(hash).find_map(Slot::claim_empty) {
             Some(held) => Some(held),
-            // Every slot of the window is in use: replace an entry nobody is reading.
-            None => self.window(hash).find_map(|slot| slot.take_unread(false)),
+            // Every slot of the window is in use: replace an entry nobody is reading, sparing
+            // the ones read since the clock last passed (which this pass clears) when it can.
+            None => self
+                .window(hash)
+                .find_map(|slot| slot.take_unread(true))
+                .or_else(|| self.window(hash).find_map(|slot| slot.take_unread(false))),
         };
         let Some(held) = claimed else {
             self.refund(charge);

@@ -83,7 +83,10 @@ fn model(writes: &[Write], count: usize) -> BTreeMap<Vec<u8>, Vec<u8>> {
 /// Three in-memory tables holding `writes` split at `first` and `second`, the oldest `flushed`
 /// of them moved to table files.
 fn view(writes: &[Write], first: usize, second: usize, flushed: usize, capacity: u64) -> View {
-    let cache = std::sync::Arc::new(BlockCache::new(capacity));
+    let cache = std::sync::Arc::new(BlockCache::new(
+        capacity,
+        tessarikv_constants::DEFAULT_BLOCK_BYTES,
+    ));
     let mut view = View::new(0, Memtable::new());
     fill(view.table(0).unwrap(), 1, &writes[..first]);
     view = view.with_next_table();

@@ -40,7 +40,10 @@ fn expected(
 
 /// The view of `ops` split in three tables, with the oldest `flushed` of them in table files.
 fn view(ops: &[Op], first: usize, second: usize, flushed: usize, capacity: u64) -> View {
-    let cache = Arc::new(BlockCache::new(capacity));
+    let cache = Arc::new(BlockCache::new(
+        capacity,
+        tessarikv_constants::DEFAULT_BLOCK_BYTES,
+    ));
     let mut view = unflushed(ops, first, second);
     for epoch in 0..flushed {
         let id = u64::try_from(epoch).unwrap() + 1;
