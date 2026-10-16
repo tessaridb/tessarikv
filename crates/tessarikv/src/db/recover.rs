@@ -6,6 +6,7 @@
 //! over; a batch never straddles it, since a flush cuts between two epochs and a batch's
 //! sequences all belong to one. Sequence numbers only grow along the log; a range that was never logged (a batch
 //! written without the log, or one whose writer gave up) is simply absent.
+//! A whole segment is never absent: one missing between two others fails the open.
 //!
 //! The replay stops at the first frame that is not valid. Under
 //! [`WalRecovery::PointInTime`] the damaged segment is cut back to its valid prefix and every
@@ -46,6 +47,20 @@ pub(super) fn recover(
     flushed: u64,
 ) -> Result<Recovered> {
     let segments = segments(storage, dir)?;
+    // Segments are created and removed in log-number order, so the ones left are consecutive;
+    // a number missing between two of them is a segment removed from outside, with writes the
+    // replay would otherwise skip without a word, whatever the recovery mode.
+    for pair in segments.windows(2) {
+        if let [before, after] = *pair
+            && before.checked_add(1) != Some(after)
+        {
+            return Err(corruption(
+                &segment_path(dir, before.saturating_add(1)),
+                0,
+                format!("log segment missing between segments {before} and {after}"),
+            ));
+        }
+    }
     let next_log_number = match segments.last() {
         Some(last) => last.checked_add(1).ok_or(Error::SequenceExhausted)?,
         None => 1,

@@ -83,6 +83,8 @@ mod manual_compaction_tests;
 #[cfg(test)]
 mod memtable_ceiling_tests;
 #[cfg(test)]
+mod missing_segment_tests;
+#[cfg(test)]
 mod multi_get_tests;
 #[cfg(test)]
 mod multi_scan_tests;
