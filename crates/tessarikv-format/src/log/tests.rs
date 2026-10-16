@@ -167,3 +167,13 @@ fn a_payload_checksum_can_be_taken_in_parts() {
         payload_checksum(&whole)
     );
 }
+
+#[test]
+fn the_checksum_covers_the_payload_then_the_length_and_the_log_number() {
+    let payload = b"payload first, so the log writer appends twelve bytes";
+    let mut frame = vec![0; size(payload.len())];
+    encode_frame(LOG, payload, &mut frame).expect("destination is exactly one frame");
+    let fields = &frame[4..FRAME_HEADER_BYTES];
+    let expected = crc32c::crc32c_append(crc32c::crc32c(payload), fields);
+    assert_eq!(frame[..4], expected.to_le_bytes());
+}

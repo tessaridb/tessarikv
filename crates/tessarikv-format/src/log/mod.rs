@@ -6,8 +6,9 @@
 //! [checksum: u32][payload_len: u32][log_number: u64][payload: payload_len bytes]
 //! ```
 //!
-//! All integers are little-endian. The checksum is CRC-32C over `payload_len`, `log_number` and
-//! the payload. Frames are packed back to back with no alignment, so a frame's size depends only
+//! All integers are little-endian. The checksum is CRC-32C over the payload, then `payload_len`
+//! and `log_number`: the payload comes first so that the log writer, which learns `log_number`
+//! only when it places the frame, finishes a payload's checksum by appending twelve bytes. Frames are packed back to back with no alignment, so a frame's size depends only
 //! on its payload: a writer knows how many bytes to reserve before it knows where they land.
 //!
 //! A log file is read as the longest prefix of valid frames. What follows that prefix tells how
@@ -104,19 +105,15 @@ pub fn frame_header(
     let mut header = [0; FRAME_HEADER_BYTES];
     header[4..8].copy_from_slice(&length.to_le_bytes());
     header[8..16].copy_from_slice(&log_number.to_le_bytes());
-    // The CRC of the fields followed by the payload, combined from the two parts' CRCs.
-    let checksum = crc32c::crc32c_combine(
-        crc32c::crc32c(&header[4..16]),
-        payload_checksum,
-        payload_len,
-    );
+    // The payload's CRC continued over the fields: twelve bytes, whatever the payload's length.
+    let checksum = crc32c::crc32c_append(payload_checksum, &header[4..16]);
     header[0..4].copy_from_slice(&checksum.to_le_bytes());
     Ok(header)
 }
 
-/// CRC-32C over the header fields after the checksum, then the payload.
+/// CRC-32C over the payload, then the header fields after the checksum.
 fn checksum(fields: &[u8], payload: &[u8]) -> u32 {
-    crc32c::crc32c_append(crc32c::crc32c(fields), payload)
+    crc32c::crc32c_append(crc32c::crc32c(payload), fields)
 }
 
 /// The error for a payload no frame can carry.

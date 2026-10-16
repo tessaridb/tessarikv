@@ -28,7 +28,8 @@ All notable changes to this project are documented here. The format follows
   per key; a filter whose size or probe count does not add up is refused.
 - Table block format: sorted entries with shared key prefixes and restart points, a builder that refuses keys out of
   order, and an iterator that seeks by binary search and stops with an error on a damaged entry.
-- Log frame codec: CRC-32C checksummed frames tagged with their log number; a reader returns the valid prefix and
+- Log frame codec: CRC-32C checksummed frames tagged with their log number (the checksum covers the payload first,
+  so the log writer finishes it by appending twelve bytes); a reader returns the valid prefix and
   whether the log ended cleanly, with a torn write, or on bytes from an earlier use of the file.
 - Write-ahead log: one writer task puts every logged batch in commit order into segment files,
   writes each run of waiting batches with one call and syncs once for all writers waiting on durability;

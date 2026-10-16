@@ -245,3 +245,27 @@ async fn recovery_reports_each_segment_with_the_last_sequence_it_holds() {
     assert_eq!(found, [(1, 2), (2, 3)]);
     assert_eq!(recovered.next_log_number, 3);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn batches_on_both_sides_of_the_direct_checksum_size_are_recovered() {
+    let limit = tessarikv_constants::DIRECT_CHECKSUM_BYTES;
+    let sizes = [1, limit - 64, limit, 2 * limit];
+    let storage = FaultStorage::default();
+    let db = open(&storage, options()).await.expect("opened");
+    for (index, size) in sizes.iter().enumerate() {
+        let value = "v".repeat(*size);
+        db.write(
+            &put(&format!("k{index}"), &value),
+            &write_options(Durability::Sync),
+        )
+        .await
+        .expect("written");
+    }
+    let reopened = open(&storage.crash(Path::new(PATH), true), options())
+        .await
+        .expect("recovered");
+    for (index, size) in sizes.iter().enumerate() {
+        let read = get(&reopened, &format!("k{index}")).await;
+        assert_eq!(read.map(|value| value.len()), Some(*size), "batch {index}");
+    }
+}

@@ -1,5 +1,6 @@
 //! Applying a batch.
 
+use tessarikv_constants::DIRECT_CHECKSUM_BYTES;
 use tessarikv_format::{FRAME_HEADER_BYTES, WriteBatch, concat_checksum, payload_checksum};
 use tessarikv_sync::{Claim, Sequencer};
 use tessarikv_types::SequenceNumber;
@@ -138,7 +139,12 @@ fn prepare(batch: &WriteBatch) -> Prepared {
     bytes.extend_from_slice(encoded);
     Prepared {
         bytes,
-        batch_checksum: payload_checksum(encoded),
+        // Only a batch whose checksum is combined later needs it now.
+        batch_checksum: if encoded.len() < DIRECT_CHECKSUM_BYTES {
+            0
+        } else {
+            payload_checksum(encoded)
+        },
         batch_len: encoded.len(),
     }
 }
@@ -153,11 +159,15 @@ impl Prepared {
                 what: "a log frame without room for its sequence number",
             })?
             .copy_from_slice(&sequence);
-        let checksum = concat_checksum(
-            payload_checksum(&sequence),
-            self.batch_checksum,
-            self.batch_len,
-        );
+        let checksum = if self.batch_len < DIRECT_CHECKSUM_BYTES {
+            payload_checksum(self.bytes.get(FRAME_HEADER_BYTES..).unwrap_or_default())
+        } else {
+            concat_checksum(
+                payload_checksum(&sequence),
+                self.batch_checksum,
+                self.batch_len,
+            )
+        };
         Frame::with_checksum(self.bytes, checksum)
     }
 }
