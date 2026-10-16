@@ -29,6 +29,8 @@ mod source;
 #[cfg(test)]
 mod codec_tests;
 #[cfg(test)]
+mod offset_tests;
+#[cfg(test)]
 mod source_tests;
 #[cfg(test)]
 mod tests;

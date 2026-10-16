@@ -149,6 +149,34 @@ impl Table {
         self.entries
     }
 
+    /// Where the data block that would hold `key` starts in the file, read from the index alone;
+    /// the end of the data when every key is below `key`. The bytes between two keys are the
+    /// difference of their offsets, to within a block.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] for a damaged index entry.
+    pub fn offset_of(&self, key: &[u8]) -> Result<u64> {
+        let mut index = self.index.iter();
+        index.seek(key);
+        if index.valid() {
+            return Ok(BlockHandle::decode(index.value())?.offset());
+        }
+        index.status()?;
+        index.seek_to_last();
+        if !index.valid() {
+            index.status()?;
+            return Ok(0);
+        }
+        let last = BlockHandle::decode(index.value())?;
+        last.offset()
+            .checked_add(last.size())
+            .ok_or(Error::Malformed {
+                what: "table index",
+                reason: "a block ends past the largest offset",
+            })
+    }
+
     /// An iterator over the table, positioned nowhere until a seek.
     pub fn iter(&self) -> TableIter {
         TableIter::new(Arc::clone(&self.source), self.compare, self.index.iter())

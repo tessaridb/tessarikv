@@ -53,6 +53,8 @@ All notable changes to this project are documented here. The format follows
 - `Db::flush`: writes every batch committed before the call to table files and returns once they are there.
 - `Db::compact_range`: compacts a key range down to the bottom level and returns once done; versions no snapshot
   reads and deletes leave the disk. Writes, reads and automatic compactions go on meanwhile.
+- `Db::approximate_size`: the bytes of table files a key range takes, from table metadata and indexes, reading
+  nothing from storage; `Table::offset_of` places a key in a table file from its index.
 - `multi_get` on `Db`, `Snapshot` and `Transaction`: many keys read at one snapshot, values in the order asked.
 - `Db::oldest_snapshot`: the oldest snapshot a `Snapshot` or `Transaction` still holds, which keeps old versions
   from compaction.

@@ -274,7 +274,9 @@ async fn a_manual_compaction_keeps_newer_versions_above_older_ones() {
     for index in 0..KEYS {
         put_noise(&db, index, 9).await;
     }
-    db.compact_range(None, None).await.expect("compacted");
+    db.compact_range(KeyspaceId::DEFAULT, b"", None)
+        .await
+        .expect("compacted");
     for index in 0..KEYS {
         let read = db
             .get(KeyspaceId::DEFAULT, &key(index), &ReadOptions::default())

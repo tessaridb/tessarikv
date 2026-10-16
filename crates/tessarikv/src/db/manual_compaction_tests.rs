@@ -123,7 +123,9 @@ async fn a_full_manual_compaction_leaves_one_version_per_live_key_in_the_bottom_
     db.flush().await.expect("flushed");
     let (before, _) = stored(&db).await;
     assert!(before.values().any(|versions| *versions > 1));
-    db.compact_range(None, None).await.expect("compacted");
+    db.compact_range(KeyspaceId::DEFAULT, b"", None)
+        .await
+        .expect("compacted");
     let (after, tables) = stored(&db).await;
     assert!(
         tables.iter().all(|(level, _)| *level == bottom()),
@@ -145,16 +147,18 @@ async fn a_bounded_manual_compaction_rewrites_only_the_tables_touching_its_range
     for index in 0..KEYS / 4 {
         put(&db, index, 0).await;
     }
-    db.compact_range(None, None).await.expect("compacted");
+    db.compact_range(KeyspaceId::DEFAULT, b"", None)
+        .await
+        .expect("compacted");
     for index in KEYS * 3 / 4..KEYS {
         put(&db, index, 0).await;
     }
-    db.compact_range(Some(&key(KEYS * 3 / 4)), None)
+    db.compact_range(KeyspaceId::DEFAULT, &key(KEYS * 3 / 4), None)
         .await
         .expect("compacted");
     let (_, tables) = stored(&db).await;
     let first: Vec<u64> = tables.iter().map(|(_, id)| *id).collect();
-    db.compact_range(Some(&key(0)), Some(&key(KEYS / 4)))
+    db.compact_range(KeyspaceId::DEFAULT, &key(0), Some(&key(KEYS / 4)))
         .await
         .expect("compacted");
     let (versions, tables) = stored(&db).await;
@@ -184,7 +188,9 @@ async fn a_held_snapshot_keeps_the_version_it_reads_through_a_manual_compaction(
     db.flush().await.expect("flushed");
     let snapshot = db.snapshot().expect("snapshot");
     put(&db, 7, 1).await;
-    db.compact_range(None, None).await.expect("compacted");
+    db.compact_range(KeyspaceId::DEFAULT, b"", None)
+        .await
+        .expect("compacted");
     let old = snapshot
         .get(KeyspaceId::DEFAULT, &key(7), &ReadOptions::default())
         .await
@@ -213,9 +219,13 @@ async fn writes_during_a_manual_compaction_are_all_kept() {
             }
         })
     };
-    db.compact_range(None, None).await.expect("compacted");
+    db.compact_range(KeyspaceId::DEFAULT, b"", None)
+        .await
+        .expect("compacted");
     writer.await.expect("writer finished");
-    db.compact_range(None, None).await.expect("compacted");
+    db.compact_range(KeyspaceId::DEFAULT, b"", None)
+        .await
+        .expect("compacted");
     for index in 0..KEYS {
         assert_eq!(read(&db, index).await, Some(value(index * 1000 + 3)));
     }
@@ -229,7 +239,7 @@ async fn a_manual_compaction_in_memory_or_first_in_first_out_only_flushes() {
         .await
         .expect("opened");
     memory
-        .compact_range(None, None)
+        .compact_range(KeyspaceId::DEFAULT, b"", None)
         .await
         .expect("nothing to do");
     let db = open(CompactionStyle::Fifo {
@@ -239,7 +249,9 @@ async fn a_manual_compaction_in_memory_or_first_in_first_out_only_flushes() {
     put(&db, 1, 0).await;
     db.flush().await.expect("flushed");
     put(&db, 1, 1).await;
-    db.compact_range(None, None).await.expect("compacted");
+    db.compact_range(KeyspaceId::DEFAULT, b"", None)
+        .await
+        .expect("compacted");
     let (versions, tables) = stored(&db).await;
     assert_eq!(tables.len(), 2);
     assert!(tables.iter().all(|(level, _)| *level == 0));

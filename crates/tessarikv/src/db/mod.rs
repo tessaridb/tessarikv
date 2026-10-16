@@ -12,6 +12,7 @@
 //! This version serves the default keyspace. On storage, a full in-memory table is flushed to a
 //! table file in the background (see `installer`); in memory, every batch stays in memory.
 
+mod approximate_size;
 mod block_cache;
 mod commits;
 mod compact_range;
@@ -34,6 +35,8 @@ mod tables;
 mod view;
 mod write;
 
+#[cfg(test)]
+mod approximate_size_tests;
 #[cfg(test)]
 mod cache_tests;
 #[cfg(test)]

@@ -7,10 +7,10 @@ use super::super::pick_tests::{SHAPE, ids, levels, table};
 use super::{Active, Request, Step};
 use crate::CompactionStyle;
 
-fn request(start: Option<&[u8]>, end: Option<&[u8]>, fresh_from: u64) -> Active {
+fn request(start: &[u8], end: Option<&[u8]>, fresh_from: u64) -> Active {
     let (done, _) = oneshot::channel();
     let request = Request {
-        start: start.map(<[u8]>::to_vec),
+        start: start.to_vec(),
         end: end.map(<[u8]>::to_vec),
         done,
     };
@@ -26,7 +26,7 @@ fn level_zero_lands_no_lower_than_the_first_level_holding_data() {
         table(5, 3, b"a", b"m", 1000),
         table(1, 6, b"a", b"z", 10_000),
     ]);
-    let active = request(None, None, 10);
+    let active = request(b"", None, 10);
     let Step::Run(pick, next) =
         active.next(&tables, CompactionStyle::Leveled, SHAPE, &Busy::default())
     else {
@@ -45,14 +45,14 @@ fn bottom_tables_in_the_range_are_rewritten_in_place() {
         table(2, 6, b"d", b"f", 100),
         table(7, 6, b"g", b"i", 100),
     ]);
-    let active = request(Some(b"b"), Some(b"e"), 5);
+    let active = request(b"b", Some(b"e"), 5);
     let Step::Run(pick, _) =
         active.next(&tables, CompactionStyle::Leveled, SHAPE, &Busy::default())
     else {
         panic!("bottom tables touch the range");
     };
     assert_eq!((pick.output_level, ids(&pick.inputs)), (6, vec![1, 2]));
-    let one = request(Some(b"a"), Some(b"b"), 5);
+    let one = request(b"a", Some(b"b"), 5);
     let Step::Run(single, _) = one.next(&tables, CompactionStyle::Leveled, SHAPE, &Busy::default())
     else {
         panic!("one bottom table touches the range");
@@ -61,7 +61,7 @@ fn bottom_tables_in_the_range_are_rewritten_in_place() {
         !single.is_move(),
         "a table rewritten in its level is not a move"
     );
-    let fresh = request(Some(b"g"), None, 5);
+    let fresh = request(b"g", None, 5);
     assert!(matches!(
         fresh.next(&tables, CompactionStyle::Leveled, SHAPE, &Busy::default()),
         Step::Done
@@ -76,7 +76,7 @@ fn a_step_waits_while_its_tables_are_busy() {
         tables: vec![1],
         ranges: Vec::new(),
     };
-    let active = request(None, None, 5);
+    let active = request(b"", None, 5);
     assert!(matches!(
         active.next(&tables, CompactionStyle::Leveled, SHAPE, &busy),
         Step::Blocked

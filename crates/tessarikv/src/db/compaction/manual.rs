@@ -36,10 +36,10 @@ mod tests;
 /// Requests waiting for the installer at most; more callers wait to send.
 pub(crate) const QUEUE: usize = 16;
 
-/// A caller's request: the user keys `[start, end)` (unbounded where `None`), and where the
-/// outcome goes.
+/// A caller's request: the user keys `[start, end)` (unbounded above when `end` is `None`), and
+/// where the outcome goes.
 pub(crate) struct Request {
-    start: Option<Vec<u8>>,
+    start: Vec<u8>,
     end: Option<Vec<u8>>,
     done: oneshot::Sender<Result<()>>,
 }
@@ -129,12 +129,12 @@ impl Compactions {
 pub(crate) async fn compact(
     requests: &mpsc::Sender<Request>,
     signals: &FlushSignals,
-    start: Option<&[u8]>,
+    start: &[u8],
     end: Option<&[u8]>,
 ) -> Result<()> {
     let (done, outcome) = oneshot::channel();
     let request = Request {
-        start: start.map(<[u8]>::to_vec),
+        start: start.to_vec(),
         end: end.map(<[u8]>::to_vec),
         done,
     };
@@ -264,11 +264,7 @@ impl Active {
 
     /// Whether `table`'s user keys meet `[start, end)`.
     fn touches(&self, table: &TableMeta) -> bool {
-        let after_start = self
-            .request
-            .start
-            .as_deref()
-            .is_none_or(|start| start <= user_key(&table.largest));
+        let after_start = self.request.start.as_slice() <= user_key(&table.largest);
         let before_end = self
             .request
             .end
