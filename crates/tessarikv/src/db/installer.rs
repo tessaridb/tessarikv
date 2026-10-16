@@ -77,6 +77,11 @@ pub(super) struct Flusher {
 /// The installer task and the handles that steer it.
 pub(super) struct Installer {
     pub(super) signals: Arc<FlushSignals>,
+    /// Where the table files are, for `Db::verify_checksums`.
+    pub(super) storage: Arc<dyn Storage>,
+    pub(super) dir: PathBuf,
+    /// The engine's block cache, whose sealing opens encrypted table files.
+    pub(super) cache: Arc<BlockCache>,
     /// Range compactions and keyspace changes (see `Db::compact_range`, `Db::create_keyspace`).
     pub(super) requests: mpsc::Sender<Command>,
     shutdown: watch::Sender<bool>,
@@ -100,9 +105,17 @@ impl Installer {
         signals.set_flushed(flusher.switched);
         let (shutdown, stop) = watch::channel(false);
         let (requests, requested) = mpsc::channel(QUEUE);
+        let (storage, dir, cache) = (
+            Arc::clone(&flusher.storage),
+            flusher.dir.clone(),
+            Arc::clone(&flusher.cache),
+        );
         let task = tokio::spawn(run(flusher, Arc::clone(&signals), stop, requested));
         Self {
             signals,
+            storage,
+            dir,
+            cache,
             requests,
             shutdown,
             task,

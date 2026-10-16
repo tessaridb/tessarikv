@@ -151,6 +151,11 @@ impl View {
         }
     }
 
+    /// The table files of every keyspace.
+    pub(crate) fn all_files(&self) -> &[TableFile] {
+        &self.files
+    }
+
     /// The table files of `keyspace`: level 0 newest first, then each deeper level by key.
     pub(crate) fn files(&self, keyspace: u32) -> impl Iterator<Item = &TableFile> {
         self.keyspace_files(keyspace).iter()

@@ -72,6 +72,8 @@ All notable changes to this project are documented here. The format follows
   files take the current one, and an old key is needed only until no file names it.
 - `KeyspaceOptions::disable_auto_compactions`: the engine starts no compaction of the keyspace by itself, for
   bulk loads; `Db::compact_range` still runs.
+- `Db::verify_checksums`: re-reads every table file from storage, bypassing the block cache, and verifies its
+  footer, index, filter and every data block; the first damaged file is reported as `Error::Corruption`.
 - `DbOptions::max_manifest_bytes` (default 64 MiB): past it the manifest is replaced by a new one holding the
   current set of tables as one change, so an open does not read an unbounded history.
 - `DbOptionsBuilder::encryption_cipher`: pins the cipher new files are encrypted with (`Cipher`); files written

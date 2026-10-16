@@ -112,6 +112,11 @@ impl BlockCache {
         self.sealing.as_deref()
     }
 
+    /// The sealing, shared with another cache that reads the same files.
+    pub(crate) fn shared_sealing(&self) -> Option<Arc<Sealing>> {
+        self.sealing.clone()
+    }
+
     /// Whether table files are opened through this cache rather than each kept open.
     pub(crate) fn bounds_open_files(&self) -> bool {
         self.files.is_some()

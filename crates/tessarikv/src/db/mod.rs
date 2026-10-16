@@ -39,6 +39,7 @@ mod snapshot;
 mod table_blocks;
 mod table_versions;
 mod tables;
+mod verify;
 mod view;
 mod write;
 mod write_statistics;
@@ -133,6 +134,8 @@ mod sync_wal_tests;
 mod table_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod verify_tests;
 
 use std::path::Path;
 use std::sync::Arc;
