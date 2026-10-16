@@ -180,3 +180,13 @@ fn sealing_in_place_matches_sealing() {
         }
     }
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+    /// Whatever the bytes, decoding a seal header returns an error or a header, and never panics.
+    #[test]
+    fn arbitrary_header_bytes_never_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..2 * HEADER_BYTES)) {
+        let _ = SealHeader::decode(&bytes);
+    }
+}

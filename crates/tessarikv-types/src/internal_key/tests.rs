@@ -83,3 +83,11 @@ fn a_key_shorter_than_its_trailer_is_refused() {
         Err(crate::Error::ShortInternalKey { len: 3 })
     );
 }
+
+proptest! {
+    /// Whatever the bytes, parsing an internal key returns an error or a key, and never panics.
+    #[test]
+    fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+        let _ = InternalKeyRef::parse(&bytes);
+    }
+}

@@ -177,3 +177,26 @@ fn the_checksum_covers_the_payload_then_the_length_and_the_log_number() {
     let expected = crc32c::crc32c_append(crc32c::crc32c(payload), fields);
     assert_eq!(frame[..4], expected.to_le_bytes());
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+    /// Whatever the bytes, reading frames ends, and never panics: each frame read consumes bytes.
+    #[test]
+    fn arbitrary_bytes_end_and_never_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)) {
+        let mut reader = FrameReader::new(&bytes, 1);
+        let mut frames = 0_usize;
+        loop {
+            match reader.next_frame() {
+                LogRead::Frame(_) => {
+                    frames += 1;
+                    proptest::prop_assert!(frames <= bytes.len(), "more frames than bytes");
+                }
+                LogRead::End(end) => {
+                    proptest::prop_assert!(end.offset <= bytes.len() as u64);
+                    break;
+                }
+            }
+        }
+    }
+}

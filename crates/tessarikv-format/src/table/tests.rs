@@ -25,7 +25,7 @@ fn options(compression: Compression) -> TableOptions {
     }
 }
 
-fn build(model: &BTreeMap<Vec<u8>, Vec<u8>>, compression: Compression) -> Vec<u8> {
+pub(super) fn build(model: &BTreeMap<Vec<u8>, Vec<u8>>, compression: Compression) -> Vec<u8> {
     let mut builder = TableBuilder::new(options(compression), bytewise, whole);
     for (key, value) in model {
         builder.add(key, value).expect("keys arrive in order");
@@ -33,7 +33,7 @@ fn build(model: &BTreeMap<Vec<u8>, Vec<u8>>, compression: Compression) -> Vec<u8
     builder.finish().expect("finished")
 }
 
-fn open(bytes: Vec<u8>) -> Result<Table> {
+pub(super) fn open(bytes: Vec<u8>) -> Result<Table> {
     Table::open(bytes, bytewise, whole)
 }
 
@@ -41,7 +41,7 @@ fn open(bytes: Vec<u8>) -> Result<Table> {
 type Entries = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// Every entry from the iterator's position on, and the iterator's final status.
-fn drain(iter: &mut TableIter) -> (Entries, Result<()>) {
+pub(super) fn drain(iter: &mut TableIter) -> (Entries, Result<()>) {
     let mut entries = Vec::new();
     while iter.valid() {
         entries.push((iter.key().to_vec(), iter.value().to_vec()));
@@ -50,7 +50,7 @@ fn drain(iter: &mut TableIter) -> (Entries, Result<()>) {
     (entries, iter.status())
 }
 
-fn sample() -> BTreeMap<Vec<u8>, Vec<u8>> {
+pub(super) fn sample() -> BTreeMap<Vec<u8>, Vec<u8>> {
     (0..60_u32)
         .map(|n| {
             (

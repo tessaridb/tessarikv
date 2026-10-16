@@ -202,3 +202,15 @@ fn a_version_1_batch_decodes_but_may_not_carry_a_range_delete() {
         })
     ));
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+    /// Whatever the bytes, decoding a batch returns an error or entries, and never panics.
+    #[test]
+    fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256)) {
+        if let Ok(batch) = WriteBatch::from_bytes(bytes) {
+            let _ = batch.iter().count();
+        }
+    }
+}

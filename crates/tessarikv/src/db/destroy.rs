@@ -20,6 +20,10 @@ impl Db {
     /// identity file last, so a crash part way leaves no database that opens with part of the
     /// old data; destroying again removes what is left.
     ///
+    /// Files are unlinked, not overwritten: an unencrypted database's bytes stay on the device
+    /// until the file system reuses them. For an encrypted one, discarding its key makes them
+    /// unreadable.
+    ///
     /// # Errors
     ///
     /// [`Error::Locked`] while the database is open, here or in another process, and
