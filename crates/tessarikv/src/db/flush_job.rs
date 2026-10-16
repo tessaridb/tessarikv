@@ -42,11 +42,10 @@ impl Job {
             manifest.append(&edit)?;
             return Ok(None);
         }
-        let built = build(&self.table, self.options)?;
         let id = self.numbers.take()?;
         let path = table_path(&self.dir, id);
         let mut file = self.storage.create(&path)?;
-        file.append(&built.bytes)?;
+        let built = build(&self.table, self.options, &mut |piece| file.append(piece))?;
         file.sync()?;
         drop(file);
         self.storage.sync_dir(&self.dir)?;
@@ -54,7 +53,7 @@ impl Job {
             keyspace: 0,
             level: 0,
             id,
-            size: u64::try_from(built.bytes.len()).map_err(|_| Error::FlushFailed)?,
+            size: built.size(),
             smallest: built.smallest,
             largest: built.largest,
             min_sequence: built.min_sequence,
@@ -63,13 +62,13 @@ impl Job {
         edit.next_file = Some(self.numbers.bound());
         edit.added.push(meta.clone());
         manifest.append(&edit)?;
-        // The metadata comes from the bytes just written; data blocks from the file.
+        // The metadata comes from the tail just written; data blocks from the file.
         let (table, blocks) = open_table(
             self.storage.as_ref(),
             &path,
             id,
             &self.cache,
-            Some(&built.bytes),
+            Some((built.tail_offset, &built.tail)),
         )?;
         Ok(Some(TableFile {
             meta: Arc::new(meta),

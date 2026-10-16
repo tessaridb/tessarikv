@@ -21,7 +21,9 @@ pub struct TableBuilder {
     options: TableOptions,
     compare: Compare,
     filter_key: fn(&[u8]) -> &[u8],
+    /// Finished bytes not yet taken; they follow the `drained` bytes taken before.
     out: Vec<u8>,
+    drained: u64,
     data: BlockBuilder,
     index: BlockBuilder,
     filter: BloomBuilder,
@@ -40,6 +42,7 @@ impl TableBuilder {
             compare,
             filter_key,
             out: Vec::new(),
+            drained: 0,
             data: BlockBuilder::new(options.restart_interval, compare),
             index: BlockBuilder::new(1, compare),
             filter: BloomBuilder::new(options.bloom_bits_per_key),
@@ -104,10 +107,31 @@ impl TableBuilder {
 
     /// Bytes the table would take if finished now, roughly.
     pub fn estimated_size(&self) -> usize {
-        self.out.len().saturating_add(self.data.estimated_size())
+        usize::try_from(self.drained)
+            .unwrap_or(usize::MAX)
+            .saturating_add(self.out.len())
+            .saturating_add(self.data.estimated_size())
     }
 
-    /// The finished table file.
+    /// The bytes of the table finished so far and not yet taken, which continue the file
+    /// after the [`TableBuilder::drained`] bytes taken before. A writer that appends each piece
+    /// as it comes, and finally what [`TableBuilder::finish`] returns, writes the same file as
+    /// one built whole, while holding only the block being filled and the index and filter.
+    pub fn take_finished(&mut self) -> Vec<u8> {
+        let taken = std::mem::take(&mut self.out);
+        self.drained = self
+            .drained
+            .saturating_add(u64::try_from(taken.len()).unwrap_or(u64::MAX));
+        taken
+    }
+
+    /// Bytes taken so far by [`TableBuilder::take_finished`]: where the next piece, or what
+    /// [`TableBuilder::finish`] returns, begins in the file.
+    pub fn drained(&self) -> u64 {
+        self.drained
+    }
+
+    /// The rest of the table file: all of it when nothing was taken before.
     ///
     /// # Errors
     ///
@@ -116,11 +140,22 @@ impl TableBuilder {
         if !self.data.is_empty() {
             self.close_data_block()?;
         }
-        let filter = write_block(&mut self.out, &self.filter.finish(), Compression::None);
-        let index = write_block(&mut self.out, &self.index.finish(), Compression::None);
+        let filter = write_block(
+            &mut self.out,
+            self.drained,
+            &self.filter.finish(),
+            Compression::None,
+        );
+        let index = write_block(
+            &mut self.out,
+            self.drained,
+            &self.index.finish(),
+            Compression::None,
+        );
         let range_deletes = (!self.range_deletes.is_empty()).then(|| {
             write_block(
                 &mut self.out,
+                self.drained,
                 &self.range_deletes.finish(),
                 Compression::None,
             )
@@ -130,7 +165,12 @@ impl TableBuilder {
         if let Some(handle) = range_deletes {
             properties.add(RANGE_DELETES_PROPERTY, &handle.encode())?;
         }
-        let properties = write_block(&mut self.out, &properties.finish(), Compression::None);
+        let properties = write_block(
+            &mut self.out,
+            self.drained,
+            &properties.finish(),
+            Compression::None,
+        );
         let footer = Footer {
             filter,
             index,
@@ -143,7 +183,12 @@ impl TableBuilder {
     /// Writes the current data block and indexes it under its last key.
     fn close_data_block(&mut self) -> Result<()> {
         let payload = self.data.finish();
-        let handle = write_block(&mut self.out, &payload, self.options.compression);
+        let handle = write_block(
+            &mut self.out,
+            self.drained,
+            &payload,
+            self.options.compression,
+        );
         self.index.add(&self.last_key, &handle.encode())
     }
 }

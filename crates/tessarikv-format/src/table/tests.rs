@@ -239,3 +239,31 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    /// Taking the finished bytes at any points while building yields, concatenated with what
+    /// `finish` returns, exactly the bytes of a table built in one piece.
+    #[test]
+    fn a_table_taken_in_pieces_is_the_table_built_whole(
+        takes in proptest::collection::vec(any::<bool>(), 60),
+        lz4 in any::<bool>(),
+    ) {
+        let compression = if lz4 { Compression::Lz4 } else { Compression::None };
+        let model = sample();
+        let mut builder = TableBuilder::new(options(compression), bytewise, whole);
+        let mut pieces = Vec::new();
+        for ((key, value), take) in model.iter().zip(&takes) {
+            builder.add(key, value).expect("keys arrive in order");
+            if *take {
+                let taken = builder.drained();
+                let piece = builder.take_finished();
+                prop_assert_eq!(taken, u64::try_from(pieces.len()).unwrap());
+                pieces.extend_from_slice(&piece);
+            }
+        }
+        prop_assert_eq!(builder.drained(), u64::try_from(pieces.len()).unwrap());
+        pieces.extend_from_slice(&builder.finish().expect("finished"));
+        prop_assert_eq!(&pieces, &build(&model, compression));
+        prop_assert!(open(pieces).is_ok());
+    }
+}

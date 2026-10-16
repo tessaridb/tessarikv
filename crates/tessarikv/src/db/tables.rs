@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use tessarikv_constants::TRAILER_BYTES;
+use tessarikv_constants::{TABLE_WRITE_CHUNK_BYTES, TRAILER_BYTES};
 use tessarikv_format::{Table, TableBuilder, TableOptions};
 use tessarikv_types::{
     InternalKeyRef, SequenceNumber, Trailer, ValueKind, compare_internal, encode_internal,
@@ -32,11 +32,50 @@ pub(crate) enum TableLookup {
 
 /// A table file built from an in-memory table, and what the manifest records about it.
 pub(crate) struct BuiltTable {
-    pub(crate) bytes: Vec<u8>,
+    /// The last bytes written: the filter, the index, the properties and the footer, which
+    /// opening the table reads.
+    pub(crate) tail: Vec<u8>,
+    /// Where `tail` begins in the file.
+    pub(crate) tail_offset: u64,
     pub(crate) smallest: Vec<u8>,
     pub(crate) largest: Vec<u8>,
     pub(crate) min_sequence: u64,
     pub(crate) max_sequence: u64,
+}
+
+impl BuiltTable {
+    /// Bytes of the whole file.
+    pub(crate) fn size(&self) -> u64 {
+        self.tail_offset
+            .saturating_add(u64::try_from(self.tail.len()).unwrap_or(u64::MAX))
+    }
+}
+
+/// Hands `builder`'s finished bytes to `write` once they make a chunk, so a table being built
+/// holds at most a chunk of itself in memory.
+pub(crate) fn hand_off(
+    builder: &mut TableBuilder,
+    write: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let drained = usize::try_from(builder.drained()).unwrap_or(usize::MAX);
+    if builder.estimated_size().saturating_sub(drained) >= TABLE_WRITE_CHUNK_BYTES {
+        write(&builder.take_finished())?;
+    }
+    Ok(())
+}
+
+/// Finishes `builder`, hands the rest of the table to `write`, and returns that rest and where
+/// it begins in the file.
+pub(crate) fn finish(
+    builder: TableBuilder,
+    write: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<(u64, Vec<u8>)> {
+    let tail_offset = builder.drained();
+    let tail = builder
+        .finish()
+        .map_err(|error| format_error(&error, None))?;
+    write(&tail)?;
+    Ok((tail_offset, tail))
 }
 
 /// The user key of an internal key: everything before the trailer.
@@ -46,15 +85,20 @@ pub(crate) fn user_key(internal: &[u8]) -> &[u8] {
         .unwrap_or(internal)
 }
 
-/// Writes every version and range delete of `memtable` into a table file. Runs on a blocking
-/// thread. The recorded key range spans the point entries and the starts of the range deletes.
+/// Writes every version and range delete of `memtable` as a table file, handing its bytes to
+/// `write` in order as they are built. Runs on a blocking thread. The recorded key range spans
+/// the point entries and the starts of the range deletes.
 ///
 /// # Errors
 ///
 /// [`Error::Memtable`] when the table holds neither a version nor a range delete (an empty
 /// table is never flushed), and
 /// [`Error::Corruption`] when the format refuses an entry, which means the table's order broke.
-pub(crate) fn build(memtable: &Memtable, options: TableOptions) -> Result<BuiltTable> {
+pub(crate) fn build(
+    memtable: &Memtable,
+    options: TableOptions,
+    write: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<BuiltTable> {
     let mut builder = TableBuilder::new(options, compare_internal, user_key);
     let mut versions = memtable.iter();
     versions.seek_to_first();
@@ -71,6 +115,7 @@ pub(crate) fn build(memtable: &Memtable, options: TableOptions) -> Result<BuiltT
         builder
             .add(&key, entry.value)
             .map_err(|error| format_error(&error, None))?;
+        hand_off(&mut builder, write)?;
         if smallest.is_none() {
             smallest = Some(key.clone());
         }
@@ -111,10 +156,10 @@ pub(crate) fn build(memtable: &Memtable, options: TableOptions) -> Result<BuiltT
             reason: "an empty in-memory table was asked for a table file",
         });
     };
+    let (tail_offset, tail) = finish(builder, write)?;
     Ok(BuiltTable {
-        bytes: builder
-            .finish()
-            .map_err(|error| format_error(&error, None))?,
+        tail,
+        tail_offset,
         smallest,
         largest,
         min_sequence,

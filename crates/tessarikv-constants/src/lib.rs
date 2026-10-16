@@ -25,6 +25,13 @@ pub const TRAILER_BYTES: usize = 8;
 /// that an empty in-memory file costs little.
 pub const MEMORY_FILE_CHUNK_BYTES: usize = 64 * 1024;
 
+/// Bytes of a table being built that are handed to storage at once (1 MiB).
+///
+/// A table is written as it is built, so a flush or a compaction holds this much of it in memory
+/// at most, besides the block being filled and the table's index and filter, whatever the table's
+/// size; large enough that writing it costs few system calls.
+pub const TABLE_WRITE_CHUNK_BYTES: usize = 1024 * 1024;
+
 /// Default capacity of one memtable before it is frozen and flushed (64 MiB).
 pub const DEFAULT_MEMTABLE_BYTES: u64 = 64 * 1024 * 1024;
 

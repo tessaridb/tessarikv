@@ -16,9 +16,9 @@ use crate::db::block_cache::BlockCache;
 use crate::db::flush_job::{FileNumbers, table_path};
 use crate::db::rate_limiter::RateLimiter;
 use crate::db::table_blocks::open_table;
-use crate::db::tables::{format_error, user_key};
+use crate::db::tables::{finish, format_error, hand_off, user_key};
 use crate::db::view::TableFile;
-use crate::storage::Storage;
+use crate::storage::{Storage, WritableFile};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
@@ -46,9 +46,13 @@ pub(super) struct Outputs<'a> {
     written: Vec<TableFile>,
 }
 
-/// The table being written and the range and sequences it holds.
+/// The table being written, its file, and the range and sequences it holds.
 struct Open {
     builder: TableBuilder,
+    id: u64,
+    path: PathBuf,
+    /// Receives the table's bytes as they are built.
+    file: Box<dyn WritableFile>,
     smallest: Option<Vec<u8>>,
     largest: Vec<u8>,
     min_sequence: u64,
@@ -93,7 +97,8 @@ impl<'a> Outputs<'a> {
             self.close()?;
         }
         self.write_tombstones(Some(user_key(key)))?;
-        self.current().add(key, value, true)
+        let to = self.to;
+        self.current()?.add(to, key, value, true)
     }
 
     /// Writes the remaining range deletes and closes the last table; returns every table.
@@ -109,21 +114,31 @@ impl<'a> Outputs<'a> {
             .next_tombstone
             .take_if(|(start, _)| through.is_none_or(|through| user_key(start) <= through))
         {
-            self.current().add(&start, &end, false)?;
+            let to = self.to;
+            self.current()?.add(to, &start, &end, false)?;
             self.next_tombstone = self.tombstones.next();
         }
         Ok(())
     }
 
-    /// The table being written, opened when there is none.
-    fn current(&mut self) -> &mut Open {
-        self.open.get_or_insert_with(|| Open {
-            builder: TableBuilder::new(self.to.options, compare_internal, user_key),
-            smallest: None,
-            largest: Vec::new(),
-            min_sequence: u64::MAX,
-            max_sequence: 0,
-        })
+    /// The table being written, opened with its file when there is none.
+    fn current(&mut self) -> Result<&mut Open> {
+        if self.open.is_none() {
+            let id = self.to.numbers.take()?;
+            let path = table_path(&self.to.dir, id);
+            let file = self.to.storage.create(&path)?;
+            self.open = Some(Open {
+                builder: TableBuilder::new(self.to.options, compare_internal, user_key),
+                id,
+                path,
+                file,
+                smallest: None,
+                largest: Vec::new(),
+                min_sequence: u64::MAX,
+                max_sequence: 0,
+            });
+        }
+        self.open.as_mut().ok_or(Error::CompactionFailed)
     }
 
     /// Writes and syncs the table being written, if any, and opens it for reading.
@@ -135,30 +150,32 @@ impl<'a> Outputs<'a> {
         let Some(smallest) = open.smallest else {
             return Ok(());
         };
-        let bytes = open
-            .builder
-            .finish()
-            .map_err(|error| format_error(&error, None))?;
-        let id = to.numbers.take()?;
-        let path = table_path(&to.dir, id);
-        if let Some(limiter) = &to.limiter {
-            limiter.pace(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-        }
-        let mut file = to.storage.create(&path)?;
-        file.append(&bytes)?;
+        let Open {
+            builder,
+            id,
+            path,
+            mut file,
+            largest,
+            min_sequence,
+            max_sequence,
+            ..
+        } = open;
+        let (tail_offset, tail) = finish(builder, &mut |piece| write(to, file.as_mut(), piece))?;
         file.sync()?;
         drop(file);
+        let size = tail_offset.saturating_add(u64::try_from(tail.len()).unwrap_or(u64::MAX));
         let meta = TableMeta {
             keyspace: to.keyspace,
             level: to.level,
             id,
-            size: u64::try_from(bytes.len()).map_err(|_| Error::CompactionFailed)?,
+            size,
             smallest,
-            largest: open.largest,
-            min_sequence: open.min_sequence,
-            max_sequence: open.max_sequence,
+            largest,
+            min_sequence,
+            max_sequence,
         };
-        let (table, blocks) = open_table(to.storage.as_ref(), &path, id, &to.cache, Some(&bytes))?;
+        let written = Some((tail_offset, tail.as_slice()));
+        let (table, blocks) = open_table(to.storage.as_ref(), &path, id, &to.cache, written)?;
         self.written.push(TableFile {
             meta: Arc::new(meta),
             table,
@@ -168,15 +185,26 @@ impl<'a> Outputs<'a> {
     }
 }
 
+/// Appends `piece` of an output table to `file`, paced when compactions are.
+fn write(to: &Destination, file: &mut dyn WritableFile, piece: &[u8]) -> Result<()> {
+    if let Some(limiter) = &to.limiter {
+        limiter.pace(u64::try_from(piece.len()).unwrap_or(u64::MAX));
+    }
+    file.append(piece)
+}
+
 impl Open {
-    /// Adds a version (`point`) or a range delete's start and end, widening the recorded range.
-    fn add(&mut self, key: &[u8], value: &[u8], point: bool) -> Result<()> {
+    /// Adds a version (`point`) or a range delete's start and end, widening the recorded range,
+    /// and writes the table's finished bytes once they make a chunk.
+    fn add(&mut self, to: &Destination, key: &[u8], value: &[u8], point: bool) -> Result<()> {
         if point {
             self.builder.add(key, value)
         } else {
             self.builder.add_range_delete(key, value)
         }
         .map_err(|error| format_error(&error, None))?;
+        let file = self.file.as_mut();
+        hand_off(&mut self.builder, &mut |piece| write(to, file, piece))?;
         let sequence = tessarikv_types::InternalKeyRef::parse(key)
             .map_err(|_| Error::CompactionFailed)?
             .trailer()

@@ -160,3 +160,65 @@ async fn the_installer_records_what_compaction_owes() {
     );
     db.close().await.expect("closed");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tables_larger_than_a_write_chunk_are_flushed_compacted_and_reopened_whole() {
+    let keyspace = KeyspaceOptions::builder()
+        .memtable_bytes(3 << 20)
+        .level0_compaction_trigger(2)
+        .level_base_bytes(4 << 20)
+        .target_file_bytes(4 << 20)
+        .build()
+        .expect("valid");
+    let options = DbOptions::builder()
+        .default_keyspace(keyspace)
+        .build()
+        .expect("valid");
+    let storage = FaultStorage::default();
+    let db = Db::open_with_storage(PATH, options.clone(), Arc::new(storage.clone()))
+        .await
+        .expect("opened");
+    // Pseudo-random bytes, so compression cannot shrink the tables below a chunk.
+    let large = |index: u32| -> Vec<u8> {
+        let mut state = u64::from(index).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        (0..2048)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect()
+    };
+    for round in 0..3_u32 {
+        for index in 0..1500_u32 {
+            let mut batch = WriteBatch::new();
+            batch
+                .put(KeyspaceId::DEFAULT, &key(index), &large(index + round))
+                .expect("entry");
+            db.write(&batch, &WriteOptions::default())
+                .await
+                .expect("written");
+        }
+    }
+    let chunk = u64::try_from(tessarikv_constants::TABLE_WRITE_CHUNK_BYTES).unwrap();
+    until("a compacted table larger than a write chunk", || {
+        db.view
+            .load()
+            .files(0)
+            .any(|file| file.meta.level > 0 && file.meta.size > chunk)
+    })
+    .await;
+    db.close().await.expect("closed");
+    let db = Db::open_with_storage(PATH, options, Arc::new(storage))
+        .await
+        .expect("reopened");
+    for index in 0..1500_u32 {
+        let read = db
+            .get(KeyspaceId::DEFAULT, &key(index), &ReadOptions::default())
+            .await
+            .expect("readable");
+        assert_eq!(read, Some(large(index + 2)), "key {index}");
+    }
+    db.close().await.expect("closed");
+}

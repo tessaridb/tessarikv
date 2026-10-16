@@ -5,8 +5,8 @@ use tessarikv_format::{Compression, TableOptions};
 use tessarikv_types::{SequenceNumber, ValueKind};
 
 use super::block_cache::BlockCache;
-use super::read_tests::{block_on, cache_bytes, table_file};
-use super::tables::{TableLookup, build, lookup};
+use super::read_tests::{block_on, built, cache_bytes, table_file};
+use super::tables::{TableLookup, lookup};
 use crate::memtable::{Lookup, Memtable};
 
 fn options(compression: Compression) -> TableOptions {
@@ -45,7 +45,7 @@ proptest! {
             }
         }
         let compression = if lz4 { Compression::Lz4 } else { Compression::None };
-        let built = build(&memtable, options(compression)).unwrap();
+        let (built, bytes) = built(&memtable, options(compression));
         prop_assert_eq!(built.min_sequence, 1);
         prop_assert_eq!(built.max_sequence, u64::try_from(ops.len()).unwrap());
         let keys: Vec<u8> = ops.iter().map(|(key, _)| *key).collect();
@@ -53,7 +53,7 @@ proptest! {
         prop_assert_eq!(built.smallest.get(..2), Some(&[b'k', low.unwrap()][..]));
         prop_assert_eq!(built.largest.get(..2), Some(&[b'k', high.unwrap()][..]));
         let cache = Arc::new(BlockCache::new(capacity, tessarikv_constants::DEFAULT_BLOCK_BYTES));
-        let file = table_file(built.bytes.clone(), &built, 1, &cache);
+        let file = table_file(bytes, &built, 1, &cache);
         for snapshot in 0..=u64::try_from(ops.len()).unwrap() {
             let snapshot = SequenceNumber::new(snapshot).unwrap();
             for key in 0_u8..13 {
@@ -65,5 +65,44 @@ proptest! {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn a_table_larger_than_a_write_chunk_is_written_in_pieces_and_reads_back_whole() {
+    let memtable = Memtable::new();
+    let value = vec![7_u8; 1024];
+    for id in 0_u32..3 * 1024 {
+        let sequence = SequenceNumber::new(u64::from(id) + 1).unwrap();
+        memtable
+            .insert(sequence, ValueKind::Value, &id.to_be_bytes(), &value)
+            .unwrap();
+    }
+    let mut pieces = 0;
+    let mut bytes = Vec::new();
+    let built = super::tables::build(&memtable, options(Compression::None), &mut |piece| {
+        pieces += 1;
+        bytes.extend_from_slice(piece);
+        Ok(())
+    })
+    .unwrap();
+    assert!(pieces > 2, "3 MiB went out in {pieces} pieces");
+    assert_eq!(built.size(), u64::try_from(bytes.len()).unwrap());
+    assert_eq!(
+        built.tail.as_slice(),
+        &bytes[bytes.len() - built.tail.len()..]
+    );
+    let cache = Arc::new(BlockCache::new(
+        1 << 20,
+        tessarikv_constants::DEFAULT_BLOCK_BYTES,
+    ));
+    let file = table_file(bytes, &built, 1, &cache);
+    let snapshot = SequenceNumber::new(u64::MAX >> 8).unwrap();
+    for id in (0_u32..3 * 1024).step_by(97) {
+        assert_eq!(
+            block_on(lookup(&file, &id.to_be_bytes(), snapshot, true)).unwrap(),
+            TableLookup::Value(value.clone()),
+            "key {id}"
+        );
     }
 }

@@ -100,10 +100,24 @@ pub(super) fn table_file(
     }
 }
 
+/// The table built from `table`, and the bytes of its file.
+pub(super) fn built(
+    table: &Memtable,
+    options: tessarikv_format::TableOptions,
+) -> (super::tables::BuiltTable, Vec<u8>) {
+    let mut bytes = Vec::new();
+    let built = build(table, options, &mut |piece| {
+        bytes.extend_from_slice(piece);
+        Ok(())
+    })
+    .unwrap();
+    (built, bytes)
+}
+
 /// The table file built from `table`, numbered `id`, read through `cache`.
 pub(super) fn file(table: &Memtable, id: u64, cache: &Arc<BlockCache>) -> TableFile {
-    let built = build(table, options()).unwrap();
-    table_file(built.bytes.clone(), &built, id, cache)
+    let (built, bytes) = built(table, options());
+    table_file(bytes, &built, id, cache)
 }
 
 /// A scan page's range: `[start, ..)` with up to `limit` entries.
@@ -193,8 +207,7 @@ async fn a_damaged_table_file_fails_the_scan_instead_of_shortening_it() {
     let table = Memtable::new();
     let ops: Vec<Op> = (0..12).map(|key| (key, Some(u16::from(key)))).collect();
     fill(&table, 1, &ops);
-    let built = build(&table, options()).unwrap();
-    let mut bytes = built.bytes.clone();
+    let (built, mut bytes) = built(&table, options());
     // The first data block starts the file; the footer, index and filter stay whole.
     bytes[1] ^= 0xff;
     let view = View::new(0, Memtable::new())

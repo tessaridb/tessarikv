@@ -144,7 +144,7 @@ pub(crate) fn open_table(
     path: &Path,
     id: u64,
     cache: &Arc<BlockCache>,
-    written: Option<&[u8]>,
+    written: Option<(u64, &[u8])>,
 ) -> Result<(Table, Arc<TableBlocks>)> {
     let file = storage.open(path)?;
     let len = file.len()?;
@@ -155,17 +155,19 @@ pub(crate) fn open_table(
         len,
         cache: Arc::clone(cache),
     });
-    let read = |offset: u64, buf: &mut [u8]| match written {
-        Some(bytes) => usize::try_from(offset)
-            .ok()
-            .and_then(|start| bytes.get(start..start.checked_add(buf.len())?))
-            .map(|found| buf.copy_from_slice(found))
-            .ok_or_else(|| Error::ShortRead {
-                path: path.to_path_buf(),
-                requested_end: offset.saturating_add(u64::try_from(buf.len()).unwrap_or(u64::MAX)),
-                available: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-            }),
-        None => file.read_at(offset, buf),
+    // The bytes just written from `base` on answer what they cover; the file answers the rest.
+    let read = |offset: u64, buf: &mut [u8]| {
+        let found = written.and_then(|(base, bytes)| {
+            let start = usize::try_from(offset.checked_sub(base)?).ok()?;
+            bytes.get(start..start.checked_add(buf.len())?)
+        });
+        match found {
+            Some(found) => {
+                buf.copy_from_slice(found);
+                Ok(())
+            }
+            None => file.read_at(offset, buf),
+        }
     };
     let source: Arc<dyn BlockSource> = Arc::<TableBlocks>::clone(&blocks);
     let table = Table::open_with(len, read, source, compare_internal, user_key).map_err(

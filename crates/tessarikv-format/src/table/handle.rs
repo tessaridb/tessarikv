@@ -177,10 +177,11 @@ impl Footer {
 /// eighth; returns its handle.
 pub(super) fn write_block(
     out: &mut Vec<u8>,
+    base: u64,
     payload: &[u8],
     compression: Compression,
 ) -> BlockHandle {
-    let offset = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    let offset = base.saturating_add(u64::try_from(out.len()).unwrap_or(u64::MAX));
     let compressed = match compression {
         Compression::Lz4 => {
             let mut sealed = Vec::new();
@@ -202,7 +203,7 @@ pub(super) fn write_block(
     out.push(kind);
     let checksum = crc32c::crc32c_append(crc32c::crc32c(stored), &[kind]);
     out.extend_from_slice(&checksum.to_le_bytes());
-    let end = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    let end = base.saturating_add(u64::try_from(out.len()).unwrap_or(u64::MAX));
     BlockHandle {
         offset,
         size: end.saturating_sub(offset),
