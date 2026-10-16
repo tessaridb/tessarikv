@@ -6,10 +6,13 @@
 //!   the bottom's bytes (always, while the bottom is empty), everything merges into the bottom;
 //! - size: the newest runs merge while each next one is at most the size ratio larger than those
 //!   merged before it, when that takes at least `min_merge` of them;
-//! - count: otherwise the newest runs merge, enough of them to bring level 0 under its trigger.
+//! - count: otherwise adjacent runs merge, enough of them to bring level 0 under its trigger, and
+//!   of those the window with the fewest bytes. Always taking the newest would merge each flush
+//!   into the run behind it, rewriting that growing run on every flush.
 //!
 //! A merge of level-0 runs writes one level-0 table, which takes the place of the runs it
-//! merged: it is newer than every older run and older than every run flushed meanwhile.
+//! merged: runs cover disjoint, ordered ranges of sequence numbers, so a merge of adjacent runs is
+//! newer than every older run and older than every newer one, wherever its window lies.
 
 use std::sync::Arc;
 
@@ -55,27 +58,39 @@ pub(crate) fn pick(
     } else {
         let take = by_size(runs, settings.size_ratio_percent);
         let least = usize::try_from(settings.min_merge).unwrap_or(usize::MAX);
-        let take = if take >= least {
-            take
+        let window = if take >= least {
+            0..take
         } else {
-            // Enough of the newest runs that level 0 falls under its trigger.
-            runs.len()
+            // Enough adjacent runs that level 0 falls under its trigger, the cheapest to rewrite.
+            let width = runs
+                .len()
                 .saturating_sub(trigger)
                 .saturating_add(2)
                 .max(least)
-                .min(runs.len())
+                .min(runs.len());
+            cheapest(runs, width)?
         };
-        if take < 2 {
+        if window.len() < 2 {
             return None;
         }
         Pick {
             output_level: 0,
-            inputs: runs.get(..take)?.to_vec(),
+            inputs: runs.get(window)?.to_vec(),
             overlaps: Vec::new(),
             drop: false,
         }
     };
     Some(pick).filter(|pick| busy.allows(pick))
+}
+
+/// The `width` adjacent runs with the fewest bytes between them; the newest among equals.
+fn cheapest(runs: &[Arc<TableMeta>], width: usize) -> Option<std::ops::Range<usize>> {
+    let windows = runs.windows(width.max(1));
+    let (start, _) = windows
+        .map(bytes_of)
+        .enumerate()
+        .min_by_key(|(start, bytes)| (*bytes, *start))?;
+    Some(start..start.saturating_add(width))
 }
 
 /// How many of the newest runs merge by size: each next one at most `ratio` percent larger

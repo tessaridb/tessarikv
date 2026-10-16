@@ -76,8 +76,8 @@ All notable changes to this project are documented here. The format follows
   in level 0, never merges them, and drops the oldest once they hold more than `max_table_bytes` (1 GiB by default);
   a key reads its newest kept value or nothing. Level-0 stalls do not apply to it.
 - Universal compaction: `CompactionStyle::Universal` (or `CompactionStyle::universal()`) treats each level-0 table and
-  the bottom level as sorted runs; the newest runs merge by size ratio (or, past the trigger, enough of them to go
-  under it), and everything merges into the bottom once the runs above it hold `max_size_amplification_percent` of it.
+  the bottom level as sorted runs; the newest runs merge by size ratio (or, past the trigger, the adjacent runs with the
+  fewest bytes among those enough to go under it), and everything merges into the bottom once the runs above it hold `max_size_amplification_percent` of it.
 - Level-0 stalls: `KeyspaceOptions::level0_slowdown_trigger` (20) paces writes to
   `DbOptions::delayed_write_bytes_per_second` (16 MiB/s) and
   `level0_stop_trigger` (36) holds writes until a compaction takes level 0 under it; `no_slowdown` writes are refused

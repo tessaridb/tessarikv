@@ -70,6 +70,15 @@ fn the_newest_runs_merge_by_size_or_else_enough_of_them_to_go_under_the_trigger(
 }
 
 #[test]
+fn the_count_rule_merges_the_cheapest_adjacent_runs_not_always_the_newest() {
+    // By size only the newest run; by count two of them. The newest pair costs 37 bytes, the
+    // oldest pair 22: merging the newest would rewrite the large second run on every flush.
+    let pick = pick(&runs(&[7, 30, 10, 12], 10_000), SETTINGS, &Busy::default()).unwrap();
+    assert_eq!(pick.output_level, 0);
+    assert_eq!(ids(&pick.inputs), [2, 1]);
+}
+
+#[test]
 fn a_merge_within_level_zero_counts_the_runs_it_leaves_out_as_deeper() {
     let levels = runs(&[10, 10, 10, 10], 1000);
     let merge = Pick {
