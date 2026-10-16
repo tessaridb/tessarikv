@@ -201,6 +201,11 @@ async fn wait(running: &mut Option<JoinHandle<Result<Flushed>>>) -> Result<Flush
 }
 
 impl Flusher {
+    /// The options of `keyspace`; the default keyspace's for 0.
+    pub(super) fn keyspace_options(&self, keyspace: u32) -> &KeyspaceOptions {
+        options_of(&self.keyspaces, &self.keyspace, keyspace)
+    }
+
     /// Freezes the newest tables when one is full and another epoch may be frozen.
     fn switch_if_full(&mut self, signals: &FlushSignals, frozen: &mut VecDeque<Frozen>) {
         let current = self.view.load_full();
@@ -232,8 +237,7 @@ impl Flusher {
             .tables
             .iter()
             .map(|(keyspace, table)| {
-                let keyspace_options = options_of(&self.keyspaces, &self.keyspace, *keyspace);
-                let options = table_options(keyspace_options, 0)?;
+                let options = table_options(self.keyspace_options(*keyspace), 0)?;
                 Ok((*keyspace, options, Arc::clone(table)))
             })
             .collect::<Result<Vec<_>>>()?;

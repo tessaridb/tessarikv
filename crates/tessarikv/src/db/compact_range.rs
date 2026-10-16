@@ -3,8 +3,8 @@
 use tessarikv_types::KeyspaceId;
 
 use super::Db;
-use super::compaction::manual;
-use crate::Result;
+use super::compaction::manual::Request;
+use crate::{Error, Result};
 
 impl Db {
     /// Compacts the user keys `[start, end)` of `keyspace` (unbounded above when `end` is
@@ -36,6 +36,20 @@ impl Db {
             return Ok(());
         };
         self.flush().await?;
-        manual::compact(&installer.requests, &installer.signals, start, end).await
+        // The installer serves requests over a bounded channel and answers on the request's own
+        // reply channel; a closed channel means it stopped, for the reason it published.
+        let (request, outcome) = Request::new(keyspace.get(), start, end);
+        let stopped = || {
+            installer
+                .signals
+                .failure()
+                .unwrap_or(Error::CompactionFailed)
+        };
+        installer
+            .requests
+            .send(request)
+            .await
+            .map_err(|_| stopped())?;
+        outcome.await.map_err(|_| stopped())?
     }
 }

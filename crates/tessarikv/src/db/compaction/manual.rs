@@ -20,14 +20,13 @@ use std::sync::Arc;
 
 use tessarikv_constants::LEVELS;
 use tessarikv_format::TableMeta;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use super::Compactions;
 use super::pick::{Busy, Pick, Shape, targets};
-use crate::db::flush_signals::FlushSignals;
 use crate::db::installer::Flusher;
 use crate::db::tables::user_key;
-use crate::{CompactionStyle, Error, Result};
+use crate::{CompactionStyle, Result};
 
 #[cfg(test)]
 #[path = "manual_tests.rs"]
@@ -36,9 +35,10 @@ mod tests;
 /// Requests waiting for the installer at most; more callers wait to send.
 pub(crate) const QUEUE: usize = 16;
 
-/// A caller's request: the user keys `[start, end)` (unbounded above when `end` is `None`), and
-/// where the outcome goes.
+/// A caller's request: the user keys `[start, end)` of `keyspace` (unbounded above when `end`
+/// is `None`), and where the outcome goes.
 pub(crate) struct Request {
+    keyspace: u32,
     start: Vec<u8>,
     end: Option<Vec<u8>>,
     done: oneshot::Sender<Result<()>>,
@@ -74,10 +74,12 @@ pub(super) enum Next {
 }
 
 impl Compactions {
-    /// The next compaction range requests ask for, finishing every request with nothing left.
+    /// The next compaction range requests ask for in `keyspace`, finishing every request with
+    /// nothing left; a request for another keyspace is served when the installer reaches it.
     pub(super) fn manual_step(
         &mut self,
         flusher: &Flusher,
+        keyspace: u32,
         levels: &[Vec<Arc<TableMeta>>; LEVELS],
         shape: Shape,
         busy: &Busy,
@@ -92,10 +94,11 @@ impl Compactions {
             let Some(active) = self.active.as_mut() else {
                 return Next::Idle;
             };
-            if active.waiting.is_some() {
+            if active.waiting.is_some() || active.request.keyspace != keyspace {
                 return Next::Idle;
             }
-            match active.next(levels, flusher.keyspace.compaction(), shape, busy) {
+            let style = flusher.keyspace_options(keyspace).compaction();
+            match active.next(levels, style, shape, busy) {
                 Step::Run(pick, next) => {
                     active.level = next;
                     return Next::Run(pick);
@@ -120,27 +123,22 @@ impl Compactions {
     }
 }
 
-/// Sends a request for `[start, end)` and waits for its outcome.
-///
-/// # Errors
-///
-/// The installer's failure ([`Error::FlushFailed`] or [`Error::CompactionFailed`]) when it stopped
-/// before finishing the request.
-pub(crate) async fn compact(
-    requests: &mpsc::Sender<Request>,
-    signals: &FlushSignals,
-    start: &[u8],
-    end: Option<&[u8]>,
-) -> Result<()> {
-    let (done, outcome) = oneshot::channel();
-    let request = Request {
-        start: start.to_vec(),
-        end: end.map(<[u8]>::to_vec),
-        done,
-    };
-    let stopped = || signals.failure().unwrap_or(Error::CompactionFailed);
-    requests.send(request).await.map_err(|_| stopped())?;
-    outcome.await.map_err(|_| stopped())?
+impl Request {
+    /// A request for the user keys `[start, end)` of `keyspace`, and where its outcome arrives.
+    pub(crate) fn new(
+        keyspace: u32,
+        start: &[u8],
+        end: Option<&[u8]>,
+    ) -> (Self, oneshot::Receiver<Result<()>>) {
+        let (done, outcome) = oneshot::channel();
+        let request = Self {
+            keyspace,
+            start: start.to_vec(),
+            end: end.map(<[u8]>::to_vec),
+            done,
+        };
+        (request, outcome)
+    }
 }
 
 impl Active {

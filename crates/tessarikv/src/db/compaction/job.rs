@@ -18,7 +18,6 @@ use tessarikv_types::{
     InternalKeyRef, SequenceNumber, ValueKind, compare_internal, encode_internal, seek_trailer,
 };
 
-use super::KEYSPACE;
 use super::output::{Destination, Outputs};
 use super::pick::Pick;
 use super::retain::Retention;
@@ -48,7 +47,8 @@ struct Walk<'a> {
 }
 
 impl Job {
-    /// The job merging `pick`'s tables, reading what it keeps from the snapshots held now.
+    /// The job merging `pick`'s tables of `keyspace`, reading what it keeps from the snapshots
+    /// held now.
     ///
     /// # Errors
     ///
@@ -56,9 +56,11 @@ impl Job {
     /// level is out of range; the keyspace's table options' error otherwise.
     pub(super) fn start(
         flusher: &Flusher,
+        keyspace: u32,
         pick: &Pick,
         levels: &[Vec<Arc<TableMeta>>; LEVELS],
     ) -> Result<Self> {
+        let options = flusher.keyspace_options(keyspace);
         let current = flusher.view.load();
         let wanted: Vec<u64> = pick
             .inputs
@@ -67,7 +69,7 @@ impl Job {
             .map(|table| table.id)
             .collect();
         let inputs: Vec<TableFile> = current
-            .files(KEYSPACE)
+            .files(keyspace)
             .filter(|file| wanted.contains(&file.meta.id))
             .cloned()
             .collect();
@@ -81,16 +83,16 @@ impl Job {
             to: Destination {
                 storage: Arc::clone(&flusher.storage),
                 dir: flusher.dir.clone(),
-                options: table_options(&flusher.keyspace, pick.output_level)?,
+                options: table_options(options, pick.output_level)?,
                 // A merge within level 0 writes one table: one run takes the place of those merged.
                 target_bytes: if pick.output_level == 0 {
                     u64::MAX
                 } else {
-                    flusher.keyspace.target_file_bytes()
+                    options.target_file_bytes()
                 },
                 numbers: Arc::clone(&flusher.numbers),
                 cache: Arc::clone(&flusher.cache),
-                keyspace: KEYSPACE,
+                keyspace,
                 level: u8::try_from(pick.output_level).map_err(|_| Error::CompactionFailed)?,
                 limiter: flusher.limiter.clone(),
             },
@@ -102,7 +104,7 @@ impl Job {
             parts: if pick.output_level == 0 {
                 1
             } else {
-                usize::try_from(flusher.keyspace.max_subcompactions()).unwrap_or(1)
+                usize::try_from(options.max_subcompactions()).unwrap_or(1)
             },
         })
     }

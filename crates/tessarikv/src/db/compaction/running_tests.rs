@@ -1,5 +1,5 @@
 //! Several compactions at once: what running jobs hold is what the next pick avoids, and no
-//! more start than the keyspace allows.
+//! more start than the keyspace allows; another keyspace's jobs hold nothing of it.
 
 use super::Compactions;
 use super::pick::pick_with;
@@ -20,12 +20,12 @@ fn each_job_started_beside_running_ones_reads_and_writes_what_none_of_them_holds
     let mut compactions = Compactions::default();
     let mut started = Vec::new();
     for number in 0..3 {
-        let pick = pick_with(&shape, SHAPE, &compactions.busy()).expect("level 4 over target");
+        let pick = pick_with(&shape, SHAPE, &compactions.busy(0)).expect("level 4 over target");
         started.push(ids(&pick.inputs));
-        compactions.running.push((number, pick));
+        compactions.running.push((number, 0, pick));
     }
     assert_eq!(started, [[2], [7], [1]]);
-    let busy = compactions.busy();
+    let busy = compactions.busy(0);
     let mut tables = busy.tables.clone();
     tables.sort_unstable();
     assert_eq!(
@@ -46,6 +46,11 @@ fn each_job_started_beside_running_ones_reads_and_writes_what_none_of_them_holds
         pick_with(&shape, SHAPE, &busy).is_none(),
         "every table over target is taken"
     );
+    let other = compactions.busy(1);
+    assert!(
+        other.tables.is_empty() && other.ranges.is_empty(),
+        "another keyspace's jobs hold nothing of keyspace 1"
+    );
 }
 
 #[test]
@@ -57,8 +62,8 @@ fn no_more_jobs_start_than_the_keyspace_allows() {
     ]);
     let mut compactions = Compactions::default();
     for number in 0..2 {
-        let pick = pick_with(&shape, SHAPE, &compactions.busy()).expect("level 4 over target");
-        compactions.running.push((number, pick));
+        let pick = pick_with(&shape, SHAPE, &compactions.busy(0)).expect("level 4 over target");
+        compactions.running.push((number, 0, pick));
     }
     let allowing = |most| {
         KeyspaceOptions::builder()
@@ -66,10 +71,20 @@ fn no_more_jobs_start_than_the_keyspace_allows() {
             .build()
             .unwrap()
     };
-    assert!(!compactions.has_room(&allowing(2)), "two run, two allowed");
-    assert!(compactions.has_room(&allowing(3)), "two run, three allowed");
     assert!(
-        Compactions::default().has_room(&allowing(1)),
+        !compactions.has_room(0, &allowing(2)),
+        "two run, two allowed"
+    );
+    assert!(
+        compactions.has_room(0, &allowing(3)),
+        "two run, three allowed"
+    );
+    assert!(
+        Compactions::default().has_room(0, &allowing(1)),
         "none runs, one allowed"
+    );
+    assert!(
+        compactions.has_room(1, &allowing(1)),
+        "keyspace 1 runs none of keyspace 0's jobs"
     );
 }

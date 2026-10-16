@@ -4,19 +4,20 @@ use std::sync::Arc;
 
 use tessarikv_format::{ManifestEdit, TableMeta, TableRef};
 
+use super::Compactions;
 use super::pick::Pick;
-use super::{Compactions, KEYSPACE};
 use crate::db::flush_job::table_path;
 use crate::db::installer::Flusher;
 use crate::db::view::TableFile;
 use crate::{Error, Result};
 
 impl Compactions {
-    /// Appends the edit replacing `pick`'s tables by `outputs` (by the moved table when there
-    /// are none), then publishes the view that reads them.
+    /// Appends the edit replacing `pick`'s tables of `keyspace` by `outputs` (by the moved table
+    /// when there are none), then publishes the view that reads them.
     pub(super) async fn commit(
         &mut self,
         flusher: &mut Flusher,
+        keyspace: u32,
         pick: &Pick,
         outputs: Vec<TableFile>,
     ) -> Result<()> {
@@ -25,7 +26,7 @@ impl Compactions {
             let current = flusher.view.load();
             let level = u8::try_from(pick.output_level).map_err(|_| Error::CompactionFailed)?;
             current
-                .files(KEYSPACE)
+                .files(keyspace)
                 .filter(|file| pick.inputs.iter().any(|input| input.id == file.meta.id))
                 .map(|file| TableFile {
                     meta: Arc::new(TableMeta {
@@ -72,7 +73,7 @@ impl Compactions {
         if !moved {
             self.obsolete.extend(
                 current
-                    .files(KEYSPACE)
+                    .files(keyspace)
                     .filter(|file| removed.contains(&file.meta.id))
                     .map(|file| {
                         (
@@ -83,7 +84,7 @@ impl Compactions {
             );
         }
         flusher.view.store(Arc::new(
-            current.after_compaction(KEYSPACE, &removed, added),
+            current.after_compaction(keyspace, &removed, added),
         ));
         Ok(())
     }

@@ -1,10 +1,11 @@
 //! Compaction: merging table files into the level below so reads consult fewer of them and
 //! versions no reader can see leave the disk.
 //!
-//! The installer runs up to [`crate::KeyspaceOptions::max_compactions`] compactions at once,
-//! next to flushes. When its manifest is at hand and fewer run it asks [`pick`] for one that
-//! reads no table another runs on and writes outside every range another writes in the same
-//! level: a table that moves down is recorded at once; anything else becomes a job on a
+//! Every keyspace compacts on its own, by its own options. The installer runs up to
+//! [`crate::KeyspaceOptions::max_compactions`] compactions of a keyspace at once, next to flushes.
+//! When its manifest is at hand and fewer run it asks [`pick`] for one that reads no table another
+//! runs on and writes outside every range another of its keyspace writes in the same level: a
+//! table that moves down is recorded at once; anything else becomes a job on a
 //! blocking thread that merges the inputs and writes and syncs the outputs, holding no lock.
 //! For each finished job the installer appends ONE manifest edit, synced, that removes the
 //! inputs and adds the outputs, and only after it publishes the view in which the outputs
@@ -62,9 +63,6 @@ use crate::storage::Storage;
 use crate::{CompactionStyle, KeyspaceOptions};
 use crate::{Error, Result};
 
-/// The keyspace compactions run in; there is one so far.
-const KEYSPACE: u32 = 0;
-
 /// How often the installer looks again at input files a reader still held.
 pub(super) const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -76,11 +74,12 @@ type Finished = (u64, Result<Vec<TableFile>>);
 #[derive(Default)]
 pub(super) struct Compactions {
     jobs: JoinSet<Finished>,
-    /// What each running job took, by its number.
-    running: Vec<(u64, Pick)>,
+    /// What each running job took, by its number, with its keyspace.
+    running: Vec<(u64, u32, Pick)>,
     next_job: u64,
-    /// Finished jobs: number, what each took and its outputs, waiting for the manifest.
-    ready: Vec<(u64, Pick, Vec<TableFile>)>,
+    /// Finished jobs: number, keyspace, what each took and its outputs, waiting for the
+    /// manifest.
+    ready: Vec<(u64, u32, Pick, Vec<TableFile>)>,
     obsolete: Vec<(Weak<TableBlocks>, PathBuf)>,
     /// Range requests waiting, and the one being served.
     queued: VecDeque<Request>,
@@ -112,10 +111,10 @@ impl Compactions {
         let at = self
             .running
             .iter()
-            .position(|(running, _)| *running == number)
+            .position(|(running, _, _)| *running == number)
             .ok_or(Error::CompactionFailed)?;
-        let (_, pick) = self.running.swap_remove(at);
-        self.ready.push((number, pick, outputs?));
+        let (_, keyspace, pick) = self.running.swap_remove(at);
+        self.ready.push((number, keyspace, pick, outputs?));
         Ok(())
     }
 
@@ -124,9 +123,9 @@ impl Compactions {
         self.queued.push_back(request);
     }
 
-    /// Records finished work and starts the next job, while the manifest is at hand: commits
-    /// waiting outputs, records moves, removes files no view names, and starts a job when one
-    /// is due. Returns whether a new view was published.
+    /// Records finished work and starts the next jobs, while the manifest is at hand: commits
+    /// waiting outputs, records moves, removes files no view names, and starts the jobs due in
+    /// every keyspace. Returns whether a new view was published.
     ///
     /// # Errors
     ///
@@ -136,53 +135,77 @@ impl Compactions {
         if flusher.manifest.is_none() {
             return Ok(published);
         }
-        for (number, pick, outputs) in std::mem::take(&mut self.ready) {
-            self.commit(flusher, &pick, outputs).await?;
+        for (number, keyspace, pick, outputs) in std::mem::take(&mut self.ready) {
+            self.commit(flusher, keyspace, &pick, outputs).await?;
             self.recorded(number);
             published = true;
         }
         self.sweep(Arc::clone(&flusher.storage)).await;
-        while start && self.has_room(&flusher.keyspace) {
-            let Some((levels, shape)) = shape_of(flusher) else {
-                return Ok(published);
+        // Keyspace 0, then the named ones in id order: index 0 is the default keyspace.
+        let mut index = 0_usize;
+        while start
+            && let Some(keyspace) = index.checked_sub(1).map_or(Some(0), |named| {
+                flusher.keyspaces.get(named).map(|(id, _)| *id)
+            })
+        {
+            published |= self.start_jobs(flusher, keyspace).await?;
+            index = index.saturating_add(1);
+        }
+        Ok(published)
+    }
+
+    /// Starts the jobs due in `keyspace` while it has room; returns whether a new view was
+    /// published.
+    async fn start_jobs(&mut self, flusher: &mut Flusher, keyspace: u32) -> Result<bool> {
+        let mut published = false;
+        while self.has_room(keyspace, flusher.keyspace_options(keyspace)) {
+            let Some((levels, shape)) = shape_of(flusher, keyspace) else {
+                break;
             };
-            let busy = self.busy();
-            // A range request goes first; while its tables are busy, nothing new starts.
-            let (next, requested) = match self.manual_step(flusher, &levels, shape, &busy) {
+            let busy = self.busy(keyspace);
+            // A range request goes first; while its tables are busy, nothing new starts here.
+            let (next, requested) = match self.manual_step(flusher, keyspace, &levels, shape, &busy)
+            {
                 manual::Next::Run(pick) => (Some(pick), true),
-                manual::Next::Blocked => return Ok(published),
-                manual::Next::Idle => (automatic(flusher, &levels, shape, &busy), false),
+                manual::Next::Blocked => break,
+                manual::Next::Idle => (automatic(flusher, keyspace, &levels, shape, &busy), false),
             };
             let Some(pick) = next else {
-                return Ok(published);
+                break;
             };
             if pick.is_move() || pick.drop {
-                self.commit(flusher, &pick, Vec::new()).await?;
+                self.commit(flusher, keyspace, &pick, Vec::new()).await?;
                 published = true;
                 continue;
             }
-            let job = Job::start(flusher, &pick, &levels)?;
+            let job = Job::start(flusher, keyspace, &pick, &levels)?;
             let number = self.next_job;
             self.next_job = number.wrapping_add(1);
             if requested && let Some(active) = &mut self.active {
                 active.waiting = Some(number);
             }
-            self.running.push((number, pick));
+            self.running.push((number, keyspace, pick));
             self.jobs.spawn_blocking(move || (number, job.run()));
         }
         Ok(published)
     }
 
-    /// Whether fewer jobs run than the keyspace allows at once.
-    fn has_room(&self, keyspace: &KeyspaceOptions) -> bool {
-        let most = usize::try_from(keyspace.max_compactions()).unwrap_or(usize::MAX);
-        self.running.len() < most
+    /// Whether fewer jobs of `keyspace` run than its `options` allow at once.
+    fn has_room(&self, keyspace: u32, options: &KeyspaceOptions) -> bool {
+        let most = usize::try_from(options.max_compactions()).unwrap_or(usize::MAX);
+        let running = self
+            .running
+            .iter()
+            .filter(|(_, running, _)| *running == keyspace)
+            .count();
+        running < most
     }
 
-    /// The tables and ranges running jobs hold.
-    fn busy(&self) -> Busy {
+    /// The tables and ranges the running jobs of `keyspace` hold; other keyspaces' never meet
+    /// its own.
+    fn busy(&self, keyspace: u32) -> Busy {
         let mut busy = Busy::default();
-        for (_, pick) in &self.running {
+        for (_, _, pick) in self.running.iter().filter(|(_, held, _)| *held == keyspace) {
             busy.tables.extend(
                 pick.inputs
                     .iter()
@@ -216,14 +239,15 @@ impl Compactions {
     }
 }
 
-/// The next automatic compaction for the keyspace's style.
+/// The next automatic compaction for `keyspace`'s style.
 fn automatic(
     flusher: &Flusher,
+    keyspace: u32,
     levels: &[Vec<Arc<TableMeta>>; LEVELS],
     shape: Shape,
     busy: &Busy,
 ) -> Option<Pick> {
-    match flusher.keyspace.compaction() {
+    match flusher.keyspace_options(keyspace).compaction() {
         CompactionStyle::Fifo { max_table_bytes } => fifo::pick(levels, max_table_bytes, busy),
         CompactionStyle::Universal {
             size_ratio_percent,
@@ -243,26 +267,27 @@ fn automatic(
     }
 }
 
-/// The levels the manifest holds and the shape the keyspace gives them; none while the
-/// manifest is lent to a flush.
-fn shape_of(flusher: &Flusher) -> Option<([Vec<Arc<TableMeta>>; LEVELS], Shape)> {
+/// The levels of `keyspace` the manifest holds and the shape its options give them; none
+/// while the manifest is lent to a flush.
+fn shape_of(flusher: &Flusher, keyspace: u32) -> Option<([Vec<Arc<TableMeta>>; LEVELS], Shape)> {
     let version = flusher.manifest.as_ref()?.version();
-    let keyspace = &flusher.keyspace;
+    let options = flusher.keyspace_options(keyspace);
     Some((
-        std::array::from_fn(|level| version.tables(KEYSPACE, level).to_vec()),
+        std::array::from_fn(|level| version.tables(keyspace, level).to_vec()),
         Shape {
-            level0_trigger: keyspace.level0_compaction_trigger(),
-            base_bytes: keyspace.level_base_bytes(),
-            multiplier: keyspace.level_size_multiplier(),
+            level0_trigger: options.level0_compaction_trigger(),
+            base_bytes: options.level_base_bytes(),
+            multiplier: options.level_size_multiplier(),
         },
     ))
 }
 
-/// The bytes compaction owes now (see [`pick::pending_bytes`]); none while the manifest is lent
-/// to a flush. A first-in-first-out keyspace owes nothing: it never merges.
+/// The bytes compaction owes in the default keyspace now (see [`pick::pending_bytes`]); none
+/// while the manifest is lent to a flush. A first-in-first-out keyspace owes nothing: it never
+/// merges.
 pub(super) fn pending_bytes(flusher: &Flusher) -> Option<u64> {
     if !matches!(flusher.keyspace.compaction(), CompactionStyle::Leveled) {
         return Some(0);
     }
-    shape_of(flusher).map(|(levels, shape)| pick::pending_bytes(&levels, shape))
+    shape_of(flusher, 0).map(|(levels, shape)| pick::pending_bytes(&levels, shape))
 }

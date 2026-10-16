@@ -1,19 +1,12 @@
 //! The steps a range request takes over given levels.
 
-use tokio::sync::oneshot;
-
 use super::super::pick::Busy;
 use super::super::pick_tests::{SHAPE, ids, levels, table};
 use super::{Active, Request, Step};
 use crate::CompactionStyle;
 
 fn request(start: &[u8], end: Option<&[u8]>, fresh_from: u64) -> Active {
-    let (done, _) = oneshot::channel();
-    let request = Request {
-        start: start.to_vec(),
-        end: end.map(<[u8]>::to_vec),
-        done,
-    };
+    let (request, _) = Request::new(0, start, end);
     Active::new(request, fresh_from)
 }
 
