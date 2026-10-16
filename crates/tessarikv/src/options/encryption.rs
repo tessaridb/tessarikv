@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use tessarikv_format::RootKey;
+use tessarikv_format::{Cipher, RootKey};
 
 use super::db::{DbOptions, DbOptionsBuilder};
 
@@ -69,6 +69,15 @@ impl DbOptions {
     pub const fn encryption(&self) -> Option<&Encryption> {
         self.encryption.as_ref()
     }
+
+    /// The cipher new files are encrypted with; `None` (the default) takes AES-256-GCM where
+    /// the processor has AES instructions and ChaCha20-Poly1305 otherwise. Each file names its
+    /// cipher, so files written under another cipher still open. Without
+    /// [`DbOptions::encryption`] it changes nothing.
+    #[must_use]
+    pub const fn encryption_cipher(&self) -> Option<Cipher> {
+        self.encryption_cipher
+    }
 }
 
 impl DbOptionsBuilder {
@@ -76,6 +85,12 @@ impl DbOptionsBuilder {
     /// with id `key_id`.
     pub fn encryption(mut self, provider: Arc<dyn KeyProvider>, key_id: u32) -> Self {
         self.options.encryption = Some(Encryption { provider, key_id });
+        self
+    }
+
+    /// Sets [`DbOptions::encryption_cipher`].
+    pub const fn encryption_cipher(mut self, cipher: Cipher) -> Self {
+        self.options.encryption_cipher = Some(cipher);
         self
     }
 }

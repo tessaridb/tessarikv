@@ -20,11 +20,12 @@ pub(crate) struct Sealing {
 }
 
 impl Sealing {
-    /// Sealing under `encryption`, with the cipher this processor runs fastest.
-    pub(crate) fn new(encryption: &Encryption) -> Self {
+    /// Sealing under `encryption`, new files with `cipher`, or else the cipher this processor
+    /// runs fastest.
+    pub(crate) fn new(encryption: &Encryption, cipher: Option<Cipher>) -> Self {
         Self {
             encryption: encryption.clone(),
-            cipher: Cipher::preferred(),
+            cipher: cipher.unwrap_or_else(Cipher::preferred),
         }
     }
 

@@ -61,7 +61,7 @@ impl Db {
         let named = options.clone();
         let sealing = options
             .encryption()
-            .map(|encryption| Arc::new(Sealing::new(encryption)));
+            .map(|encryption| Arc::new(Sealing::new(encryption, options.encryption_cipher())));
         let statistics = options.statistics().then(|| Arc::new(Statistics::new()));
         let cache = Arc::new(
             BlockCache::new(options.block_cache_bytes(), keyspace.block_bytes())

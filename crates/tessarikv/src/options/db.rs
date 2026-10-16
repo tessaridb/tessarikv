@@ -49,6 +49,7 @@ pub struct DbOptions {
     pub(super) total_memtable_bytes: u64,
     pub(super) max_open_files: u32,
     pub(super) encryption: Option<super::Encryption>,
+    pub(super) encryption_cipher: Option<tessarikv_format::Cipher>,
     pub(super) statistics: bool,
     default_keyspace: KeyspaceOptions,
     /// Named keyspaces beside the default one (see `keyspaces.rs`).
@@ -72,6 +73,7 @@ impl Default for DbOptions {
             total_memtable_bytes: 0,
             max_open_files: 0,
             encryption: None,
+            encryption_cipher: None,
             statistics: false,
             default_keyspace: KeyspaceOptions::default(),
             keyspaces: Vec::new(),

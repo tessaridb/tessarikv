@@ -9,7 +9,8 @@ use super::flush_tests::PATH;
 use crate::log::fault::FaultStorage;
 use crate::storage::Storage as _;
 use crate::{
-    DbOptions, Error, KeyProvider, KeyspaceId, ReadOptions, RootKey, WriteBatch, WriteOptions,
+    Cipher, DbOptions, Error, KeyProvider, KeyspaceId, ReadOptions, RootKey, WriteBatch,
+    WriteOptions,
 };
 
 /// Keys by id, as a caller's key store would hand them out.
@@ -190,4 +191,70 @@ async fn a_changed_table_byte_is_corruption() {
     let read = read_all(&db, 20).await;
     assert!(matches!(read, Err(Error::Corruption { .. })), "{read:?}");
     db.close().await.expect("closed");
+}
+
+/// The cipher of every file of a database, read from the fifth byte of its seal header (1 for
+/// AES-256-GCM, 2 for ChaCha20-Poly1305).
+fn ciphers(storage: &FaultStorage) -> Vec<(String, u8)> {
+    storage
+        .list(Path::new(PATH))
+        .expect("listable")
+        .into_iter()
+        .filter(|name| {
+            name.ends_with(".sst") || name.starts_with("MANIFEST-") || name.ends_with(".log")
+        })
+        .map(|name| {
+            let bytes = storage.bytes(&Path::new(PATH).join(&name));
+            (name, bytes[5])
+        })
+        .collect()
+}
+
+/// A pinned cipher is the one every new file is written with, whatever the processor prefers;
+/// without one, files take the processor's preference.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pinned_cipher_is_used_for_every_new_file() {
+    for (pinned, code) in [
+        (Some(Cipher::ChaCha20Poly1305), 2),
+        (Some(Cipher::Aes256Gcm), 1),
+        (
+            None,
+            if Cipher::preferred() == Cipher::Aes256Gcm {
+                1
+            } else {
+                2
+            },
+        ),
+    ] {
+        let storage = FaultStorage::default();
+        let mut builder = DbOptions::builder().encryption(Arc::new(Keys(vec![(1, 7)])), 1);
+        if let Some(cipher) = pinned {
+            builder = builder.encryption_cipher(cipher);
+        }
+        let options = builder.build().expect("valid");
+        assert_eq!(options.encryption_cipher(), pinned);
+        let db = Db::open_with_storage(PATH, options.clone(), Arc::new(storage.clone()))
+            .await
+            .expect("opened");
+        fill(&db, 20).await;
+        db.close().await.expect("closed");
+        let files = ciphers(&storage);
+        assert!(
+            files.iter().any(|(name, _)| name.ends_with(".sst")),
+            "{files:?}"
+        );
+        assert!(
+            files.iter().all(|(_, byte)| *byte == code),
+            "{pinned:?}: {files:?}"
+        );
+        let db = Db::open_with_storage(PATH, options, Arc::new(storage))
+            .await
+            .expect("reopened");
+        let read = db
+            .get(KeyspaceId::DEFAULT, &key(3), &ReadOptions::default())
+            .await
+            .expect("read");
+        assert_eq!(read, Some(value(3)));
+        db.close().await.expect("closed");
+    }
 }
