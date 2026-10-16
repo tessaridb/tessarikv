@@ -30,6 +30,8 @@ pub(crate) mod fault;
 #[cfg(test)]
 mod release_tests;
 #[cfg(test)]
+mod sync_gate;
+#[cfg(test)]
 mod tests;
 
 use std::path::{Path, PathBuf};

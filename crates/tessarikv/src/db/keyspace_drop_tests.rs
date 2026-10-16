@@ -199,6 +199,12 @@ async fn a_keyspace_dropped_while_it_compacts_discards_the_compaction() {
         let db = Arc::clone(&db);
         tokio::spawn(async move { db.drop_keyspace(users).await })
     };
+    // The drop's manifest edit waits at the gate too: it is queued ahead of the compaction's
+    // commit, whichever finishes writing first.
+    until("the drop waits for its manifest sync", || {
+        storage.sync_waiting("MANIFEST")
+    })
+    .await;
     drop(paused);
     dropping.await.expect("joined").expect("dropped");
     let refused = tokio::time::timeout(std::time::Duration::from_secs(10), compacting)

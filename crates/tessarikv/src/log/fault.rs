@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
 
+use super::sync_gate::SyncGate;
 use crate::storage::{MemoryStorage, ReadableFile, Storage, StorageLock, WritableFile};
 use crate::{Error, Result};
 
@@ -20,9 +21,8 @@ struct State {
     /// Bytes of each file the last successful sync covered.
     synced: papaya::HashMap<PathBuf, u64>,
     fail_sync: AtomicBool,
-    /// While set, syncs wait.
-    paused: Mutex<bool>,
-    resumed: std::sync::Condvar,
+    /// Holds syncs while paused.
+    gate: SyncGate,
     /// When armed, crash images are taken around every durable step outside the log.
     capture: OnceLock<Capture>,
     /// Held shared by every change to the files and exclusively by a crash image, so an image
@@ -56,13 +56,17 @@ impl FaultStorage {
 
     /// Every later sync waits until [`FaultStorage::resume_syncs`].
     pub(crate) fn pause_syncs(&self) {
-        *self.state.paused.lock().expect("the gate") = true;
+        self.state.gate.pause();
+    }
+
+    /// Whether a sync of a file whose name starts with `prefix` is waiting at the paused gate.
+    pub(crate) fn sync_waiting(&self, prefix: &str) -> bool {
+        self.state.gate.waiting(prefix)
     }
 
     /// Lets waiting and later syncs through.
     pub(crate) fn resume_syncs(&self) {
-        *self.state.paused.lock().expect("the gate") = false;
-        self.state.resumed.notify_all();
+        self.state.gate.resume();
     }
 
     /// From now on, takes crash images of `dir` around every sync of a file that is not a log
@@ -244,11 +248,7 @@ impl WritableFile for FaultFile {
 
     fn sync(&mut self) -> Result<()> {
         let state = &self.storage.state;
-        let mut paused = state.paused.lock().expect("the gate");
-        while *paused {
-            paused = state.resumed.wait(paused).expect("the gate");
-        }
-        drop(paused);
+        state.gate.pass(&self.path);
         if state.fail_sync.load(Ordering::SeqCst) {
             return Err(Error::Io {
                 operation: "sync",
