@@ -7,11 +7,16 @@
 
 use std::sync::Arc;
 
+use tessarikv_constants::LEVELS;
 use tessarikv_format::{TableIter, TableMeta};
 use tessarikv_types::{InternalKeyRef, ValueKind, compare_internal};
 
+use super::KEYSPACE;
 use super::output::{Destination, Outputs};
+use super::pick::Pick;
 use super::retain::Retention;
+use crate::db::flush_job::table_options;
+use crate::db::installer::Flusher;
 use crate::db::tables::{self, format_error, user_key};
 use crate::db::view::TableFile;
 use crate::{Error, Result};
@@ -32,6 +37,56 @@ struct Walk<'a> {
 }
 
 impl Job {
+    /// The job merging `pick`'s tables, reading what it keeps from the snapshots held now.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::CompactionFailed`] when an input is not in the current view or the output
+    /// level is out of range; the keyspace's table options' error otherwise.
+    pub(super) fn start(
+        flusher: &Flusher,
+        pick: &Pick,
+        levels: &[Vec<Arc<TableMeta>>; LEVELS],
+    ) -> Result<Self> {
+        let current = flusher.view.load();
+        let wanted: Vec<u64> = pick
+            .inputs
+            .iter()
+            .chain(&pick.overlaps)
+            .map(|table| table.id)
+            .collect();
+        let inputs: Vec<TableFile> = current
+            .files(KEYSPACE)
+            .filter(|file| wanted.contains(&file.meta.id))
+            .cloned()
+            .collect();
+        if inputs.len() != wanted.len() {
+            return Err(Error::CompactionFailed);
+        }
+        // The visible sequence is read before the snapshots are, so no snapshot taken meanwhile
+        // is missed.
+        let horizon = flusher.snapshots.horizon(flusher.sequencer.visible());
+        Ok(Self {
+            to: Destination {
+                storage: Arc::clone(&flusher.storage),
+                dir: flusher.dir.clone(),
+                options: table_options(&flusher.keyspace)?,
+                target_bytes: flusher.keyspace.target_file_bytes(),
+                numbers: Arc::clone(&flusher.numbers),
+                cache: Arc::clone(&flusher.cache),
+                keyspace: KEYSPACE,
+                level: u8::try_from(pick.output_level).map_err(|_| Error::CompactionFailed)?,
+            },
+            inputs,
+            deeper: levels
+                .iter()
+                .skip(pick.output_level.saturating_add(1))
+                .cloned()
+                .collect(),
+            retention: Retention::new(horizon.visible(), horizon.snapshots()),
+        })
+    }
+
     /// Merges the inputs and writes and syncs the output tables and their directory. Runs on a
     /// blocking thread.
     ///

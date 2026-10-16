@@ -48,6 +48,7 @@ fn keyspace_defaults_are_the_documented_constants() {
         limits::DEFAULT_LEVEL0_COMPACTION_TRIGGER
     );
     assert_eq!(options.level_base_bytes(), limits::DEFAULT_LEVEL_BASE_BYTES);
+    assert_eq!(options.max_compactions(), limits::DEFAULT_MAX_COMPACTIONS);
     assert_eq!(
         options.level_size_multiplier(),
         limits::DEFAULT_LEVEL_SIZE_MULTIPLIER
@@ -60,7 +61,7 @@ fn keyspace_defaults_are_the_documented_constants() {
 
 #[test]
 fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
-    let edges: [Edge<KeyspaceOptions>; 9] = [
+    let edges: [Edge<KeyspaceOptions>; 10] = [
         (
             "keyspace.memtable_bytes",
             limits::MIN_MEMTABLE_BYTES,
@@ -113,6 +114,16 @@ fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
                     // Above the compaction trigger at any value it takes.
                     .level0_slowdown_trigger(limits::MAX_LEVEL0_STALL_TRIGGER)
                     .level0_stop_trigger(limits::MAX_LEVEL0_STALL_TRIGGER)
+                    .build()
+            },
+        ),
+        (
+            "keyspace.max_compactions",
+            1,
+            u64::from(limits::MAX_COMPACTIONS),
+            |value| {
+                KeyspaceOptions::builder()
+                    .max_compactions(narrow(value))
                     .build()
             },
         ),

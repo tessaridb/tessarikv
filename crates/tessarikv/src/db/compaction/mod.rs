@@ -1,12 +1,14 @@
 //! Compaction: merging table files into the level below so reads consult fewer of them and
 //! versions no reader can see leave the disk.
 //!
-//! The installer runs at most one compaction at a time, next to flushes. When its manifest is
-//! at hand and no compaction runs it asks [`pick`] for one: a table that moves down is recorded
-//! at once; anything else becomes a job on a blocking thread that merges the inputs and writes
-//! and syncs the outputs, holding no lock. The installer then appends ONE manifest edit,
-//! synced, that removes the inputs and adds the outputs, and only after it publishes the view
-//! in which the outputs replace the inputs. A crash before the edit leaves output files no edit
+//! The installer runs up to [`crate::KeyspaceOptions::max_compactions`] compactions at once,
+//! next to flushes. When its manifest is at hand and fewer run it asks [`pick`] for one that
+//! reads no table another runs on and writes outside every range another writes in the same
+//! level: a table that moves down is recorded at once; anything else becomes a job on a
+//! blocking thread that merges the inputs and writes and syncs the outputs, holding no lock.
+//! For each finished job the installer appends ONE manifest edit, synced, that removes the
+//! inputs and adds the outputs, and only after it publishes the view in which the outputs
+//! replace the inputs. A crash before the edit leaves output files no edit
 //! names, removed when the database opens; after it, opening reads the outputs.
 //!
 //! What a job keeps is decided at its start from the visible sequence and the snapshots then
@@ -28,22 +30,23 @@ mod job_tests;
 mod pick_tests;
 #[cfg(test)]
 mod retain_tests;
+#[cfg(test)]
+mod running_tests;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use tessarikv_constants::LEVELS;
 use tessarikv_format::{ManifestEdit, TableMeta, TableRef};
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 
 use self::job::Job;
-use self::output::Destination;
-use self::pick::{Pick, Shape};
-use self::retain::Retention;
-use super::flush_job::{table_options, table_path};
+use self::pick::{Busy, Pick, Shape};
+use super::flush_job::table_path;
 use super::installer::Flusher;
 use super::table_blocks::TableBlocks;
 use super::view::TableFile;
+use crate::KeyspaceOptions;
 use crate::storage::Storage;
 use crate::{Error, Result};
 
@@ -53,12 +56,18 @@ const KEYSPACE: u32 = 0;
 /// How often the installer looks again at input files a reader still held.
 pub(super) const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// The installer's compactions: the one running, its outputs waiting for the manifest, and
-/// the input files waiting for their last reader.
+/// A finished job: its number and its outputs.
+type Finished = (u64, Result<Vec<TableFile>>);
+
+/// The installer's compactions: those running, outputs waiting for the manifest, and the
+/// input files waiting for their last reader.
 #[derive(Default)]
 pub(super) struct Compactions {
-    running: Option<(Pick, JoinHandle<Result<Vec<TableFile>>>)>,
-    ready: Option<(Pick, Vec<TableFile>)>,
+    jobs: JoinSet<Finished>,
+    /// What each running job took, by its number.
+    running: Vec<(u64, Pick)>,
+    next_job: u64,
+    ready: Vec<(Pick, Vec<TableFile>)>,
     obsolete: Vec<(Weak<TableBlocks>, PathBuf)>,
 }
 
@@ -70,22 +79,27 @@ impl Compactions {
 
     /// Whether a job is running.
     pub(super) fn is_running(&self) -> bool {
-        self.running.is_some()
+        !self.jobs.is_empty()
     }
 
-    /// Waits for the running job and keeps its outputs for [`Compactions::step`]; never
-    /// returns while none runs.
+    /// Waits for a running job and keeps its outputs for [`Compactions::step`]; never returns
+    /// while none runs.
     ///
     /// # Errors
     ///
     /// The job's error, or [`Error::CompactionFailed`] when its thread died.
     pub(super) async fn finished(&mut self) -> Result<()> {
-        let Some((_, handle)) = self.running.as_mut() else {
+        let Some(joined) = self.jobs.join_next().await else {
             return std::future::pending().await;
         };
-        let outputs = handle.await.map_err(|_| Error::CompactionFailed)?;
-        let (pick, _) = self.running.take().ok_or(Error::CompactionFailed)?;
-        self.ready = Some((pick, outputs?));
+        let (number, outputs) = joined.map_err(|_| Error::CompactionFailed)?;
+        let at = self
+            .running
+            .iter()
+            .position(|(running, _)| *running == number)
+            .ok_or(Error::CompactionFailed)?;
+        let (_, pick) = self.running.swap_remove(at);
+        self.ready.push((pick, outputs?));
         Ok(())
     }
 
@@ -101,12 +115,12 @@ impl Compactions {
         if flusher.manifest.is_none() {
             return Ok(published);
         }
-        if let Some((pick, outputs)) = self.ready.take() {
+        for (pick, outputs) in std::mem::take(&mut self.ready) {
             self.commit(flusher, &pick, outputs).await?;
             published = true;
         }
         self.sweep(Arc::clone(&flusher.storage)).await;
-        while start && self.running.is_none() {
+        while start && self.has_room(&flusher.keyspace) {
             let Some(version) = flusher.manifest.as_ref().map(|manifest| manifest.version()) else {
                 return Ok(published);
             };
@@ -118,7 +132,7 @@ impl Compactions {
                 base_bytes: keyspace.level_base_bytes(),
                 multiplier: keyspace.level_size_multiplier(),
             };
-            let Some(pick) = pick::pick(&levels, shape) else {
+            let Some(pick) = pick::pick_with(&levels, shape, &self.busy()) else {
                 return Ok(published);
             };
             if pick.is_move() {
@@ -126,10 +140,34 @@ impl Compactions {
                 published = true;
                 continue;
             }
-            let job = job(flusher, &pick, &levels)?;
-            self.running = Some((pick, tokio::task::spawn_blocking(move || job.run())));
+            let job = Job::start(flusher, &pick, &levels)?;
+            let number = self.next_job;
+            self.next_job = number.wrapping_add(1);
+            self.running.push((number, pick));
+            self.jobs.spawn_blocking(move || (number, job.run()));
         }
         Ok(published)
+    }
+
+    /// Whether fewer jobs run than the keyspace allows at once.
+    fn has_room(&self, keyspace: &KeyspaceOptions) -> bool {
+        let most = usize::try_from(keyspace.max_compactions()).unwrap_or(usize::MAX);
+        self.running.len() < most
+    }
+
+    /// The tables and ranges running jobs hold.
+    fn busy(&self) -> Busy {
+        let mut busy = Busy::default();
+        for (_, pick) in &self.running {
+            busy.tables.extend(
+                pick.inputs
+                    .iter()
+                    .chain(&pick.overlaps)
+                    .map(|table| table.id),
+            );
+            busy.ranges.extend(pick.busy_range());
+        }
+        busy
     }
 
     /// Appends the edit replacing `pick`'s tables by `outputs` (by the moved table when there
@@ -228,45 +266,4 @@ impl Compactions {
         .unwrap_or_default();
         self.obsolete.extend(failed);
     }
-}
-
-/// The job merging `pick`'s tables, reading what it keeps from the snapshots held now.
-fn job(flusher: &Flusher, pick: &Pick, levels: &[Vec<Arc<TableMeta>>; LEVELS]) -> Result<Job> {
-    let current = flusher.view.load();
-    let wanted: Vec<u64> = pick
-        .inputs
-        .iter()
-        .chain(&pick.overlaps)
-        .map(|table| table.id)
-        .collect();
-    let inputs: Vec<TableFile> = current
-        .files(KEYSPACE)
-        .filter(|file| wanted.contains(&file.meta.id))
-        .cloned()
-        .collect();
-    if inputs.len() != wanted.len() {
-        return Err(Error::CompactionFailed);
-    }
-    // The visible sequence is read before the snapshots are, so no snapshot taken meanwhile is
-    // missed.
-    let horizon = flusher.snapshots.horizon(flusher.sequencer.visible());
-    Ok(Job {
-        to: Destination {
-            storage: Arc::clone(&flusher.storage),
-            dir: flusher.dir.clone(),
-            options: table_options(&flusher.keyspace)?,
-            target_bytes: flusher.keyspace.target_file_bytes(),
-            numbers: Arc::clone(&flusher.numbers),
-            cache: Arc::clone(&flusher.cache),
-            keyspace: KEYSPACE,
-            level: u8::try_from(pick.output_level).map_err(|_| Error::CompactionFailed)?,
-        },
-        inputs,
-        deeper: levels
-            .iter()
-            .skip(pick.output_level.saturating_add(1))
-            .cloned()
-            .collect(),
-        retention: Retention::new(horizon.visible(), horizon.snapshots()),
-    })
 }

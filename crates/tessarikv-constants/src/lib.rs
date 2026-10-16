@@ -77,6 +77,12 @@ pub const DEFAULT_LEVEL0_SLOWDOWN_TRIGGER: u32 = 20;
 /// Default number of level-0 tables at which writes wait for a compaction.
 pub const DEFAULT_LEVEL0_STOP_TRIGGER: u32 = 36;
 
+/// Default number of compactions a keyspace runs at once.
+pub const DEFAULT_MAX_COMPACTIONS: u32 = 4;
+
+/// Largest number of compactions a keyspace runs at once.
+pub const MAX_COMPACTIONS: u32 = 64;
+
 /// Largest level-0 slowdown or stop trigger.
 pub const MAX_LEVEL0_STALL_TRIGGER: u32 = 4096;
 

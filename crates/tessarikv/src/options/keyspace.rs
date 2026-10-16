@@ -16,6 +16,7 @@ pub struct KeyspaceOptions {
     level0_compaction_trigger: u32,
     level0_slowdown_trigger: u32,
     level0_stop_trigger: u32,
+    max_compactions: u32,
     level_base_bytes: u64,
     level_size_multiplier: u32,
     target_file_bytes: u64,
@@ -32,6 +33,7 @@ impl Default for KeyspaceOptions {
             level0_compaction_trigger: limits::DEFAULT_LEVEL0_COMPACTION_TRIGGER,
             level0_slowdown_trigger: limits::DEFAULT_LEVEL0_SLOWDOWN_TRIGGER,
             level0_stop_trigger: limits::DEFAULT_LEVEL0_STOP_TRIGGER,
+            max_compactions: limits::DEFAULT_MAX_COMPACTIONS,
             level_base_bytes: limits::DEFAULT_LEVEL_BASE_BYTES,
             level_size_multiplier: limits::DEFAULT_LEVEL_SIZE_MULTIPLIER,
             target_file_bytes: limits::DEFAULT_TARGET_FILE_BYTES,
@@ -135,6 +137,13 @@ impl KeyspaceOptions {
         self.level0_stop_trigger
     }
 
+    /// Compactions the keyspace runs at once. Each takes tables and a key range no other
+    /// running compaction touches; level 0 is compacted by one at a time.
+    #[must_use]
+    pub const fn max_compactions(&self) -> u32 {
+        self.max_compactions
+    }
+
     /// Target size of the first level below level 0 that holds data, in bytes. Targets are
     /// computed from the bottom level up, so data first goes to the bottom level and the levels
     /// above it fill as it grows.
@@ -210,6 +219,12 @@ impl KeyspaceOptionsBuilder {
     /// Sets [`KeyspaceOptions::level0_stop_trigger`].
     pub const fn level0_stop_trigger(mut self, value: u32) -> Self {
         self.options.level0_stop_trigger = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::max_compactions`].
+    pub const fn max_compactions(mut self, value: u32) -> Self {
+        self.options.max_compactions = value;
         self
     }
 

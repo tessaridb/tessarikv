@@ -4,16 +4,22 @@ use tessarikv_constants::LEVELS;
 use tessarikv_format::TableMeta;
 use tessarikv_types::{SequenceNumber, Trailer, ValueKind, encode_internal};
 
-use super::pick::{Shape, pick};
+use super::pick::{Busy, Shape, pick, pick_with};
 
-const SHAPE: Shape = Shape {
+pub(super) const SHAPE: Shape = Shape {
     level0_trigger: 4,
     base_bytes: 100,
     multiplier: 10,
 };
 
 /// A table numbered `id` holding user keys `smallest..=largest` in `size` bytes.
-fn table(id: u64, level: u8, smallest: &[u8], largest: &[u8], size: u64) -> Arc<TableMeta> {
+pub(super) fn table(
+    id: u64,
+    level: u8,
+    smallest: &[u8],
+    largest: &[u8],
+    size: u64,
+) -> Arc<TableMeta> {
     let internal = |key: &[u8]| {
         let mut out = Vec::new();
         encode_internal(
@@ -35,7 +41,7 @@ fn table(id: u64, level: u8, smallest: &[u8], largest: &[u8], size: u64) -> Arc<
     })
 }
 
-fn levels(tables: Vec<Arc<TableMeta>>) -> [Vec<Arc<TableMeta>>; LEVELS] {
+pub(super) fn levels(tables: Vec<Arc<TableMeta>>) -> [Vec<Arc<TableMeta>>; LEVELS] {
     let mut levels: [Vec<Arc<TableMeta>>; LEVELS] = Default::default();
     for table in tables {
         levels[usize::from(table.level)].push(table);
@@ -43,7 +49,7 @@ fn levels(tables: Vec<Arc<TableMeta>>) -> [Vec<Arc<TableMeta>>; LEVELS] {
     levels
 }
 
-fn ids(tables: &[Arc<TableMeta>]) -> Vec<u64> {
+pub(super) fn ids(tables: &[Arc<TableMeta>]) -> Vec<u64> {
     tables.iter().map(|table| table.id).collect()
 }
 
@@ -124,4 +130,65 @@ fn level_zero_stops_at_a_non_empty_level_above_the_base_and_that_level_drains_fi
     shape[3].clear();
     let whole = pick(&shape, SHAPE).expect("level 0 at its trigger");
     assert_eq!((whole.inputs[0].level, whole.output_level), (0, 6));
+}
+
+#[test]
+fn a_busy_table_or_range_is_passed_over_for_the_next_compaction_that_can_run() {
+    // L4 base (target 50) holds 90: three tables, the cheapest first by overlap per byte.
+    let shape = levels(vec![
+        table(1, 4, b"a", b"c", 30),
+        table(2, 4, b"k", b"m", 30),
+        table(7, 4, b"t", b"u", 30),
+        table(3, 5, b"a", b"b", 200),
+        table(5, 5, b"l", b"l", 10),
+        table(8, 5, b"t", b"t", 40),
+        table(6, 6, b"a", b"z", 5000),
+    ]);
+    let free = Busy::default();
+    assert_eq!(ids(&pick_with(&shape, SHAPE, &free).unwrap().inputs), [2]);
+    let mut busy = Busy::default();
+    busy.tables.push(2);
+    assert_eq!(
+        ids(&pick_with(&shape, SHAPE, &busy).unwrap().inputs),
+        [7],
+        "table 2 is being compacted"
+    );
+    busy.tables.push(8);
+    assert_eq!(
+        ids(&pick_with(&shape, SHAPE, &busy).unwrap().inputs),
+        [1],
+        "table 7 touches busy table 8"
+    );
+    let mut ranged = Busy::default();
+    ranged.tables.push(2);
+    ranged.ranges.push((5, b"s".to_vec(), b"v".to_vec()));
+    assert_eq!(
+        ids(&pick_with(&shape, SHAPE, &ranged).unwrap().inputs),
+        [1],
+        "table 7 would write into a range another job writes in level 5"
+    );
+}
+
+#[test]
+fn level_zero_runs_one_compaction_at_a_time_and_lets_another_level_go_meanwhile() {
+    let mut tables: Vec<_> = (1..=4)
+        .rev()
+        .map(|id| table(id, 0, b"c", b"d", 1))
+        .collect();
+    tables.push(table(9, 4, b"x", b"y", 80));
+    tables.push(table(10, 6, b"a", b"z", 5000));
+    let shape = levels(tables);
+    // L0 scores 1.0, L4 80 of 50 = 1.6: L4 goes first; with it busy, L0 goes.
+    let first = pick_with(&shape, SHAPE, &Busy::default()).unwrap();
+    assert_eq!(first.inputs[0].level, 4);
+    let mut busy = Busy::default();
+    busy.tables.push(9);
+    busy.ranges.push((5, b"x".to_vec(), b"y".to_vec()));
+    let second = pick_with(&shape, SHAPE, &busy).unwrap();
+    assert_eq!(ids(&second.inputs), [4, 3, 2, 1]);
+    busy.tables.extend([4, 3, 2, 1]);
+    assert!(
+        pick_with(&shape, SHAPE, &busy).is_none(),
+        "level 0 is already being compacted"
+    );
 }
