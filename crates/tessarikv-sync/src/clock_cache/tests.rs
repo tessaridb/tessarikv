@@ -158,3 +158,37 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_removed_entry_is_gone_dropped_once_and_uncounted() {
+    let drops = Arc::new(AtomicU64::new(0));
+    let cache = ClockCache::new(100, 10);
+    for id in [1_u32, 2] {
+        let value = Arc::new(Counted {
+            id: u64::from(id),
+            drops: Arc::clone(&drops),
+        });
+        assert_eq!(cache.insert(id, value, 10), Admission::Admitted);
+    }
+    assert!(cache.remove(&1));
+    assert!(cache.get(&1).is_none());
+    assert_eq!(cache.get(&2).map(|value| value.id), Some(2));
+    assert_eq!(cache.used(), 10);
+    assert_eq!(
+        drops.load(Ordering::Relaxed),
+        1,
+        "the removed value is dropped"
+    );
+    assert!(!cache.remove(&1), "a key not held is not removed");
+    assert!(!cache.remove(&3));
+    assert_eq!(cache.used(), 10);
+    assert_eq!(
+        cache.insert(1, Arc::new(Counted { id: 9, drops }), 10),
+        Admission::Admitted
+    );
+    assert_eq!(
+        cache.get(&1).map(|value| value.id),
+        Some(9),
+        "the key may come back"
+    );
+}

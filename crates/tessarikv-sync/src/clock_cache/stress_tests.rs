@@ -1,6 +1,7 @@
-//! Real-parallelism checks with more threads than cores: every value read is one inserted for
-//! that key by an insert that began before the read returned, the charge stays bounded while
-//! threads race, the count is exact once they stop, and every value is dropped exactly once.
+//! Real-parallelism checks with more threads than cores, removals racing reads and inserts: every
+//! value read is one inserted for that key by an insert that began before the read returned, the
+//! charge stays bounded while threads race, the count is exact once they stop, and every value is
+//! dropped exactly once.
 //! `TESSARIKV_STRESS_MILLIS` sets the recording time (default 300 ms).
 //!
 //! The workers are plain threads on purpose: the point is preemption at arbitrary instructions
@@ -66,7 +67,8 @@ fn duration() -> Duration {
 
 type Recorded = (HashMap<u64, Offered>, Vec<Hit>, u64);
 
-/// One worker: a random mix of reads and inserts over a key space larger than the cache holds.
+/// One worker: a random mix of reads, inserts and removals over a key space larger than the
+/// cache holds.
 fn work(
     thread: u64,
     cache: &ClockCache<u16, Slow>,
@@ -97,6 +99,10 @@ fn work(
                 "nothing pins every entry here"
             );
             offered.insert(id, Offered { key, invoked });
+        } else if state & 0x30_0000 == 0x10_0000 {
+            // A removal's outcome promises nothing checkable alone; the drop count and the
+            // final count below show it dropped and uncounted exactly what it took.
+            cache.remove(&key);
         } else if let Some(Slow(value)) = cache.get(&key) {
             hits.push(Hit {
                 key,

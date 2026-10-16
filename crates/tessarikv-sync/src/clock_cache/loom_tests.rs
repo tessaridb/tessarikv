@@ -94,3 +94,41 @@ fn two_inserts_competing_for_room_keep_the_count_exact() {
         assert_counted(&cache, ONE);
     });
 }
+
+/// A removal racing a read returns the entry to the reader or to nobody, and leaves it gone.
+#[test]
+fn a_removal_racing_a_read_leaves_the_entry_gone() {
+    loom::model(|| {
+        let cache = cache(ONE);
+        assert_eq!(cache.insert(1, 7, ONE), Admission::Admitted);
+        let remover = Arc::clone(&cache);
+        let remove = loom::thread::spawn(move || remover.remove(&1));
+        let read = cache.get(&1);
+        assert!(matches!(read, None | Some(7)), "read {read:?}");
+        // A removal that found the slot being read leaves it; once alone it succeeds.
+        if !remove.join().unwrap() {
+            assert!(cache.remove(&1));
+        }
+        assert_eq!(cache.get(&1), None);
+        assert_counted(&cache, ONE);
+    });
+}
+
+/// A removal of one key racing an insert that evicts it and may reuse its slot for another key
+/// never removes the other key's entry.
+#[test]
+fn a_removal_never_takes_another_keys_entry() {
+    loom::model(|| {
+        let cache = cache(ONE);
+        assert_eq!(cache.insert(1, 7, ONE), Admission::Admitted);
+        let writer = Arc::clone(&cache);
+        let insert = loom::thread::spawn(move || writer.insert(2, 8, ONE));
+        cache.remove(&1);
+        let admission = insert.join().unwrap();
+        assert_eq!(cache.get(&1), None);
+        if admission == Admission::Admitted {
+            assert_eq!(cache.get(&2), Some(8), "the other key's entry stays");
+        }
+        assert_counted(&cache, ONE);
+    });
+}

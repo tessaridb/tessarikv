@@ -64,6 +64,8 @@ pub enum Admission {
 /// | `insert` | admitted | the read-modify-write that publishes the slot | wait-free: a bounded number of clock steps and slot claims |
 /// | `insert` | already cached | the reader's increment that found the key | wait-free |
 /// | `insert` | refused | its return (permitted outcome) | wait-free |
+/// | `remove` | removed | the compare-and-swap that took a slot holding the key | wait-free: one probe window, one compare-and-swap per matching slot |
+/// | `remove` | kept | its return (permitted outcome: the entry is being read, or not held) | wait-free |
 ///
 /// Each slot has one word holding its state (empty, busy, ready), a referenced bit and a count of
 /// readers. Every write to that word is a read-modify-write, so every release on it heads a
@@ -185,6 +187,29 @@ impl<K: Copy + Eq + Hash, V: Clone> ClockCache<K, V> {
         held.fill(hash, entry);
         self.discard(replaced);
         Admission::Admitted
+    }
+
+    /// Removes the entries held for `key` that nobody is reading at that moment; returns whether
+    /// one was removed. An entry being read stays, so a caller that needs it gone asks again.
+    /// A slot taken for `key` that another insert has meanwhile refilled with another key is put
+    /// back unchanged.
+    pub fn remove(&self, key: &K) -> bool {
+        let hash = self.hasher.hash_one(key);
+        let mut removed = false;
+        for slot in self.window(hash).filter(|slot| slot.may_hold(hash)) {
+            let Some(held) = slot.take_unread(false) else {
+                continue;
+            };
+            let entry = held.take();
+            if entry.as_ref().is_some_and(|entry| entry.key == *key) {
+                held.empty();
+                self.discard(entry);
+                removed = true;
+            } else {
+                held.restore(entry);
+            }
+        }
+        removed
     }
 
     /// Charge units held, counting inserts in flight: an estimate while other threads insert

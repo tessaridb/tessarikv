@@ -163,6 +163,14 @@ impl<K, V> Held<'_, K, V> {
         self.slot.meta.fetch_add(READY - BUSY, Ordering::Release);
     }
 
+    /// Puts `entry` back unchanged and republishes the slot, under the hash it already has.
+    pub(super) fn restore(self, entry: Option<Entry<K, V>>) {
+        // SAFETY: as in `take`.
+        unsafe { self.slot.entry.with_mut(|slot| *slot = entry) };
+        // Release: publishes the entry again; the hash was never changed while the slot was held.
+        self.slot.meta.fetch_add(READY - BUSY, Ordering::Release);
+    }
+
     /// Releases the slot empty.
     pub(super) fn empty(self) {
         // Release: the removal of the entry happens-before the next claimant's write.
