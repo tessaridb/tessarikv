@@ -72,7 +72,7 @@ async fn writes_wait_while_frozen_tables_wait_for_their_flushes() {
     for _ in 0..1000 {
         tokio::task::yield_now().await;
     }
-    assert_eq!(db.view.load().memtables().count(), 3);
+    assert_eq!(db.view.load().memtables(0).count(), 3);
     let waiting = {
         let db = Arc::clone(&db);
         tokio::spawn(async move { write(&db, written, false).await })

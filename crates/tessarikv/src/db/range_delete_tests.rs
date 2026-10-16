@@ -88,13 +88,13 @@ fn view(writes: &[Write], first: usize, second: usize, flushed: usize, capacity:
         tessarikv_constants::DEFAULT_BLOCK_BYTES,
     ));
     let mut view = View::new(0, Memtable::new());
-    fill(view.table(0).unwrap(), 1, &writes[..first]);
+    fill(view.table(0, 0).unwrap(), 1, &writes[..first]);
     view = view.with_next_table();
-    fill(view.table(1).unwrap(), first + 1, &writes[first..second]);
+    fill(view.table(0, 1).unwrap(), first + 1, &writes[first..second]);
     view = view.with_next_table();
-    fill(view.table(2).unwrap(), second + 1, &writes[second..]);
+    fill(view.table(0, 2).unwrap(), second + 1, &writes[second..]);
     for epoch in 0..u8::try_from(flushed).unwrap() {
-        let table = file(view.table(epoch).unwrap(), u64::from(epoch) + 1, &cache);
+        let table = file(view.table(0, epoch).unwrap(), u64::from(epoch) + 1, &cache);
         view = view.after_flush(epoch, Some(table)).unwrap();
     }
     view

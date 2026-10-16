@@ -104,7 +104,7 @@ impl<'a> DbIterator<'a> {
     ) -> Result<Self> {
         let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
         let sources = view
-            .shared_memtables()
+            .shared_memtables(keyspace.get())
             .map(|table| Source::Shared(MemtableCursor::new(Arc::clone(table))))
             .chain(view.files(keyspace.get()).map(|file| {
                 let versions = TableVersions::new(file, options.fill_cache);

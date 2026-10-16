@@ -165,11 +165,11 @@ pub(super) fn model(ops: &[Op], count: usize) -> BTreeMap<Vec<u8>, Vec<u8>> {
 /// before any flush.
 pub(super) fn unflushed(ops: &[Op], first: usize, second: usize) -> View {
     let view = View::new(0, Memtable::new());
-    fill(view.table(0).unwrap(), 1, &ops[..first]);
+    fill(view.table(0, 0).unwrap(), 1, &ops[..first]);
     let view = view.with_next_table();
-    fill(view.table(1).unwrap(), first + 1, &ops[first..second]);
+    fill(view.table(0, 1).unwrap(), first + 1, &ops[first..second]);
     let view = view.with_next_table();
-    fill(view.table(2).unwrap(), second + 1, &ops[second..]);
+    fill(view.table(0, 2).unwrap(), second + 1, &ops[second..]);
     view
 }
 
@@ -185,11 +185,11 @@ proptest! {
         let first = 1 + cuts.0.index(ops.len() - 2);
         let second = first + 1 + cuts.1.index(ops.len() - first - 1);
         let before = unflushed(&ops, first, second);
-        let oldest = file(before.table(0).unwrap(), 1, &cache);
-        let older = file(before.table(1).unwrap(), 2, &cache);
+        let oldest = file(before.table(0, 0).unwrap(), 1, &cache);
+        let older = file(before.table(0, 1).unwrap(), 2, &cache);
         let after = before.after_flush(0, Some(oldest)).unwrap().after_flush(1, Some(older)).unwrap();
         // The flushed writes are reachable only through the files.
-        prop_assert_eq!(after.memtables().count(), 1);
+        prop_assert_eq!(after.memtables(0).count(), 1);
         prop_assert_eq!(after.files(0).count(), 2);
         let default = KeyspaceId::DEFAULT;
         for snapshot in 0..=ops.len() {

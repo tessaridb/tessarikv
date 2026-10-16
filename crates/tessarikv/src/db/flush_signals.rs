@@ -98,9 +98,9 @@ impl FlushSignals {
         }
     }
 
-    /// Asks for a switch when `newest` has reached its size.
-    pub(super) fn check(&self, newest: &Memtable) {
-        if self.is_full(newest) {
+    /// Asks for a switch when a newest table of `view` has reached its size.
+    pub(super) fn check(&self, view: &View) {
+        if self.newest_is_full(view) {
             self.request();
         }
     }
@@ -280,14 +280,12 @@ impl FlushSignals {
     /// Whether `view` has no room for another write: its newest table is full and no more
     /// tables may be frozen.
     fn stalls(&self, view: &View) -> bool {
-        let frozen = view.memtables().count().saturating_sub(1);
+        let frozen = view.epochs().saturating_sub(1);
         frozen >= self.max_frozen && self.newest_is_full(view)
     }
 
     fn newest_is_full(&self, view: &View) -> bool {
-        view.memtables()
-            .next()
-            .is_some_and(|newest| self.is_full(newest))
+        view.newest_tables().any(|newest| self.is_full(newest))
     }
 
     fn is_full(&self, table: &Memtable) -> bool {

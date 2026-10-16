@@ -35,7 +35,7 @@ async fn scan(db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
 /// Every sequence each in-memory table holds, keyed by the table's epoch.
 fn sequences_by_epoch(db: &Db) -> BTreeMap<u8, Vec<u64>> {
     let view = db.view.load();
-    view.epoch_tables()
+    view.epoch_tables(0)
         .map(|(epoch, table)| {
             let mut versions = table.iter();
             versions.seek_to_first();

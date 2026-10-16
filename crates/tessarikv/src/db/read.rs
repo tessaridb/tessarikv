@@ -116,7 +116,7 @@ pub(super) async fn get_in(
     // Newest first, in-memory tables before table files: the first that decides the key
     // answers for it. Without range deletes a table file whose key range misses the key cannot
     // decide it, so only the files whose range holds it are read.
-    for table in view.memtables() {
+    for table in view.memtables(keyspace.get()) {
         match table.get(key, snapshot) {
             Lookup::Value(value) => return Ok(Some(value.to_vec())),
             Lookup::Deleted => return Ok(None),
@@ -191,7 +191,7 @@ pub(super) async fn scan_in(
 
 /// Every source of `keyspace` in `view`, borrowed: in-memory tables, then table files.
 fn sources(view: &View, keyspace: KeyspaceId, fill_cache: bool) -> Vec<Source<'_>> {
-    view.memtables()
+    view.memtables(keyspace.get())
         .map(|table| Source::Memtable(table.iter()))
         .chain(
             view.files(keyspace.get())

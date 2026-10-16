@@ -48,7 +48,7 @@ fn view(ops: &[Op], first: usize, second: usize, flushed: usize, capacity: u64) 
     for epoch in 0..flushed {
         let id = u64::try_from(epoch).unwrap() + 1;
         let table = file(
-            view.table(u8::try_from(epoch).unwrap()).unwrap(),
+            view.table(0, u8::try_from(epoch).unwrap()).unwrap(),
             id,
             &cache,
         );

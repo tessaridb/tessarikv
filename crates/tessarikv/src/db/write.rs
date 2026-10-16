@@ -3,7 +3,7 @@
 use tessarikv_constants::DIRECT_CHECKSUM_BYTES;
 use tessarikv_format::{FRAME_HEADER_BYTES, WriteBatch, concat_checksum, payload_checksum};
 use tessarikv_sync::{Claim, Sequencer};
-use tessarikv_types::SequenceNumber;
+use tessarikv_types::{KeyspaceId, SequenceNumber};
 use tokio::sync::Notify;
 
 use super::recover::SEQUENCE_BYTES;
@@ -115,10 +115,8 @@ impl Db {
             log.wait(last, wait).await?;
         }
         let applied = self.apply(claim.epoch(), first, batch);
-        if let Some(installer) = installer
-            && let Some(newest) = self.view.load().memtables().next()
-        {
-            installer.signals.check(newest);
+        if let Some(installer) = installer {
+            installer.signals.check(&self.view.load());
         }
         claim.complete(applied)
     }
@@ -126,7 +124,7 @@ impl Db {
     /// Inserts `batch` from sequence `first` into the in-memory table of `epoch`.
     fn apply(&self, epoch: u8, first: u64, batch: &WriteBatch) -> Result<()> {
         let view = self.view.load();
-        apply(view.table(epoch)?, first, batch)
+        apply(view.table(KeyspaceId::DEFAULT.get(), epoch)?, first, batch)
     }
 
     /// Claims one sequence number per entry of `batch`.

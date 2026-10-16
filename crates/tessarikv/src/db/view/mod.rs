@@ -15,6 +15,8 @@
 //! publishing a view is lock-free. A view, and the tables only it still names, are freed when the
 //! last reader holding it lets go.
 
+mod memtables;
+
 use std::sync::Arc;
 
 use tessarikv_format::{Table, TableMeta};
@@ -23,13 +25,11 @@ use tessarikv_types::compare_internal;
 use super::table_blocks::TableBlocks;
 use super::tables;
 use crate::memtable::Memtable;
-use crate::tombstones::RangeTombstone;
-use crate::{Error, Result};
 
 /// The tables of one read view.
 pub(crate) struct View {
-    /// In-memory tables, newest first.
-    tables: Vec<EpochTable>,
+    /// In-memory tables by epoch, newest first.
+    tables: Vec<EpochTables>,
     /// Table files ordered by keyspace, then level; level 0 newest first, every other level by
     /// key.
     files: Vec<TableFile>,
@@ -44,19 +44,19 @@ pub(crate) struct TableFile {
     pub(crate) blocks: Arc<TableBlocks>,
 }
 
-/// A table and the epoch whose writes it holds.
-struct EpochTable {
+/// The in-memory tables holding the writes of one epoch: one per keyspace, by keyspace id.
+struct EpochTables {
     epoch: u8,
-    table: Arc<Memtable>,
+    keyspaces: Vec<(u32, Arc<Memtable>)>,
 }
 
 impl View {
-    /// A view of one table holding epoch `epoch`.
+    /// A view of one table of the default keyspace holding epoch `epoch`.
     pub(crate) fn new(epoch: u8, table: Memtable) -> Self {
         Self {
-            tables: vec![EpochTable {
+            tables: vec![EpochTables {
                 epoch,
-                table: Arc::new(table),
+                keyspaces: vec![(0, Arc::new(table))],
             }],
             files: Vec::new(),
         }
@@ -71,64 +71,6 @@ impl View {
             files,
             ..Self::new(0, table)
         }
-    }
-
-    /// The epoch of the newest table.
-    pub(crate) fn newest_epoch(&self) -> u8 {
-        self.tables.first().map_or(0, |newest| newest.epoch)
-    }
-
-    /// This view with a new, empty table in front for the epoch after the newest one.
-    pub(crate) fn with_next_table(&self) -> Self {
-        use tessarikv_sync::next_epoch;
-
-        let mut tables = Vec::with_capacity(self.tables.len().saturating_add(1));
-        tables.push(EpochTable {
-            epoch: next_epoch(self.newest_epoch()),
-            table: Arc::new(self.tables.first().map_or_else(
-                || Memtable::sized(tessarikv_constants::DEFAULT_MEMTABLE_BYTES),
-                |newest| newest.table.successor(),
-            )),
-        });
-        tables.extend(self.tables.iter().map(|older| EpochTable {
-            epoch: older.epoch,
-            table: Arc::clone(&older.table),
-        }));
-        Self {
-            tables,
-            files: self.files.clone(),
-        }
-    }
-
-    /// This view with the table of `epoch` replaced by `file`, the table file built from it,
-    /// which becomes the newest level-0 file of its keyspace; without a file, the table (which
-    /// held no version) is simply dropped.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Memtable`] when no table of this view holds that epoch.
-    pub(crate) fn after_flush(&self, epoch: u8, file: Option<TableFile>) -> Result<Self> {
-        if !self.tables.iter().any(|candidate| candidate.epoch == epoch) {
-            return Err(Error::Memtable {
-                reason: "a flushed in-memory table is not in the view it leaves",
-            });
-        }
-        let tables = self
-            .tables
-            .iter()
-            .filter(|candidate| candidate.epoch != epoch)
-            .map(|kept| EpochTable {
-                epoch: kept.epoch,
-                table: Arc::clone(&kept.table),
-            })
-            .collect();
-        let mut files = self.files.clone();
-        if let Some(file) = file {
-            let keyspace = file.meta.keyspace;
-            let front = files.partition_point(|older| older.meta.keyspace < keyspace);
-            files.insert(front, file);
-        }
-        Ok(Self { tables, files })
     }
 
     /// This view with the table files numbered in `removed` replaced by `added`, the outputs of
@@ -160,75 +102,6 @@ impl View {
             tables: self.shared_tables(),
             files,
         }
-    }
-
-    /// The table holding the writes of `epoch`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Memtable`] when no table of this view holds that epoch, which means a write
-    /// outlived its table: an engine invariant is broken.
-    pub(crate) fn table(&self, epoch: u8) -> Result<&Memtable> {
-        self.tables
-            .iter()
-            .find(|candidate| candidate.epoch == epoch)
-            .map(|found| found.table.as_ref())
-            .ok_or(Error::Memtable {
-                reason: "no in-memory table holds the epoch of a claimed batch",
-            })
-    }
-
-    /// The table holding the writes of `epoch`, shared, for a flush that outlives this view.
-    ///
-    /// # Errors
-    ///
-    /// As [`View::table`].
-    pub(crate) fn shared_table(&self, epoch: u8) -> Result<Arc<Memtable>> {
-        self.tables
-            .iter()
-            .find(|candidate| candidate.epoch == epoch)
-            .map(|found| Arc::clone(&found.table))
-            .ok_or(Error::Memtable {
-                reason: "no in-memory table holds the epoch being flushed",
-            })
-    }
-
-    /// The in-memory tables with their epochs, shared with a new view.
-    fn shared_tables(&self) -> Vec<EpochTable> {
-        self.tables
-            .iter()
-            .map(|kept| EpochTable {
-                epoch: kept.epoch,
-                table: Arc::clone(&kept.table),
-            })
-            .collect()
-    }
-
-    /// The in-memory tables, newest first.
-    pub(crate) fn memtables(&self) -> impl Iterator<Item = &Memtable> {
-        self.tables.iter().map(|entry| entry.table.as_ref())
-    }
-
-    /// The range deletes of every in-memory table and of the table files of `keyspace`.
-    ///
-    /// # Errors
-    ///
-    /// [`crate::Error::Corruption`] for a damaged range-delete block in a table file.
-    pub(crate) fn tombstones(&self, keyspace: u32) -> Result<Vec<RangeTombstone>> {
-        let mut tombstones = Vec::new();
-        for table in self.memtables() {
-            table.tombstones(&mut tombstones);
-        }
-        for file in self.files(keyspace) {
-            tables::tombstones(&file.table, &mut tombstones)?;
-        }
-        Ok(tombstones)
-    }
-
-    /// The in-memory tables, newest first, shared: a holder keeps one alive after the view is
-    /// replaced.
-    pub(crate) fn shared_memtables(&self) -> impl Iterator<Item = &Arc<Memtable>> {
-        self.tables.iter().map(|entry| &entry.table)
     }
 
     /// The table files of `keyspace`: level 0 newest first, then each deeper level by key.
@@ -279,14 +152,6 @@ impl View {
             .files
             .partition_point(|file| file.meta.keyspace <= keyspace);
         self.files.get(start..end).unwrap_or_default()
-    }
-
-    /// The tables with their epochs, newest first.
-    #[cfg(test)]
-    pub(crate) fn epoch_tables(&self) -> impl Iterator<Item = (u8, &Memtable)> {
-        self.tables
-            .iter()
-            .map(|entry| (entry.epoch, entry.table.as_ref()))
     }
 }
 

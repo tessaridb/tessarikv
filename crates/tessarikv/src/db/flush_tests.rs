@@ -150,7 +150,7 @@ async fn reopening_reads_the_tables_and_replays_only_the_log_above_them() {
     let flushed = flushed(&db);
     assert!(flushed > 0);
     let view = db.view.load();
-    let newest = view.memtables().next().expect("a table");
+    let newest = view.memtables(0).next().expect("a table");
     let mut versions = newest.iter();
     versions.seek_to_first();
     while let Some(version) = versions.entry() {

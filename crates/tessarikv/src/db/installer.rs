@@ -43,7 +43,7 @@ use crate::log::LogRelease;
 use crate::memtable::Memtable;
 use crate::storage::Storage;
 use crate::version::manifest::ManifestStore;
-use crate::{Error, KeyspaceOptions, Result};
+use crate::{Error, KeyspaceId, KeyspaceOptions, Result};
 
 /// What the installer works with.
 pub(super) struct Flusher {
@@ -205,7 +205,7 @@ impl Flusher {
             return;
         }
         let epoch = current.newest_epoch();
-        let Ok(table) = current.shared_table(epoch) else {
+        let Ok(table) = current.shared_table(KeyspaceId::DEFAULT.get(), epoch) else {
             return;
         };
         // The view naming the next table is published before its epoch starts.
