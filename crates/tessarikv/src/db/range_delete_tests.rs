@@ -95,7 +95,7 @@ fn view(writes: &[Write], first: usize, second: usize, flushed: usize, capacity:
     fill(view.table(0, 2).unwrap(), second + 1, &writes[second..]);
     for epoch in 0..u8::try_from(flushed).unwrap() {
         let table = file(view.table(0, epoch).unwrap(), u64::from(epoch) + 1, &cache);
-        view = view.after_flush(epoch, Some(table)).unwrap();
+        view = view.after_flush(epoch, vec![table]).unwrap();
     }
     view
 }

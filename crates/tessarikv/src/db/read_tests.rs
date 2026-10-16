@@ -187,7 +187,7 @@ proptest! {
         let before = unflushed(&ops, first, second);
         let oldest = file(before.table(0, 0).unwrap(), 1, &cache);
         let older = file(before.table(0, 1).unwrap(), 2, &cache);
-        let after = before.after_flush(0, Some(oldest)).unwrap().after_flush(1, Some(older)).unwrap();
+        let after = before.after_flush(0, vec![oldest]).unwrap().after_flush(1, vec![older]).unwrap();
         // The flushed writes are reachable only through the files.
         prop_assert_eq!(after.memtables(0).count(), 1);
         prop_assert_eq!(after.files(0).count(), 2);
@@ -234,12 +234,12 @@ async fn a_damaged_table_file_fails_the_scan_instead_of_shortening_it() {
         .with_next_table()
         .after_flush(
             0,
-            Some(table_file(
+            vec![table_file(
                 bytes,
                 &built,
                 1,
                 &Arc::new(BlockCache::new(0, tessarikv_constants::DEFAULT_BLOCK_BYTES)),
-            )),
+            )],
         )
         .unwrap();
     let at = SequenceNumber::new(100).unwrap();

@@ -19,12 +19,12 @@ use super::block_cache::BlockCache;
 use super::commits::Commits;
 use super::flush_job::{FileNumbers, Job, table_options, table_path};
 use super::installer::{Flusher, Installer};
+use super::keyspaces::options_of;
 use super::rate_limiter::RateLimiter;
 use super::recover::recover;
 use super::table_blocks::open_table;
 use super::view::{TableFile, View};
 use crate::log::LogWriter;
-use crate::memtable::Memtable;
 use crate::storage::Storage;
 use crate::version::Version;
 use crate::version::manifest::ManifestStore;
@@ -54,12 +54,12 @@ impl Db {
         let delayed_writes = options.delayed_write_bytes_per_second();
         let serializable = options.serializable_transactions();
         let keyspace = options.default_keyspace().clone();
+        // Kept for the installer: `options` goes to the opening task.
+        let named = options.clone();
         let cache = Arc::new(BlockCache::new(
             options.block_cache_bytes(),
             keyspace.block_bytes(),
         ));
-        let memtable_bytes = keyspace.memtable_bytes();
-        let flush_options = table_options(&keyspace, 0)?;
         let opened = {
             let storage = Arc::clone(&storage);
             let path = path.clone();
@@ -69,7 +69,7 @@ impl Db {
                 let (version, number) = ManifestStore::recover(storage.as_ref(), &path)?
                     .unwrap_or_else(|| (Version::empty(), 0));
                 let mut files = restore_tables(storage.as_ref(), &path, &version, &cache)?;
-                let replay = Memtable::sized(memtable_bytes);
+                let (replay, _) = super::keyspaces::tables_for(&options, version.keyspaces());
                 let flushed = version.flushed_sequence();
                 let recovered = recover(storage.as_ref(), &path, &replay, recovery, flushed)?;
                 let number = number.checked_add(1).ok_or(Error::SequenceExhausted)?;
@@ -79,17 +79,24 @@ impl Db {
                 let last = recovered.last_sequence.max(flushed);
                 let replayed = recovered.last_sequence > flushed;
                 if replayed {
+                    let named = super::keyspaces::options_by_id(&options, version.keyspaces());
+                    let tables = replay
+                        .into_iter()
+                        .map(|(id, table)| {
+                            let keyspace = options_of(&named, options.default_keyspace(), id);
+                            Ok((id, table_options(keyspace, 0)?, Arc::new(table)))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
                     let job = Job {
                         storage,
                         dir: path,
-                        options: flush_options,
-                        table: Arc::new(replay),
+                        tables,
                         flushed: last,
                         numbers: Arc::new(FileNumbers::new(manifest.version().next_file())),
                         cache,
                     };
-                    // The newest level-0 table: first among the files.
-                    if let Some(file) = job.run(&mut manifest)? {
+                    // The newest level-0 tables: first among the files of their keyspaces.
+                    for file in job.run(&mut manifest)? {
                         files.insert(0, file);
                     }
                 }
@@ -129,6 +136,7 @@ impl Db {
         let view = Arc::new(arc_swap::ArcSwap::from_pointee(view));
         let snapshots = Arc::new(tessarikv_sync::SnapshotRegistry::new());
         let next_file = manifest.version().next_file();
+        let keyspaces = super::keyspaces::options_by_id(&named, manifest.version().keyspaces());
         let installer = Installer::start(Flusher {
             storage,
             dir: path,
@@ -137,6 +145,7 @@ impl Db {
             manifest: Some(manifest),
             log: log.releaser(),
             keyspace,
+            keyspaces,
             cache,
             snapshots: Arc::clone(&snapshots),
             numbers: Arc::new(FileNumbers::new(next_file)),
@@ -212,8 +221,9 @@ fn restore_tables(
     cache: &Arc<BlockCache>,
 ) -> Result<Vec<TableFile>> {
     let mut files = Vec::new();
-    for level in 0..LEVELS {
-        for meta in version.tables(0, level) {
+    let keyspaces = std::iter::once(0).chain(version.keyspaces().map(|(id, _)| id));
+    for keyspace in keyspaces {
+        for meta in (0..LEVELS).flat_map(|level| version.tables(keyspace, level)) {
             let path = table_path(dir, meta.id);
             let (table, blocks) = open_table(storage, &path, meta.id, cache, None)?;
             files.push(TableFile {

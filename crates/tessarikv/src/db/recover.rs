@@ -16,8 +16,8 @@
 use std::path::Path;
 
 use tessarikv_format::{EndKind, FrameReader, LogRead, WriteBatch};
+use tessarikv_types::SequenceNumber;
 
-use super::write::apply;
 use crate::log::{FinishedSegment, segment_path};
 use crate::memtable::Memtable;
 use crate::storage::{Storage, read_all};
@@ -36,12 +36,12 @@ pub(super) struct Recovered {
     pub(super) segments: Vec<FinishedSegment>,
 }
 
-/// Replays the log in `dir` into `table`, from above sequence `flushed`. Runs on a blocking
-/// thread.
+/// Replays the log in `dir` into `tables`, one per keyspace by id, from above sequence
+/// `flushed`. Runs on a blocking thread.
 pub(super) fn recover(
     storage: &dyn Storage,
     dir: &Path,
-    table: &Memtable,
+    tables: &[(u32, Memtable)],
     mode: WalRecovery,
     flushed: u64,
 ) -> Result<Recovered> {
@@ -59,7 +59,7 @@ pub(super) fn recover(
         let end = loop {
             match frames.next_frame() {
                 LogRead::Frame(payload) => {
-                    last_sequence = replay(table, payload, last_sequence, flushed, &path)?;
+                    last_sequence = replay(tables, payload, last_sequence, flushed, &path)?;
                 }
                 LogRead::End(end) => break end,
             }
@@ -92,10 +92,11 @@ pub(super) fn recover(
     })
 }
 
-/// Applies one logged batch unless it is at or below `flushed`; returns its last sequence
-/// number.
+/// Applies one logged batch unless it is at or below `flushed`, each entry to its keyspace's
+/// table (an entry of a keyspace no longer held is skipped: the keyspace was dropped after it);
+/// returns its last sequence number.
 fn replay(
-    table: &Memtable,
+    tables: &[(u32, Memtable)],
     payload: &[u8],
     previous: u64,
     flushed: u64,
@@ -117,7 +118,22 @@ fn replay(
         .and_then(|offset| first.checked_add(offset))
         .ok_or_else(|| bad("logged batch is empty or past the sequence space"))?;
     if first > flushed {
-        apply(table, first, &batch)?;
+        let mut sequence = first;
+        for entry in &batch {
+            let number = SequenceNumber::new(sequence).map_err(|_| Error::SequenceExhausted)?;
+            let keyspace = entry.keyspace.get();
+            if let Ok(at) = tables.binary_search_by_key(&keyspace, |(id, _)| *id)
+                && let Some((_, table)) = tables.get(at)
+            {
+                table.insert(
+                    number,
+                    entry.kind,
+                    entry.key,
+                    entry.value.unwrap_or_default(),
+                )?;
+            }
+            sequence = sequence.checked_add(1).ok_or(Error::SequenceExhausted)?;
+        }
     }
     Ok(last)
 }

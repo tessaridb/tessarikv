@@ -1,6 +1,7 @@
 //! A crash at any durable step of a flush or a compaction keeps every acknowledged write: a
 //! table written, a table synced, the manifest edit synced, the log segment a flush covers
-//! removed, the input tables of a compaction removed.
+//! removed, the input tables of a compaction removed. A batch spanning two keyspaces is read back
+//! from both or from neither.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -18,7 +19,11 @@ use crate::{
 /// About 1.6 MiB of log: past the first segment, and some twenty-five flushes.
 const WRITES: u32 = 400;
 
-/// Tiny memtables; with `compacting`, a level-0 trigger of two and small levels as well.
+/// The keyspace beside the default one that flushes write as well.
+const USERS: &str = "users";
+
+/// Tiny memtables; with `compacting`, a level-0 trigger of two and small levels as well. The users
+/// keyspace is held either way and written only without `compacting`.
 fn options(compacting: bool) -> DbOptions {
     let keyspace = KeyspaceOptions::builder().memtable_bytes(64 * 1024);
     let keyspace = if compacting {
@@ -32,7 +37,9 @@ fn options(compacting: bool) -> DbOptions {
     };
     let keyspace = keyspace.build().expect("valid");
     DbOptions::builder()
-        .default_keyspace(keyspace)
+        .default_keyspace(keyspace.clone())
+        .keyspace(USERS, keyspace)
+        .create_missing_keyspaces(true)
         .wal_segment_bytes(1024 * 1024)
         .build()
         .expect("valid")
@@ -44,34 +51,41 @@ async fn open(storage: &FaultStorage, compacting: bool) -> Db {
         .expect("opened")
 }
 
-/// Writes `0..WRITES` one synced batch at a time, counting each acknowledgement.
-async fn write_counting(db: &Db, acknowledged: &AtomicU64) {
+/// The keyspaces each batch writes.
+fn written(db: &Db, compacting: bool) -> Vec<KeyspaceId> {
+    let mut keyspaces = vec![KeyspaceId::DEFAULT];
+    if !compacting {
+        keyspaces.push(db.keyspace(USERS).expect("users"));
+    }
+    keyspaces
+}
+
+/// Writes `0..WRITES` one synced batch at a time into every keyspace of `keyspaces`, counting
+/// each acknowledgement.
+async fn write_counting(db: &Db, keyspaces: &[KeyspaceId], acknowledged: &AtomicU64) {
     let options = WriteOptions {
         durability: Durability::Sync,
         ..WriteOptions::default()
     };
     for index in 0..WRITES {
         let mut batch = WriteBatch::new();
-        batch
-            .put(KeyspaceId::DEFAULT, &key(index), &value(index))
-            .expect("small entry");
+        for keyspace in keyspaces {
+            batch
+                .put(*keyspace, &key(index), &value(index))
+                .expect("small entry");
+        }
         db.write(&batch, &options).await.expect("written");
         // SeqCst: the capture reads the count before copying the files.
         acknowledged.store(u64::from(index) + 1, Ordering::SeqCst);
     }
 }
 
-/// Reopens `image` and checks that it holds a prefix of the writes, covering every write
-/// acknowledged before the image was taken.
-async fn check(image: CrashImage, compacting: bool) {
-    let step = &image.step;
-    let db = Db::open_with_storage(PATH, options(compacting), Arc::new(image.storage))
-        .await
-        .unwrap_or_else(|error| panic!("{step}: reopen failed: {error}"));
+/// The writes `keyspace` holds in `db`, checked to be a prefix of `0..WRITES`.
+async fn prefix(db: &Db, keyspace: KeyspaceId, step: &str) -> u32 {
     let mut present = 0_u32;
     for index in 0..WRITES {
         let read = db
-            .get(KeyspaceId::DEFAULT, &key(index), &ReadOptions::default())
+            .get(keyspace, &key(index), &ReadOptions::default())
             .await
             .unwrap_or_else(|error| panic!("{step}: key {index}: {error}"));
         if let Some(read) = read {
@@ -82,6 +96,26 @@ async fn check(image: CrashImage, compacting: bool) {
             );
             present += 1;
         }
+    }
+    present
+}
+
+/// Reopens `image` and checks that every written keyspace holds the same prefix of the writes,
+/// covering every write acknowledged before the image was taken.
+async fn check(image: CrashImage, compacting: bool) {
+    let step = &image.step;
+    let db = Db::open_with_storage(PATH, options(compacting), Arc::new(image.storage))
+        .await
+        .unwrap_or_else(|error| panic!("{step}: reopen failed: {error}"));
+    let mut keyspaces = written(&db, compacting).into_iter();
+    let first = keyspaces.next().expect("the default keyspace");
+    let present = prefix(&db, first, step).await;
+    for keyspace in keyspaces {
+        let other = prefix(&db, keyspace, step).await;
+        assert_eq!(
+            other, present,
+            "{step}: keyspace {keyspace:?} holds another prefix"
+        );
     }
     assert!(
         u64::from(present) >= image.acknowledged,
@@ -98,7 +132,7 @@ async fn crash_everywhere(compacting: bool) -> Vec<String> {
     let db = open(&storage, compacting).await;
     let acknowledged = Arc::new(AtomicU64::new(0));
     storage.capture_steps(Path::new(PATH), Arc::clone(&acknowledged));
-    write_counting(&db, &acknowledged).await;
+    write_counting(&db, &written(&db, compacting), &acknowledged).await;
     let first_segment = segment_path(Path::new(PATH), 1);
     until("the first log segment is removed", || {
         !storage.exists(&first_segment).expect("exists")

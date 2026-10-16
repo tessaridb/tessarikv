@@ -9,7 +9,6 @@ use tokio::sync::Notify;
 use super::recover::SEQUENCE_BYTES;
 use super::{Check, Db};
 use crate::log::{Frame, Record, Wait};
-use crate::memtable::Memtable;
 use crate::{Durability, Error, Result, WriteOptions};
 
 impl Db {
@@ -66,11 +65,6 @@ impl Db {
             {
                 return Err(Error::UnknownKeyspace {
                     keyspace: keyspace.get(),
-                });
-            }
-            if self.installer.is_some() {
-                return Err(Error::Unsupported {
-                    what: "writing to a keyspace beside the default one on storage",
                 });
             }
         }
@@ -163,22 +157,6 @@ impl Db {
             .claim(u64::from(batch.len()))
             .ok_or(Error::SequenceExhausted)
     }
-}
-
-/// Inserts the entries of `batch` into `table` at `first` and the sequence numbers after it.
-pub(super) fn apply(table: &Memtable, first: u64, batch: &WriteBatch) -> Result<()> {
-    let mut sequence = first;
-    for entry in batch {
-        let number = SequenceNumber::new(sequence).map_err(|_| Error::SequenceExhausted)?;
-        table.insert(
-            number,
-            entry.kind,
-            entry.key,
-            entry.value.unwrap_or_default(),
-        )?;
-        sequence = sequence.checked_add(1).ok_or(Error::SequenceExhausted)?;
-    }
-    Ok(())
 }
 
 /// A log frame built before its sequence number is known: the batch is copied and checksummed

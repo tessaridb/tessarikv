@@ -43,14 +43,14 @@ impl View {
         }
     }
 
-    /// This view with the tables of `epoch` replaced by `file`, the table file built from them,
-    /// which becomes the newest level-0 file of its keyspace; without a file, the tables (which
-    /// held no version) are simply dropped.
+    /// This view with the tables of `epoch` replaced by `files`, the table files built from
+    /// them, each the newest level-0 file of its keyspace; tables without a file held no
+    /// version and are simply dropped.
     ///
     /// # Errors
     ///
     /// [`Error::Memtable`] when no table of this view holds that epoch.
-    pub(crate) fn after_flush(&self, epoch: u8, file: Option<TableFile>) -> Result<Self> {
+    pub(crate) fn after_flush(&self, epoch: u8, flushed: Vec<TableFile>) -> Result<Self> {
         if !self.tables.iter().any(|candidate| candidate.epoch == epoch) {
             return Err(Error::Memtable {
                 reason: "a flushed in-memory table is not in the view it leaves",
@@ -62,7 +62,7 @@ impl View {
             .filter(|kept| kept.epoch != epoch)
             .collect();
         let mut files = self.files.clone();
-        if let Some(file) = file {
+        for file in flushed {
             let keyspace = file.meta.keyspace;
             let front = files.partition_point(|older| older.meta.keyspace < keyspace);
             files.insert(front, file);
@@ -88,15 +88,23 @@ impl View {
             })
     }
 
-    /// The table of `keyspace` holding the writes of `epoch`, shared, for a flush that outlives
-    /// this view.
+    /// The tables holding the writes of `epoch`, one per keyspace, shared, for a flush that
+    /// outlives this view.
     ///
     /// # Errors
     ///
-    /// As [`View::table`].
-    pub(crate) fn shared_table(&self, keyspace: u32, epoch: u8) -> Result<Arc<Memtable>> {
-        self.find(keyspace, epoch)
-            .map(Arc::clone)
+    /// [`Error::Memtable`] when no table of this view holds that epoch.
+    pub(crate) fn shared_epoch(&self, epoch: u8) -> Result<Vec<(u32, Arc<Memtable>)>> {
+        self.tables
+            .iter()
+            .find(|candidate| candidate.epoch == epoch)
+            .map(|found| {
+                found
+                    .keyspaces
+                    .iter()
+                    .map(|(keyspace, table)| (*keyspace, Arc::clone(table)))
+                    .collect()
+            })
             .ok_or(Error::Memtable {
                 reason: "no in-memory table holds the epoch being flushed",
             })

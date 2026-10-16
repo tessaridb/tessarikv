@@ -37,13 +37,14 @@ use super::compaction::manual::{QUEUE, Request};
 use super::compaction::{self, Compactions};
 use super::flush_job::{FileNumbers, Job, table_options};
 use super::flush_signals::FlushSignals;
+use super::keyspaces::options_of;
 use super::rate_limiter::RateLimiter;
 use super::view::{TableFile, View};
 use crate::log::LogRelease;
 use crate::memtable::Memtable;
 use crate::storage::Storage;
 use crate::version::manifest::ManifestStore;
-use crate::{Error, KeyspaceId, KeyspaceOptions, Result};
+use crate::{Error, KeyspaceOptions, Result};
 
 /// What the installer works with.
 pub(super) struct Flusher {
@@ -55,6 +56,8 @@ pub(super) struct Flusher {
     pub(super) manifest: Option<ManifestStore>,
     pub(super) log: LogRelease,
     pub(super) keyspace: KeyspaceOptions,
+    /// The options of the keyspaces beside the default one, by id.
+    pub(super) keyspaces: Vec<(u32, KeyspaceOptions)>,
     /// The cache flushed table files read their data blocks through.
     pub(super) cache: Arc<BlockCache>,
     /// The snapshots readers hold, which compactions keep versions for.
@@ -69,16 +72,16 @@ pub(super) struct Flusher {
     pub(super) switched: u64,
 }
 
-/// A frozen table waiting for its flush.
+/// The frozen tables of an epoch, one per keyspace, waiting for their flush.
 struct Frozen {
     epoch: u8,
-    table: Arc<Memtable>,
+    tables: Vec<(u32, Arc<Memtable>)>,
     /// The last sequence of its epoch.
     flushed: u64,
 }
 
-/// What a finished flush hands back: the manifest, and the table file or why there is none.
-type Flushed = (ManifestStore, Result<Option<TableFile>>);
+/// What a finished flush hands back: the manifest, and the table files or why there are none.
+type Flushed = (ManifestStore, Result<Vec<TableFile>>);
 
 /// The installer task and the handles that steer it.
 pub(super) struct Installer {
@@ -198,14 +201,14 @@ async fn wait(running: &mut Option<JoinHandle<Result<Flushed>>>) -> Result<Flush
 }
 
 impl Flusher {
-    /// Freezes the newest table when it is full and another may be frozen.
+    /// Freezes the newest tables when one is full and another epoch may be frozen.
     fn switch_if_full(&mut self, signals: &FlushSignals, frozen: &mut VecDeque<Frozen>) {
         let current = self.view.load_full();
         if !signals.should_switch(&current, frozen.len(), self.switched) {
             return;
         }
         let epoch = current.newest_epoch();
-        let Ok(table) = current.shared_table(KeyspaceId::DEFAULT.get(), epoch) else {
+        let Ok(tables) = current.shared_epoch(epoch) else {
             return;
         };
         // The view naming the next table is published before its epoch starts.
@@ -214,7 +217,7 @@ impl Flusher {
         self.switched = flushed;
         frozen.push_back(Frozen {
             epoch,
-            table,
+            tables,
             flushed,
         });
     }
@@ -225,12 +228,20 @@ impl Flusher {
         oldest: &Frozen,
         signals: &Arc<FlushSignals>,
     ) -> Result<JoinHandle<Result<Flushed>>> {
+        let tables = oldest
+            .tables
+            .iter()
+            .map(|(keyspace, table)| {
+                let keyspace_options = options_of(&self.keyspaces, &self.keyspace, *keyspace);
+                let options = table_options(keyspace_options, 0)?;
+                Ok((*keyspace, options, Arc::clone(table)))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut manifest = self.manifest.take().ok_or(Error::FlushFailed)?;
         let job = Job {
             storage: Arc::clone(&self.storage),
             dir: self.dir.clone(),
-            options: table_options(&self.keyspace, 0)?,
-            table: Arc::clone(&oldest.table),
+            tables,
             flushed: oldest.flushed,
             numbers: Arc::clone(&self.numbers),
             cache: Arc::clone(&self.cache),
@@ -261,11 +272,11 @@ impl Flusher {
     fn install(&mut self, frozen: &mut VecDeque<Frozen>, flushed: Flushed) -> Result<u64> {
         let (manifest, written) = flushed;
         self.manifest = Some(manifest);
-        let file = written?;
+        let files = written?;
         let oldest = frozen.pop_front().ok_or(Error::FlushFailed)?;
         let current = self.view.load_full();
         self.view
-            .store(Arc::new(current.after_flush(oldest.epoch, file)?));
+            .store(Arc::new(current.after_flush(oldest.epoch, files)?));
         self.log.release_through(oldest.flushed);
         Ok(oldest.flushed)
     }

@@ -1,13 +1,15 @@
 //! Keyspaces beside the default one: each holds its own keys, every read and write names the
 //! one it means, and a batch spanning several commits as one.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use super::Db;
 use super::flush_tests::PATH;
 use crate::log::fault::FaultStorage;
 use crate::{
-    DbOptions, KeyspaceId, KeyspaceOptions, ReadOptions, StorageMode, WriteBatch, WriteOptions,
+    DbOptions, Durability, KeyspaceId, KeyspaceOptions, ReadOptions, StorageMode, WriteBatch,
+    WriteOptions,
 };
 
 async fn memory() -> Db {
@@ -111,20 +113,86 @@ async fn an_unknown_keyspace_is_refused_everywhere() {
     assert_eq!(read.expect_err("refused").code(), "unknown_keyspace");
 }
 
-/// On storage a keyspace beside the default one is not written yet: its tables are not flushed.
-#[tokio::test]
-async fn on_storage_writes_beside_the_default_keyspace_are_refused_for_now() {
-    let options = DbOptions::builder()
+fn on_storage() -> DbOptions {
+    DbOptions::builder()
         .keyspace("users", KeyspaceOptions::default())
         .create_missing_keyspaces(true)
         .build()
-        .expect("valid");
-    let db = Db::open_with_storage(PATH, options, Arc::new(FaultStorage::default()))
+        .expect("valid")
+}
+
+async fn open(storage: &FaultStorage) -> Db {
+    Db::open_with_storage(PATH, on_storage(), Arc::new(storage.clone()))
         .await
-        .expect("opened");
-    let users = db.keyspace("users").expect("users");
+        .expect("opened")
+}
+
+/// One batch writing the default keyspace and the users keyspace.
+fn both(users: KeyspaceId, durability: Durability) -> (WriteBatch, WriteOptions) {
     let mut batch = WriteBatch::new();
-    batch.put(users, b"k", b"v").expect("entry");
-    let refused = db.write(&batch, &WriteOptions::default()).await;
-    assert_eq!(refused.expect_err("refused").code(), "unsupported");
+    batch
+        .put(KeyspaceId::DEFAULT, b"k", b"default")
+        .expect("entry");
+    batch.put(users, b"k", b"user").expect("entry");
+    let options = WriteOptions {
+        durability,
+        ..WriteOptions::default()
+    };
+    (batch, options)
+}
+
+/// A flush writes a table for every keyspace holding entries, and reopening reads them back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn on_storage_every_keyspace_is_flushed_and_read_back() {
+    let storage = FaultStorage::default();
+    let db = open(&storage).await;
+    let users = db.keyspace("users").expect("users");
+    let (batch, options) = both(users, Durability::Buffered);
+    db.write(&batch, &options).await.expect("written");
+    db.flush().await.expect("flushed");
+    let view = db.view.load();
+    assert_eq!(view.files(0).count(), 1, "the default keyspace's table");
+    assert_eq!(
+        view.files(users.get()).count(),
+        1,
+        "the users keyspace's table"
+    );
+    drop(view);
+    drop(db);
+    let reopened = open(&storage).await;
+    assert_eq!(
+        get(&reopened, users, b"k").await.as_deref(),
+        Some(&b"user"[..])
+    );
+    assert_eq!(
+        get(&reopened, KeyspaceId::DEFAULT, b"k").await.as_deref(),
+        Some(&b"default"[..])
+    );
+}
+
+/// A synced batch spanning two keyspaces survives a power loss whole; a buffered one is lost whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_across_keyspaces_survives_a_crash_whole_or_not_at_all() {
+    let storage = FaultStorage::default();
+    let db = open(&storage).await;
+    let users = db.keyspace("users").expect("users");
+    let (batch, options) = both(users, Durability::Sync);
+    db.write(&batch, &options).await.expect("written");
+    let reopened = open(&storage.crash(Path::new(PATH), true)).await;
+    assert_eq!(
+        get(&reopened, users, b"k").await.as_deref(),
+        Some(&b"user"[..])
+    );
+    assert_eq!(
+        get(&reopened, KeyspaceId::DEFAULT, b"k").await.as_deref(),
+        Some(&b"default"[..])
+    );
+
+    let storage = FaultStorage::default();
+    let db = open(&storage).await;
+    let (batch, options) = both(users, Durability::Buffered);
+    db.write(&batch, &options).await.expect("written");
+    let reopened = open(&storage.crash(Path::new(PATH), true)).await;
+    assert_eq!(get(&reopened, users, b"k").await, None);
+    assert_eq!(get(&reopened, KeyspaceId::DEFAULT, b"k").await, None);
 }

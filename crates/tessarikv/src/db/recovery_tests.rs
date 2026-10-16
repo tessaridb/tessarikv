@@ -234,7 +234,7 @@ async fn recovery_reports_each_segment_with_the_last_sequence_it_holds() {
     let recovered = super::recover::recover(
         &storage,
         Path::new(PATH),
-        &crate::memtable::Memtable::new(),
+        &[(0, crate::memtable::Memtable::new())],
         WalRecovery::PointInTime,
         0,
     )

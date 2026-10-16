@@ -7,7 +7,7 @@ use tessarikv_types::KeyspaceId;
 use super::Db;
 use super::view::Names;
 use crate::memtable::Memtable;
-use crate::{DbOptions, Error, Result};
+use crate::{DbOptions, Error, KeyspaceOptions, Result};
 
 impl Db {
     /// Refuses a keyspace this database does not hold; reads the current view, never waits.
@@ -51,4 +51,30 @@ pub(super) fn tables_for<'a>(
         names.push((id, name.to_owned()));
     }
     (tables, Arc::from(names))
+}
+
+/// The options of each keyspace beside the default one, by id; `held` gives their ids and
+/// names.
+pub(super) fn options_by_id<'a>(
+    options: &DbOptions,
+    held: impl Iterator<Item = (u32, &'a str)>,
+) -> Vec<(u32, KeyspaceOptions)> {
+    held.map(|(id, name)| {
+        let named = options.keyspaces().iter().find(|(named, _)| named == name);
+        let keyspace = named.map_or(options.default_keyspace(), |(_, keyspace)| keyspace);
+        (id, keyspace.clone())
+    })
+    .collect()
+}
+
+/// The options of keyspace `id` among `keyspaces`; `default` for the default keyspace.
+pub(super) fn options_of<'a>(
+    keyspaces: &'a [(u32, KeyspaceOptions)],
+    default: &'a KeyspaceOptions,
+    id: u32,
+) -> &'a KeyspaceOptions {
+    keyspaces
+        .iter()
+        .find(|(held, _)| *held == id)
+        .map_or(default, |(_, options)| options)
 }

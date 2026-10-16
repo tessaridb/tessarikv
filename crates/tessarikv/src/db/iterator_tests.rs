@@ -53,7 +53,7 @@ fn view(ops: &[Op], first: usize, second: usize, flushed: usize, capacity: u64) 
             &cache,
         );
         view = view
-            .after_flush(u8::try_from(epoch).unwrap(), Some(table))
+            .after_flush(u8::try_from(epoch).unwrap(), vec![table])
             .unwrap();
     }
     view

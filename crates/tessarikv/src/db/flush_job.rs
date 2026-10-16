@@ -1,4 +1,6 @@
-//! A flush's blocking part: the table file, synced, and the manifest edit naming it.
+//! A flush's blocking part: a table file per keyspace, synced, and the ONE manifest edit naming
+//! them all with the flushed sequence, so a batch spanning keyspaces is in table files whole or
+//! not at all.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,12 +17,12 @@ use crate::storage::Storage;
 use crate::version::manifest::ManifestStore;
 use crate::{Error, KeyspaceOptions, Result};
 
-/// A flush's blocking part: the table file and the manifest edit.
+/// A flush's blocking part: the table files and the manifest edit.
 pub(super) struct Job {
     pub(super) storage: Arc<dyn Storage>,
     pub(super) dir: PathBuf,
-    pub(super) options: TableOptions,
-    pub(super) table: Arc<Memtable>,
+    /// The frozen tables, one per keyspace, with the layout each keyspace's tables take.
+    pub(super) tables: Vec<(u32, TableOptions, Arc<Memtable>)>,
     pub(super) flushed: u64,
     pub(super) numbers: Arc<FileNumbers>,
     /// The cache the new table file reads its data blocks through.
@@ -28,53 +30,62 @@ pub(super) struct Job {
 }
 
 impl Job {
-    /// Writes the table file and its manifest edit; returns the file, or none when the table
-    /// held neither a version nor a range delete (its sequences were claimed by batches that
-    /// were never applied).
-    pub(super) fn run(self, manifest: &mut ManifestStore) -> Result<Option<TableFile>> {
+    /// Writes a table file for every table holding a version or a range delete (a table
+    /// without either had its sequences claimed by batches never applied), then the manifest
+    /// edit naming them; returns the files, one per keyspace written.
+    pub(super) fn run(self, manifest: &mut ManifestStore) -> Result<Vec<TableFile>> {
         let mut edit = ManifestEdit {
             flushed_sequence: Some(self.flushed),
             ..ManifestEdit::default()
         };
-        let mut versions = self.table.iter();
-        versions.seek_to_first();
-        if versions.entry().is_none() && !self.table.has_tombstones() {
-            manifest.append(&edit)?;
-            return Ok(None);
+        let mut written = Vec::new();
+        for (keyspace, options, table) in &self.tables {
+            let mut versions = table.iter();
+            versions.seek_to_first();
+            if versions.entry().is_none() && !table.has_tombstones() {
+                continue;
+            }
+            let id = self.numbers.take()?;
+            let path = table_path(&self.dir, id);
+            let mut file = self.storage.create(&path)?;
+            let built = build(table, *options, &mut |piece| file.append(piece))?;
+            file.sync()?;
+            drop(file);
+            let meta = TableMeta {
+                keyspace: *keyspace,
+                level: 0,
+                id,
+                size: built.size(),
+                smallest: built.smallest.clone(),
+                largest: built.largest.clone(),
+                min_sequence: built.min_sequence,
+                max_sequence: built.max_sequence,
+            };
+            edit.added.push(meta.clone());
+            written.push((meta, path, built));
         }
-        let id = self.numbers.take()?;
-        let path = table_path(&self.dir, id);
-        let mut file = self.storage.create(&path)?;
-        let built = build(&self.table, self.options, &mut |piece| file.append(piece))?;
-        file.sync()?;
-        drop(file);
-        self.storage.sync_dir(&self.dir)?;
-        let meta = TableMeta {
-            keyspace: 0,
-            level: 0,
-            id,
-            size: built.size(),
-            smallest: built.smallest,
-            largest: built.largest,
-            min_sequence: built.min_sequence,
-            max_sequence: built.max_sequence,
-        };
-        edit.next_file = Some(self.numbers.bound());
-        edit.added.push(meta.clone());
+        if !written.is_empty() {
+            self.storage.sync_dir(&self.dir)?;
+            edit.next_file = Some(self.numbers.bound());
+        }
         manifest.append(&edit)?;
-        // The metadata comes from the tail just written; data blocks from the file.
-        let (table, blocks) = open_table(
-            self.storage.as_ref(),
-            &path,
-            id,
-            &self.cache,
-            Some((built.tail_offset, &built.tail)),
-        )?;
-        Ok(Some(TableFile {
-            meta: Arc::new(meta),
-            table,
-            blocks,
-        }))
+        let mut files = Vec::with_capacity(written.len());
+        for (meta, path, built) in written {
+            // The metadata comes from the tail just written; data blocks from the file.
+            let (table, blocks) = open_table(
+                self.storage.as_ref(),
+                &path,
+                meta.id,
+                &self.cache,
+                Some((built.tail_offset, &built.tail)),
+            )?;
+            files.push(TableFile {
+                meta: Arc::new(meta),
+                table,
+                blocks,
+            });
+        }
+        Ok(files)
     }
 }
 

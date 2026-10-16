@@ -99,7 +99,7 @@ fn flushed(cache: &Arc<BlockCache>) -> View {
     let file = file_in(&CountedStorage::new(false), &table, 1, cache);
     View::new(0, Memtable::new())
         .with_next_table()
-        .after_flush(0, Some(file))
+        .after_flush(0, vec![file])
         .unwrap()
 }
 
