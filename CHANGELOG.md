@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-10-17
+
 ### Added
 
 - Workspace with the `tessarikv`, `tessarikv-constants`, `tessarikv-types`, `tessarikv-sync` and
@@ -170,3 +172,6 @@ All notable changes to this project are documented here. The format follows
   database lacks), `Db::create_keyspace` and `Db::drop_keyspace` add and remove one while the database runs,
   `Db::keyspace` and `Db::keyspaces` look them up. Each keyspace flushes, compacts and paces writes by its own options; a batch spanning keyspaces is
   recovered whole or not at all.
+
+[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/tessaridb/tessarikv/releases/tag/v0.0.1

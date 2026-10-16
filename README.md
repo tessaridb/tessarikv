@@ -6,8 +6,11 @@
 
 **The future heart of TessariDB: an embedded key-value storage engine in pure Rust, lock-free first.**
 
-[![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
+[![crates.io](https://img.shields.io/crates/v/tessarikv?style=flat-square)](https://crates.io/crates/tessarikv)
+[![docs.rs](https://img.shields.io/docsrs/tessarikv?style=flat-square)](https://docs.rs/tessarikv)
+[![status](https://img.shields.io/badge/status-early%20development-D98E33?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-6B5FD1?style=flat-square)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.89-6B5FD1?style=flat-square)](#building)
 
 </div>
 
@@ -18,7 +21,8 @@ It has no C or C++ dependency, exposes an async API on tokio, and runs on macOS,
 
 ## Status
 
-Early development. Nothing is published to crates.io yet, and the on-disk format is not stable.
+Early development. Version 0.0.1 is the first release on crates.io; the API and the on-disk format may change
+in any release before 1.0.
 
 | Part | State |
 |---|---|
