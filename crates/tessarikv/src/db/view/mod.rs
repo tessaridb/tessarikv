@@ -35,6 +35,8 @@ pub(crate) struct View {
     files: Vec<TableFile>,
     /// The keyspaces beside the default one, by id, with their names.
     names: Names,
+    /// Above every keyspace id this view has held: ids are never handed out twice.
+    next_keyspace: u32,
 }
 
 /// The keyspaces a view serves beside the default one: id and name, by id.
@@ -66,6 +68,7 @@ impl View {
             }],
             files: Vec::new(),
             names: Arc::new([]),
+            next_keyspace: 1,
         }
     }
 
@@ -80,6 +83,11 @@ impl View {
     ) -> Self {
         tables.sort_by_key(|(keyspace, _)| *keyspace);
         files.sort_by_key(|file| (file.meta.keyspace, file.meta.level));
+        let next_keyspace = names
+            .iter()
+            .map(|(id, _)| id.saturating_add(1))
+            .max()
+            .unwrap_or(1);
         Self {
             tables: vec![EpochTables {
                 epoch: 0,
@@ -90,11 +98,16 @@ impl View {
             }],
             files,
             names,
+            next_keyspace,
         }
     }
 
+    /// The keyspaces beside the default one, by id, with their names.
+    pub(crate) fn names(&self) -> &Names {
+        &self.names
+    }
+
     /// The id of the keyspace named `name`: `default` is the default keyspace.
-    #[cfg(test)]
     pub(crate) fn keyspace_named(&self, name: &str) -> Option<u32> {
         if name == "default" {
             return Some(0);
@@ -134,6 +147,7 @@ impl View {
             tables: self.shared_tables(),
             files,
             names: Arc::clone(&self.names),
+            next_keyspace: self.next_keyspace,
         }
     }
 

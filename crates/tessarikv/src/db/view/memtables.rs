@@ -40,7 +40,38 @@ impl View {
             tables,
             files: self.files.clone(),
             names: Arc::clone(&self.names),
+            next_keyspace: self.next_keyspace,
         }
+    }
+
+    /// This view with keyspace `id`, named `name`, beside the others, writing into `table` from
+    /// the newest epoch on: a writer that finds the keyspace in it claims in that epoch or a
+    /// later one, whose tables succeed this one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Memtable`] when the view has no epoch to add the table to.
+    pub(crate) fn with_keyspace(&self, id: u32, name: &str, table: Memtable) -> Result<Self> {
+        let mut tables = self.shared_tables();
+        let newest = tables.first_mut().ok_or(Error::Memtable {
+            reason: "a view without in-memory tables takes no keyspace",
+        })?;
+        let at = newest.keyspaces.partition_point(|(held, _)| *held < id);
+        newest.keyspaces.insert(at, (id, Arc::new(table)));
+        let mut names = self.names.to_vec();
+        let at = names.partition_point(|(held, _)| *held < id);
+        names.insert(at, (id, name.to_owned()));
+        Ok(Self {
+            tables,
+            files: self.files.clone(),
+            names: names.into(),
+            next_keyspace: self.next_keyspace.max(id.saturating_add(1)),
+        })
+    }
+
+    /// The id the next keyspace takes in a database without a manifest.
+    pub(crate) fn next_keyspace(&self) -> u32 {
+        self.next_keyspace
     }
 
     /// This view with the tables of `epoch` replaced by `files`, the table files built from
@@ -71,6 +102,7 @@ impl View {
             tables,
             files,
             names: Arc::clone(&self.names),
+            next_keyspace: self.next_keyspace,
         })
     }
 

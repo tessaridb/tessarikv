@@ -14,11 +14,13 @@
 
 mod approximate_size;
 mod block_cache;
+mod catalog;
 mod commits;
 mod compact_range;
 mod compaction;
 mod flush_job;
 mod flush_signals;
+mod flushes;
 mod installer;
 mod iterator;
 mod keyspaces;
@@ -59,6 +61,8 @@ mod iterator_tests;
 mod keyspace_admission_tests;
 #[cfg(test)]
 mod keyspace_compaction_tests;
+#[cfg(test)]
+mod keyspace_create_tests;
 #[cfg(test)]
 mod keyspace_open_tests;
 #[cfg(test)]

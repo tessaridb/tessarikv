@@ -10,30 +10,33 @@ use super::{DbOptions, KeyspaceOptions};
 use crate::{Error, Result};
 
 /// The name the default keyspace answers to; no other keyspace may take it.
-const DEFAULT_NAME: &str = "default";
+pub(crate) const DEFAULT_NAME: &str = "default";
 
 impl DbOptions {
     /// The named keyspaces beside the default one, in the order given.
-    pub(crate) fn keyspaces(&self) -> &[(String, KeyspaceOptions)] {
+    #[must_use]
+    pub fn keyspaces(&self) -> &[(String, KeyspaceOptions)] {
         &self.keyspaces
     }
 
     /// Whether opening adds the keyspaces the options name and the database does not hold.
-    pub(crate) const fn create_missing_keyspaces(&self) -> bool {
+    /// Off by default.
+    #[must_use]
+    pub const fn create_missing_keyspaces(&self) -> bool {
         self.create_missing_keyspaces
     }
 }
 
-#[cfg(test)]
 impl super::DbOptionsBuilder {
-    /// Names a keyspace to open beside the default one, with its options.
-    pub(crate) fn keyspace(mut self, name: impl Into<String>, options: KeyspaceOptions) -> Self {
+    /// Names a keyspace to open beside the default one, with its options. Options are not
+    /// recorded with the database, so every open names every keyspace it holds.
+    pub fn keyspace(mut self, name: impl Into<String>, options: KeyspaceOptions) -> Self {
         self.options.keyspaces.push((name.into(), options));
         self
     }
 
     /// Sets [`DbOptions::create_missing_keyspaces`].
-    pub(crate) const fn create_missing_keyspaces(mut self, value: bool) -> Self {
+    pub const fn create_missing_keyspaces(mut self, value: bool) -> Self {
         self.options.create_missing_keyspaces = value;
         self
     }

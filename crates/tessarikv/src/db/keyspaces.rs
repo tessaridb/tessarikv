@@ -1,13 +1,18 @@
-//! The keyspaces a database serves: the default one and those named when it was opened.
+//! The keyspaces a database serves: the default one, those named when it was opened, and those
+//! created since.
 
 use std::sync::Arc;
 
 use tessarikv_types::KeyspaceId;
 
+use tokio::sync::oneshot;
+
 use super::Db;
+use super::catalog::{Command, Create, check_new};
 use super::installer::Flusher;
 use super::view::Names;
 use crate::memtable::Memtable;
+use crate::options::DEFAULT_NAME;
 use crate::{DbOptions, Error, KeyspaceOptions, Result};
 
 impl Db {
@@ -24,9 +29,79 @@ impl Db {
     }
 
     /// The id of the keyspace named `name`; `default` is the default keyspace.
-    #[cfg(test)]
-    pub(crate) fn keyspace(&self, name: &str) -> Option<KeyspaceId> {
+    #[must_use]
+    pub fn keyspace(&self, name: &str) -> Option<KeyspaceId> {
         self.view.load().keyspace_named(name).map(KeyspaceId::new)
+    }
+
+    /// Every keyspace this database holds, the default one first, then by id, with its name.
+    #[must_use]
+    pub fn keyspaces(&self) -> Vec<(KeyspaceId, String)> {
+        let view = self.view.load();
+        std::iter::once((KeyspaceId::DEFAULT, DEFAULT_NAME.to_owned()))
+            .chain(
+                view.names()
+                    .iter()
+                    .map(|(id, name)| (KeyspaceId::new(*id), name.clone())),
+            )
+            .collect()
+    }
+
+    /// Creates the keyspace `name`, an independent set of keys with its own `options`, and
+    /// returns its id, which no other keyspace of this database ever takes. Writes and reads
+    /// may name it as soon as this returns, and a batch may span it and other keyspaces.
+    ///
+    /// On storage the keyspace is recorded before this returns; its options are not, so every
+    /// later open must name it with [`crate::DbOptionsBuilder::keyspace`] or be refused.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] for an empty or overlong name, the default keyspace's name, a
+    /// name already held, or one keyspace past [`tessarikv_constants::MAX_KEYSPACES`]; on
+    /// storage, [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work
+    /// stopped, and the storage's error when recording the keyspace failed.
+    pub async fn create_keyspace(
+        &self,
+        name: &str,
+        options: KeyspaceOptions,
+    ) -> Result<KeyspaceId> {
+        check_new(name, std::iter::empty(), 0)?;
+        let Some(installer) = &self.installer else {
+            return self.create_in_memory(name, &options);
+        };
+        let (done, created) = oneshot::channel();
+        let stopped = || installer.signals.failure().unwrap_or(Error::FlushFailed);
+        installer
+            .requests
+            .send(Command::Create(Create {
+                name: name.to_owned(),
+                options,
+                done,
+            }))
+            .await
+            .map_err(|_| stopped())?;
+        created.await.map_err(|_| stopped())?
+    }
+
+    /// Creates a keyspace in a database without a manifest: the view naming it is published by
+    /// compare-and-swap, so creations racing each other each take their own id.
+    fn create_in_memory(&self, name: &str, options: &KeyspaceOptions) -> Result<KeyspaceId> {
+        loop {
+            let current = self.view.load_full();
+            let names = current.names();
+            check_new(
+                name,
+                names.iter().map(|(_, held)| held.as_str()),
+                names.len(),
+            )?;
+            let id = current.next_keyspace();
+            let table = Memtable::sized(options.memtable_bytes());
+            let next = Arc::new(current.with_keyspace(id, name, table)?);
+            let previous = self.view.compare_and_swap(&current, next);
+            if Arc::ptr_eq(&previous, &current) {
+                return Ok(KeyspaceId::new(id));
+            }
+        }
     }
 }
 

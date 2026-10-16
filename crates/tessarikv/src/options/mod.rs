@@ -27,6 +27,7 @@ pub use compaction::CompactionStyle;
 pub use db::{DbOptions, DbOptionsBuilder, StorageMode, WalRecovery};
 pub use keyspace::KeyspaceOptions;
 pub use keyspace_builder::KeyspaceOptionsBuilder;
+pub(crate) use keyspaces::DEFAULT_NAME;
 pub use read::ReadOptions;
 pub use transaction::{Isolation, TransactionOptions};
 pub use write::{Durability, WriteOptions};

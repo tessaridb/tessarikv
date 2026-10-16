@@ -33,14 +33,15 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::block_cache::BlockCache;
-use super::compaction::manual::{QUEUE, Request};
+use super::catalog::{Catalog, Command};
+use super::compaction::manual::QUEUE;
 use super::compaction::{self, Compactions};
-use super::flush_job::{FileNumbers, Job, table_options};
+use super::flush_job::FileNumbers;
 use super::flush_signals::FlushSignals;
+use super::flushes::{Flushed, wait};
 use super::rate_limiter::RateLimiter;
-use super::view::{TableFile, View};
+use super::view::View;
 use crate::log::LogRelease;
-use crate::memtable::Memtable;
 use crate::storage::Storage;
 use crate::version::manifest::ManifestStore;
 use crate::{Error, KeyspaceOptions, Result};
@@ -71,22 +72,11 @@ pub(super) struct Flusher {
     pub(super) switched: u64,
 }
 
-/// The frozen tables of an epoch, one per keyspace, waiting for their flush.
-struct Frozen {
-    epoch: u8,
-    tables: Vec<(u32, Arc<Memtable>)>,
-    /// The last sequence of its epoch.
-    flushed: u64,
-}
-
-/// What a finished flush hands back: the manifest, and the table files or why there are none.
-type Flushed = (ManifestStore, Result<Vec<TableFile>>);
-
 /// The installer task and the handles that steer it.
 pub(super) struct Installer {
     pub(super) signals: Arc<FlushSignals>,
-    /// Range compaction requests (see `Db::compact_range`).
-    pub(super) requests: mpsc::Sender<Request>,
+    /// Range compactions and keyspace changes (see `Db::compact_range`, `Db::create_keyspace`).
+    pub(super) requests: mpsc::Sender<Command>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<()>>,
 }
@@ -132,19 +122,16 @@ async fn run(
     mut flusher: Flusher,
     signals: Arc<FlushSignals>,
     mut stop: watch::Receiver<bool>,
-    mut requests: mpsc::Receiver<Request>,
+    mut requests: mpsc::Receiver<Command>,
 ) -> Result<()> {
     let mut frozen = VecDeque::new();
     let mut running: Option<JoinHandle<Result<Flushed>>> = None;
     let mut compactions = Compactions::default();
+    let mut catalog = Catalog::default();
     let mut stopping = false;
     // Levels recovered past a trigger compact now: no write may come to wake the installer
     // while the levels hold writes.
-    if let Err(error) = compactions.step(&mut flusher, true).await {
-        signals.fail(&error);
-        return Err(error);
-    }
-    signals.set_load(flusher.load());
+    settle(&mut flusher, &mut compactions, &mut catalog, &signals, true).await?;
     loop {
         tokio::select! {
             // Shutdown first: no new flush starts after it, the running one finishes.
@@ -166,24 +153,22 @@ async fn run(
                     return Err(error);
                 }
             }
-            Some(request) = requests.recv(), if !stopping => compactions.request(request),
+            Some(command) = requests.recv(), if !stopping => match command {
+                Command::Compact(request) => compactions.request(request),
+                Command::Create(create) => catalog.request(create),
+            },
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
         }
         // Finished work is recorded even while stopping; no new job starts then.
-        match compactions.step(&mut flusher, !stopping).await {
-            // Writers held by the levels look again.
-            Ok(published) => {
-                signals.set_load(flusher.load());
-                if published {
-                    signals.installed();
-                }
-            }
-            Err(error) => {
-                signals.fail(&error);
-                return Err(error);
-            }
-        }
+        settle(
+            &mut flusher,
+            &mut compactions,
+            &mut catalog,
+            &signals,
+            !stopping,
+        )
+        .await?;
         if stopping {
             if running.is_none() && !compactions.is_running() {
                 compactions.step(&mut flusher, false).await?;
@@ -201,91 +186,31 @@ async fn run(
     }
 }
 
-/// The running flush's result; a flush whose task or blocking thread died stops flushing.
-async fn wait(running: &mut Option<JoinHandle<Result<Flushed>>>) -> Result<Flushed> {
-    match running.as_mut() {
-        Some(flush) => flush.await.map_err(|_| Error::FlushFailed)?,
-        None => std::future::pending().await,
-    }
-}
-
-impl Flusher {
-    /// Freezes the newest tables when one is full and another epoch may be frozen.
-    fn switch_if_full(&mut self, signals: &FlushSignals, frozen: &mut VecDeque<Frozen>) {
-        let current = self.view.load_full();
-        if !signals.should_switch(&current, frozen.len(), self.switched) {
-            return;
-        }
-        let epoch = current.newest_epoch();
-        let Ok(tables) = current.shared_epoch(epoch) else {
-            return;
-        };
-        // The view naming the next table is published before its epoch starts.
-        self.view.store(Arc::new(current.with_next_table()));
-        let flushed = self.sequencer.switch().boundary().saturating_sub(1);
-        self.switched = flushed;
-        frozen.push_back(Frozen {
-            epoch,
-            tables,
-            flushed,
-        });
-    }
-
-    /// Starts flushing `oldest` (steps 1 to 3 of the module documentation).
-    fn start_flush(
-        &mut self,
-        oldest: &Frozen,
-        signals: &Arc<FlushSignals>,
-    ) -> Result<JoinHandle<Result<Flushed>>> {
-        let tables = oldest
-            .tables
-            .iter()
-            .map(|(keyspace, table)| {
-                let options = table_options(self.keyspace_options(*keyspace), 0)?;
-                Ok((*keyspace, options, Arc::clone(table)))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mut manifest = self.manifest.take().ok_or(Error::FlushFailed)?;
-        let job = Job {
-            storage: Arc::clone(&self.storage),
-            dir: self.dir.clone(),
-            tables,
-            flushed: oldest.flushed,
-            numbers: Arc::clone(&self.numbers),
-            cache: Arc::clone(&self.cache),
-        };
-        let (sequencer, signals) = (Arc::clone(&self.sequencer), Arc::clone(signals));
-        Ok(tokio::spawn(async move {
-            // Step 1: every claim of the frozen epoch has completed.
-            loop {
-                let completed = signals.visible.notified();
-                if sequencer.watch(job.flushed) {
-                    break;
-                }
-                completed.await;
+/// Makes the waiting keyspace changes, records finished compactions and, with `start`, starts
+/// those due, then publishes what the levels ask of writers, who look again; a failure is
+/// published before it is returned.
+async fn settle(
+    flusher: &mut Flusher,
+    compactions: &mut Compactions,
+    catalog: &mut Catalog,
+    signals: &FlushSignals,
+    start: bool,
+) -> Result<()> {
+    let stepped = async {
+        let created = catalog.step(flusher).await?;
+        Ok::<_, Error>(compactions.step(flusher, start).await? || created)
+    };
+    match stepped.await {
+        Ok(published) => {
+            signals.set_load(flusher.load());
+            if published {
+                signals.installed();
             }
-            sequencer.unwatch();
-            // Steps 2 and 3, on a blocking thread; the manifest goes down with a panicked one.
-            tokio::task::spawn_blocking(move || {
-                let written = job.run(&mut manifest);
-                (manifest, written)
-            })
-            .await
-            .map_err(|_| Error::FlushFailed)
-        }))
-    }
-
-    /// Publishes the view in which the flushed file replaces the oldest frozen table, and
-    /// releases the log it covers; returns the sequence now on table files.
-    fn install(&mut self, frozen: &mut VecDeque<Frozen>, flushed: Flushed) -> Result<u64> {
-        let (manifest, written) = flushed;
-        self.manifest = Some(manifest);
-        let files = written?;
-        let oldest = frozen.pop_front().ok_or(Error::FlushFailed)?;
-        let current = self.view.load_full();
-        self.view
-            .store(Arc::new(current.after_flush(oldest.epoch, files)?));
-        self.log.release_through(oldest.flushed);
-        Ok(oldest.flushed)
+            Ok(())
+        }
+        Err(error) => {
+            signals.fail(&error);
+            Err(error)
+        }
     }
 }

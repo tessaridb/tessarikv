@@ -3,6 +3,7 @@
 use tessarikv_types::KeyspaceId;
 
 use super::Db;
+use super::catalog::Command;
 use super::compaction::manual::Request;
 use crate::{Error, Result};
 
@@ -47,7 +48,7 @@ impl Db {
         };
         installer
             .requests
-            .send(request)
+            .send(Command::Compact(request))
             .await
             .map_err(|_| stopped())?;
         outcome.await.map_err(|_| stopped())?

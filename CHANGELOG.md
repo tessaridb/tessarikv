@@ -124,3 +124,7 @@ All notable changes to this project are documented here. The format follows
   presets, `ReadOptions` and `WriteOptions` with three durability levels.
 - `Storage` abstraction with an operating-system backend and an in-memory backend.
 - Error type with categories, stable codes and a retryable flag.
+- Keyspaces: `DbOptionsBuilder::keyspace` names keyspaces to open (`create_missing_keyspaces` adds those the
+  database lacks), `Db::create_keyspace` adds one while the database runs, `Db::keyspace` and `Db::keyspaces` look
+  them up. Each keyspace flushes, compacts and paces writes by its own options; a batch spanning keyspaces is
+  recovered whole or not at all.
