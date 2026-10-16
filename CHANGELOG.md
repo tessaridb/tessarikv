@@ -72,6 +72,8 @@ All notable changes to this project are documented here. The format follows
   files take the current one, and an old key is needed only until no file names it.
 - `KeyspaceOptions::disable_auto_compactions`: the engine starts no compaction of the keyspace by itself, for
   bulk loads; `Db::compact_range` still runs.
+- `Db::checkpoint`: writes a consistent copy of a live database into another directory (flushed first, table files
+  kept from removal while copied, a manifest of that moment); the copy opens as a database of its own.
 - `Db::verify_checksums`: re-reads every table file from storage, bypassing the block cache, and verifies its
   footer, index, filter and every data block; the first damaged file is reported as `Error::Corruption`.
 - `DbOptions::max_manifest_bytes` (default 64 MiB): past it the manifest is replaced by a new one holding the

@@ -15,6 +15,7 @@
 mod approximate_size;
 mod block_cache;
 mod catalog;
+mod checkpoint;
 mod commits;
 mod compact_range;
 mod compaction;
@@ -52,6 +53,8 @@ mod auto_compaction_tests;
 mod background_error_tests;
 #[cfg(test)]
 mod cache_tests;
+#[cfg(test)]
+mod checkpoint_tests;
 #[cfg(test)]
 mod compaction_model_tests;
 #[cfg(test)]

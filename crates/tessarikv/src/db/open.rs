@@ -33,7 +33,7 @@ use crate::version::manifest::{CURRENT, ManifestStore};
 use crate::{DbOptions, Error, Result};
 
 /// The file whose presence marks a directory as holding a database.
-const IDENTITY: &str = "IDENTITY";
+pub(super) const IDENTITY: &str = "IDENTITY";
 
 /// The file whose lock keeps a second process from opening the same database.
 const LOCK: &str = "LOCK";

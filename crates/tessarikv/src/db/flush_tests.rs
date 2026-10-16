@@ -20,7 +20,7 @@ const WRITES: u32 = 400;
 /// at least two tables were flushed, whether or not compactions merged them since.
 const TWO_TABLES: u64 = 30;
 
-fn options() -> DbOptions {
+pub(super) fn options() -> DbOptions {
     let keyspace = KeyspaceOptions::builder()
         .memtable_bytes(64 * 1024)
         .build()

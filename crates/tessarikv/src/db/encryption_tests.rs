@@ -15,7 +15,7 @@ use crate::{
 
 /// Keys by id, as a caller's key store would hand them out.
 #[derive(Debug)]
-struct Keys(Vec<(u32, u8)>);
+pub(super) struct Keys(Vec<(u32, u8)>);
 
 impl KeyProvider for Keys {
     fn root_key(&self, key_id: u32) -> Option<RootKey> {
@@ -26,7 +26,7 @@ impl KeyProvider for Keys {
     }
 }
 
-fn encrypted(keys: Vec<(u32, u8)>, key_id: u32) -> DbOptions {
+pub(super) fn encrypted(keys: Vec<(u32, u8)>, key_id: u32) -> DbOptions {
     DbOptions::builder()
         .encryption(Arc::new(Keys(keys)), key_id)
         .build()

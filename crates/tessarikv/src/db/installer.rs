@@ -176,6 +176,7 @@ async fn run(
                 Command::Compact(request) => compactions.request(request),
                 Command::Create(create) => catalog.create(create),
                 Command::Drop(drop) => catalog.drop_keyspace(drop),
+                Command::Checkpoint(reply) => catalog.checkpoint(reply),
             },
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}

@@ -21,8 +21,10 @@ use tokio::sync::oneshot;
 use super::compaction::Compactions;
 use super::compaction::manual::Request;
 use super::installer::Flusher;
+use super::view::View;
 use crate::memtable::Memtable;
 use crate::options::DEFAULT_NAME;
+use crate::version::Version;
 use crate::{Error, KeyspaceOptions, Result};
 
 /// What the installer is asked to do.
@@ -33,7 +35,13 @@ pub(crate) enum Command {
     Create(Create),
     /// Drop a keyspace (see [`crate::Db::drop_keyspace`]).
     Drop(DropKeyspace),
+    /// Hand over the version and the view naming the same table files (see
+    /// [`crate::Db::checkpoint`]).
+    Checkpoint(oneshot::Sender<Pinned>),
 }
+
+/// A version and the view naming its table files; the view keeps them from removal while held.
+pub(crate) type Pinned = (Arc<Version>, Arc<View>);
 
 /// A request to create the keyspace `name` with `options`, and where its id goes.
 pub(crate) struct Create {
@@ -52,6 +60,7 @@ pub(crate) struct DropKeyspace {
 enum Change {
     Create(Create),
     Drop(DropKeyspace),
+    Checkpoint(oneshot::Sender<Pinned>),
 }
 
 /// Keyspace changes waiting for the manifest, in the order asked.
@@ -69,6 +78,11 @@ impl Catalog {
     /// Queues a drop; [`Catalog::step`] makes it.
     pub(super) fn drop_keyspace(&mut self, drop: DropKeyspace) {
         self.queued.push_back(Change::Drop(drop));
+    }
+
+    /// Queues a request for the version and its view; [`Catalog::step`] answers it.
+    pub(super) fn checkpoint(&mut self, reply: oneshot::Sender<Pinned>) {
+        self.queued.push_back(Change::Checkpoint(reply));
     }
 
     /// Makes the waiting changes while the manifest is at hand; returns whether a new view was
@@ -89,6 +103,13 @@ impl Catalog {
             published |= match change {
                 Change::Create(create) => created(flusher, create).await?,
                 Change::Drop(drop) => dropped(flusher, compactions, drop).await?,
+                Change::Checkpoint(reply) => {
+                    // The installer writes both, so they name the same files here.
+                    if let Some(manifest) = flusher.manifest.as_ref() {
+                        let _ = reply.send((manifest.version(), flusher.view.load_full()));
+                    }
+                    false
+                }
             };
         }
         Ok(published)
