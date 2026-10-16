@@ -106,7 +106,8 @@ pub(super) async fn get_in(
         return get_merged(view, keyspace, key, snapshot, &fragments, fill_cache).await;
     }
     // Newest first, in-memory tables before table files: the first that decides the key
-    // answers for it.
+    // answers for it. Without range deletes a table file whose key range misses the key cannot
+    // decide it, so only the files whose range holds it are read.
     for table in view.memtables() {
         match table.get(key, snapshot) {
             Lookup::Value(value) => return Ok(Some(value.to_vec())),
@@ -114,7 +115,7 @@ pub(super) async fn get_in(
             Lookup::Absent => {}
         }
     }
-    for file in view.files(keyspace.get()) {
+    for file in view.candidates(keyspace.get(), key) {
         match lookup(file, key, snapshot, fill_cache).await? {
             TableLookup::Value(value) => return Ok(Some(value)),
             TableLookup::Deleted => return Ok(None),

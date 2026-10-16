@@ -7,7 +7,8 @@
 //! new epoch always finds its table; the table it replaces stays in the view until every claim of
 //! its own epoch has completed. A flush replaces a frozen table with the table file built from
 //! it in one new view, so every version stays in exactly one place a reader looks. Reads consult
-//! the in-memory tables newest first, then the table files newest first.
+//! the in-memory tables newest first, then the table files: level 0 newest first, then each
+//! deeper level, whose files hold disjoint key ranges in key order.
 //!
 //! Views are immutable and swapped whole. Loading the current view never blocks: the swap cell
 //! documents its loads as lock-free, and wait-free except at most once in `usize::MAX / 4` loads;
@@ -28,7 +29,8 @@ use crate::{Error, Result};
 pub(crate) struct View {
     /// In-memory tables, newest first.
     tables: Vec<EpochTable>,
-    /// Table files, newest first.
+    /// Table files ordered by keyspace, then level; level 0 newest first, every other level by
+    /// key.
     files: Vec<TableFile>,
 }
 
@@ -59,9 +61,11 @@ impl View {
         }
     }
 
-    /// A view of `table`, holding epoch 0, over `files`, newest first: the view of a database
-    /// just opened.
-    pub(crate) fn recovered(table: Memtable, files: Vec<TableFile>) -> Self {
+    /// A view of `table`, holding epoch 0, over `files`: the view of a database just opened.
+    /// Within each keyspace and level the files keep the order given, which is newest first in
+    /// level 0 and by key in every other level.
+    pub(crate) fn recovered(table: Memtable, mut files: Vec<TableFile>) -> Self {
+        files.sort_by_key(|file| (file.meta.keyspace, file.meta.level));
         Self {
             files,
             ..Self::new(0, table)
@@ -93,8 +97,8 @@ impl View {
     }
 
     /// This view with the table of `epoch` replaced by `file`, the table file built from it,
-    /// which becomes the newest file; without a file, the table (which held no version) is
-    /// simply dropped.
+    /// which becomes the newest level-0 file of its keyspace; without a file, the table (which
+    /// held no version) is simply dropped.
     ///
     /// # Errors
     ///
@@ -114,9 +118,12 @@ impl View {
                 table: Arc::clone(&kept.table),
             })
             .collect();
-        let mut files = Vec::with_capacity(self.files.len().saturating_add(1));
-        files.extend(file);
-        files.extend(self.files.iter().cloned());
+        let mut files = self.files.clone();
+        if let Some(file) = file {
+            let keyspace = file.meta.keyspace;
+            let front = files.partition_point(|older| older.meta.keyspace < keyspace);
+            files.insert(front, file);
+        }
         Ok(Self { tables, files })
     }
 
@@ -178,11 +185,47 @@ impl View {
         self.tables.iter().map(|entry| &entry.table)
     }
 
-    /// The table files of `keyspace`, newest first.
+    /// The table files of `keyspace`: level 0 newest first, then each deeper level by key.
     pub(crate) fn files(&self, keyspace: u32) -> impl Iterator<Item = &TableFile> {
-        self.files
+        self.keyspace_files(keyspace).iter()
+    }
+
+    /// The table files of `keyspace` whose key range holds `key`, in the order a point read
+    /// consults them: those of level 0 newest first, then at most one of each deeper level.
+    ///
+    /// The ranges cover point entries only, so a read may skip the others only when no range
+    /// delete can hide the key.
+    pub(crate) fn candidates<'a>(
+        &'a self,
+        keyspace: u32,
+        key: &'a [u8],
+    ) -> impl Iterator<Item = &'a TableFile> {
+        let files = self.keyspace_files(keyspace);
+        let (level_zero, sorted) =
+            files.split_at(files.partition_point(|file| file.meta.level == 0));
+        let deeper = sorted
+            .chunk_by(|left, right| left.meta.level == right.meta.level)
+            .filter_map(move |level| {
+                // The first file whose greatest key is not below `key` is the only one that can
+                // hold it: the ranges of a level are disjoint and in key order.
+                let at = level.partition_point(|file| tables::user_key(&file.meta.largest) < key);
+                level.get(at).filter(|file| holds(file, key))
+            });
+        level_zero
             .iter()
-            .filter(move |file| file.meta.keyspace == keyspace)
+            .filter(move |file| holds(file, key))
+            .chain(deeper)
+    }
+
+    /// The files of `keyspace`, a contiguous run of the ordered list.
+    fn keyspace_files(&self, keyspace: u32) -> &[TableFile] {
+        let start = self
+            .files
+            .partition_point(|file| file.meta.keyspace < keyspace);
+        let end = self
+            .files
+            .partition_point(|file| file.meta.keyspace <= keyspace);
+        self.files.get(start..end).unwrap_or_default()
     }
 
     /// The tables with their epochs, newest first.
@@ -192,4 +235,9 @@ impl View {
             .iter()
             .map(|entry| (entry.epoch, entry.table.as_ref()))
     }
+}
+
+/// Whether the key range of `file` holds `key`.
+fn holds(file: &TableFile, key: &[u8]) -> bool {
+    tables::user_key(&file.meta.smallest) <= key && key <= tables::user_key(&file.meta.largest)
 }
