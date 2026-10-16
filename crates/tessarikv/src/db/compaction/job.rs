@@ -4,21 +4,30 @@
 //! in the cache; the walks are merged in internal-key order, so each user key's versions arrive
 //! newest first, and [`Retention`] decides which are written. Range deletes are carried to the
 //! outputs unchanged.
+//!
+//! A job whose inputs start at more than one key is split at up to
+//! [`crate::KeyspaceOptions::max_subcompactions`] `- 1` of those keys: each part merges its own
+//! key range, with the range deletes starting there, on its own thread, and the parts' tables
+//! follow one another in key order.
 
 use std::sync::Arc;
 
 use tessarikv_constants::LEVELS;
 use tessarikv_format::{TableIter, TableMeta};
-use tessarikv_types::{InternalKeyRef, ValueKind, compare_internal};
+use tessarikv_types::{
+    InternalKeyRef, SequenceNumber, ValueKind, compare_internal, encode_internal, seek_trailer,
+};
 
 use super::KEYSPACE;
 use super::output::{Destination, Outputs};
 use super::pick::Pick;
 use super::retain::Retention;
+use super::split;
 use crate::db::flush_job::table_options;
 use crate::db::installer::Flusher;
 use crate::db::tables::{self, format_error, user_key};
 use crate::db::view::TableFile;
+use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
 /// The tables a compaction reads and what decides what it writes.
@@ -28,6 +37,8 @@ pub(crate) struct Job {
     /// The tables of every level below the output level, by level, each in key order.
     pub(crate) deeper: Vec<Vec<Arc<TableMeta>>>,
     pub(crate) retention: Retention,
+    /// Parts the merge is split into at most.
+    pub(crate) parts: usize,
 }
 
 /// One input's walk.
@@ -84,6 +95,7 @@ impl Job {
                 .cloned()
                 .collect(),
             retention: Retention::new(horizon.visible(), horizon.snapshots()),
+            parts: usize::try_from(flusher.keyspace.max_subcompactions()).unwrap_or(1),
         })
     }
 
@@ -99,11 +111,70 @@ impl Job {
         for file in &self.inputs {
             tables::tombstones(&file.table, &mut tombstones)?;
         }
+        let cuts = split::boundaries(
+            self.inputs
+                .iter()
+                .map(|file| user_key(&file.meta.smallest).to_vec()),
+            self.parts,
+        );
+        let written = if cuts.is_empty() {
+            self.merge(None, None, &tombstones)?
+        } else {
+            let lows = std::iter::once(None).chain(cuts.iter().map(|cut| Some(cut.as_slice())));
+            let highs = cuts.iter().map(|cut| Some(cut.as_slice())).chain([None]);
+            let job = &self;
+            let tombstones = &tombstones;
+            std::thread::scope(|scope| {
+                let parts: Vec<_> = lows
+                    .zip(highs)
+                    .map(|(low, high)| {
+                        std::thread::Builder::new()
+                            .name("tessarikv-subcompaction".to_owned())
+                            .spawn_scoped(scope, move || job.merge(low, high, tombstones))
+                    })
+                    .collect();
+                let mut written = Vec::new();
+                for part in parts {
+                    let part = part.map_err(|_| Error::CompactionFailed)?;
+                    written.extend(part.join().map_err(|_| Error::CompactionFailed)??);
+                }
+                Ok::<_, Error>(written)
+            })?
+        };
+        if !written.is_empty() {
+            self.to.storage.sync_dir(&self.to.dir)?;
+        }
+        Ok(written)
+    }
+
+    /// Merges the user keys in `[low, high)` (unbounded where `None`) with the range deletes
+    /// starting there, and writes and syncs their output tables.
+    fn merge(
+        &self,
+        low: Option<&[u8]>,
+        high: Option<&[u8]>,
+        tombstones: &[RangeTombstone],
+    ) -> Result<Vec<TableFile>> {
+        let inside =
+            |key: &[u8]| low.is_none_or(|low| low <= key) && high.is_none_or(|high| key < high);
+        let tombstones: Vec<RangeTombstone> = tombstones
+            .iter()
+            .filter(|tombstone| inside(&tombstone.start))
+            .cloned()
+            .collect();
         let mut outputs = Outputs::new(&self.to, &tombstones);
+        let mut target = Vec::new();
+        if let Some(low) = low {
+            encode_internal(low, seek_trailer(SequenceNumber::MAX), &mut target);
+        }
         let mut walks = Vec::with_capacity(self.inputs.len());
         for file in &self.inputs {
             let mut versions = file.table.iter();
-            versions.seek_to_first();
+            if target.is_empty() {
+                versions.seek_to_first();
+            } else {
+                versions.seek(&target);
+            }
             settle(file, &mut versions)?;
             walks.push(Walk { versions, file });
         }
@@ -118,6 +189,9 @@ impl Job {
         {
             let stored = walk.versions.key();
             let parsed = InternalKeyRef::parse(stored).map_err(|_| corrupt())?;
+            if !inside(parsed.user_key()) {
+                break;
+            }
             let kind = parsed.trailer().kind().map_err(|_| corrupt())?;
             let starts_key = first || parsed.user_key() != key.as_slice();
             if starts_key {
@@ -134,11 +208,7 @@ impl Job {
             walk.versions.next();
             settle(walk.file, &mut walk.versions)?;
         }
-        let written = outputs.finish()?;
-        if !written.is_empty() {
-            self.to.storage.sync_dir(&self.to.dir)?;
-        }
-        Ok(written)
+        outputs.finish()
     }
 }
 

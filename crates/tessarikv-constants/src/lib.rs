@@ -83,6 +83,12 @@ pub const DEFAULT_MAX_COMPACTIONS: u32 = 4;
 /// Largest number of compactions a keyspace runs at once.
 pub const MAX_COMPACTIONS: u32 = 64;
 
+/// Default number of parts a compaction is split into, merged side by side.
+pub const DEFAULT_MAX_SUBCOMPACTIONS: u32 = 4;
+
+/// Largest number of parts a compaction is split into.
+pub const MAX_SUBCOMPACTIONS: u32 = 64;
+
 /// Largest level-0 slowdown or stop trigger.
 pub const MAX_LEVEL0_STALL_TRIGGER: u32 = 4096;
 

@@ -13,6 +13,8 @@ mod read;
 mod write;
 
 #[cfg(test)]
+mod keyspace_tests;
+#[cfg(test)]
 mod tests;
 
 pub use db::{DbOptions, DbOptionsBuilder, StorageMode, WalRecovery};

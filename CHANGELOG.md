@@ -68,7 +68,8 @@ All notable changes to this project are documented here. The format follows
   needs, carries range deletes, and removes its inputs once no reader holds them. A point read consults only the
   tables whose range holds its key. `Error::CompactionFailed` stops writes like a failed flush.
   Up to `KeyspaceOptions::max_compactions` (4) compactions run at once, none reading a table another
-  reads or writing a range another writes in the same level.
+  reads or writing a range another writes in the same level, and each splits into up to
+  `KeyspaceOptions::max_subcompactions` (4) key ranges merged on their own threads.
 - Level-0 stalls: `KeyspaceOptions::level0_slowdown_trigger` (20) delays each write by a millisecond and
   `level0_stop_trigger` (36) holds writes until a compaction takes level 0 under it; `no_slowdown` writes are refused
   with `Error::WriteStalled` naming the trigger. Writers see `Error::CompactionFailed` after a failed compaction.

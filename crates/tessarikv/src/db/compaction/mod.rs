@@ -23,6 +23,7 @@ mod job;
 mod output;
 mod pick;
 mod retain;
+mod split;
 
 #[cfg(test)]
 mod job_tests;
@@ -32,6 +33,8 @@ mod pick_tests;
 mod retain_tests;
 #[cfg(test)]
 mod running_tests;
+#[cfg(test)]
+mod split_tests;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
