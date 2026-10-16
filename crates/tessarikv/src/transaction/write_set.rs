@@ -3,6 +3,7 @@
 //! to one transaction and is never shared.
 
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
 use tessarikv_types::KeyspaceId;
 
@@ -123,6 +124,26 @@ impl WriteSet {
             _ if range.is_some() => Own::Deleted,
             _ => Own::Untouched,
         }
+    }
+
+    /// The keys of `keyspace` in `[start, end)` (unbounded above when `end` is `None`) that a
+    /// point operation touched and whose latest word is a value, in key order, with the value.
+    pub(super) fn values_in<'a>(
+        &'a self,
+        keyspace: KeyspaceId,
+        start: &[u8],
+        end: Option<&[u8]>,
+    ) -> Vec<(&'a [u8], &'a [u8])> {
+        let Some(keys) = self.points.get(&keyspace) else {
+            return Vec::new();
+        };
+        let upper = end.map_or(Bound::Unbounded, Bound::Excluded);
+        keys.range::<[u8], _>((Bound::Included(start), upper))
+            .filter_map(|(key, _)| match self.lookup(keyspace, key) {
+                Own::Value(value) => Some((key.as_slice(), value)),
+                Own::Deleted | Own::Untouched => None,
+            })
+            .collect()
     }
 
     /// The operations as one batch, in the order they were made: each entry takes a later

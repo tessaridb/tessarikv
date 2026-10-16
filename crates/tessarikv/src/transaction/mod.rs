@@ -1,7 +1,8 @@
 //! Transactions: reads at one snapshot, writes kept private until they commit together.
 //!
-//! A [`Transaction`] begins at the database's latest visible sequence and reads every key as
-//! it was there, except the keys it wrote itself, which it reads as it wrote them. Its puts,
+//! A [`Transaction`] begins at the database's latest visible sequence and reads every key and
+//! range ([`Transaction::get`], [`Transaction::scan`]) as it was there, except the keys it wrote
+//! itself, which it reads as it wrote them. Its puts,
 //! deletes and range deletes stay inside it until [`Transaction::commit`] writes them as one
 //! atomic batch; dropping it without committing writes nothing. A savepoint marks a point the
 //! transaction can return to, forgetting what it wrote since.
@@ -20,6 +21,7 @@
 //! range delete committed after it began, and its own range delete is refused when anything
 //! committed after it began.
 
+mod scan;
 mod write_set;
 
 #[cfg(test)]

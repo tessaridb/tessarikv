@@ -114,11 +114,40 @@ fn key(k: u8) -> Vec<u8> {
     vec![b'k', k]
 }
 
+/// Every entry of `[start, end)` the transaction sees, read in pages of at most `limit`, each
+/// starting where the previous one said the next begins.
+async fn scan_all(
+    txn: &super::Transaction<'_>,
+    start: &[u8],
+    end: &[u8],
+    limit: usize,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut entries = Vec::new();
+    let mut from = start.to_vec();
+    loop {
+        let page = txn
+            .scan(KS, &from, Some(end), limit, &ReadOptions::default())
+            .await
+            .unwrap();
+        assert!(page.entries.len() <= limit);
+        entries.extend(page.entries);
+        match page.next {
+            Some(next) => {
+                assert!(next > from, "a page moves forward");
+                from = next;
+            }
+            None => return entries,
+        }
+    }
+}
+
 proptest! {
     #[test]
     fn reads_inside_and_the_state_after_commit_match_a_model(
         before in proptest::collection::vec((0_u8..8, any::<u8>()), 0..8),
         steps in proptest::collection::vec(step(), 0..24),
+        span in (0_u8..9, 0_u8..9),
+        limit in 1_usize..4,
     ) {
         runtime().block_on(async {
             let db = memory().await;
@@ -155,6 +184,12 @@ proptest! {
                     let inside = txn.get(KS, &key(k), &ReadOptions::default()).await.unwrap();
                     assert_eq!(inside, model.get(&key(k)).cloned(), "inside, key {k} after {step:?}");
                 }
+                let (low, high) = (span.0.min(span.1), span.0.max(span.1));
+                let expected: Vec<_> = model
+                    .range(key(low)..key(high))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                assert_eq!(scan_all(&txn, &key(low), &key(high), limit).await, expected, "scan after {step:?}");
             }
             txn.commit(&WriteOptions::default()).await.unwrap();
             for k in 0_u8..8 {
@@ -162,4 +197,45 @@ proptest! {
             }
         });
     }
+}
+
+#[tokio::test]
+async fn a_scan_shows_the_snapshot_and_the_transactions_own_writes_but_not_later_commits() {
+    let db = memory().await;
+    put(&db, b"a", b"1").await;
+    put(&db, b"c", b"3").await;
+    let mut txn = db.begin().unwrap();
+    put(&db, b"b", b"later").await;
+    txn.put(KS, b"d", b"4").unwrap();
+    txn.delete(KS, b"a").unwrap();
+    let page = txn
+        .scan(KS, b"", None, 10, &ReadOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        page.entries,
+        [
+            (b"c".to_vec(), b"3".to_vec()),
+            (b"d".to_vec(), b"4".to_vec())
+        ]
+    );
+    assert_eq!(page.next, None);
+}
+
+/// A full page names the first key it left out, whether that key is the snapshot's or the
+/// transaction's own.
+#[tokio::test]
+async fn a_full_page_names_the_key_the_next_page_starts_at() {
+    let db = memory().await;
+    put(&db, b"a", b"1").await;
+    put(&db, b"c", b"3").await;
+    let mut txn = db.begin().unwrap();
+    txn.put(KS, b"b", b"2").unwrap();
+    let options = ReadOptions::default();
+    let page = txn.scan(KS, b"a", None, 1, &options).await.unwrap();
+    assert_eq!(page.entries, [(b"a".to_vec(), b"1".to_vec())]);
+    assert_eq!(page.next.as_deref(), Some(&b"b"[..]));
+    let page = txn.scan(KS, b"b", None, 1, &options).await.unwrap();
+    assert_eq!(page.entries, [(b"b".to_vec(), b"2".to_vec())]);
+    assert_eq!(page.next.as_deref(), Some(&b"c"[..]));
 }
