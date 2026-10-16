@@ -92,6 +92,8 @@ mod level0_stall_tests;
 #[cfg(test)]
 mod level_tests;
 #[cfg(test)]
+mod log_bound_tests;
+#[cfg(test)]
 mod manual_compaction_tests;
 #[cfg(test)]
 mod memtable_ceiling_tests;
