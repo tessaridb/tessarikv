@@ -20,7 +20,7 @@ tessarikv-format.workspace = true
 thiserror.workspace = true
 papaya.workspace = true
 arc-swap = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 rustix.workspace = true

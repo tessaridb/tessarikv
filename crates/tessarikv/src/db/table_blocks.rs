@@ -4,10 +4,11 @@
 //! A table's walk asks [`TableBlocks`] for each data block it reaches. A block in the cache is
 //! answered at once, on the caller's thread; a block that is not makes the walk wait, and the
 //! reader then calls [`TableBlocks::load`]. The block is read on the caller's thread when the
-//! storage can read it without blocking (memory, or a page the file system already holds), and
-//! on a blocking thread otherwise, so the runtime's workers never wait for a device. A read
-//! whose caller is dropped still finishes its one block on that thread (a blocking task cannot
-//! be stopped), and its result is discarded.
+//! storage can read it without blocking (memory, or a page the file system already holds).
+//! Otherwise a worker of a multi-thread runtime reads it in place after handing its other tasks
+//! to another thread, and any other caller hands the read to a blocking thread, so no task waits
+//! behind a device read. A hand-off read whose caller is dropped still finishes its one block on
+//! that thread (a blocking task cannot be stopped), and its result is discarded.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -51,7 +52,8 @@ impl BlockSource for TableBlocks {
 impl TableBlocks {
     /// The block at `handle`, read from storage and verified, and kept in the cache unless
     /// `fill_cache` is false. A read the storage can make without blocking is made here, on the
-    /// caller's thread; any other is made on a blocking thread.
+    /// caller's thread; any other is made in place on a multi-thread runtime's worker, and on a
+    /// blocking thread elsewhere.
     ///
     /// # Errors
     ///
@@ -64,6 +66,9 @@ impl TableBlocks {
     ) -> Result<Block> {
         let block = match self.read_inline(handle)? {
             Some(block) => block,
+            // A worker of a multi-thread runtime reads in place, its other tasks moving to another
+            // thread meanwhile; any other caller hands the read to a blocking thread.
+            None if multi_thread() => tokio::task::block_in_place(|| self.read(handle))?,
             None => {
                 let blocks = Arc::clone(self);
                 tokio::task::spawn_blocking(move || blocks.read(handle))
@@ -153,6 +158,12 @@ impl TableBlocks {
             offset: handle.offset(),
         }
     }
+}
+
+/// Whether the caller runs on a multi-thread runtime, where a worker may block in place.
+fn multi_thread() -> bool {
+    tokio::runtime::Handle::try_current()
+        .is_ok_and(|runtime| runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
 }
 
 /// Opens table file `id` at `path`, keeping its metadata in memory and reading its data blocks

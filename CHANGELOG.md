@@ -61,7 +61,8 @@ All notable changes to this project are documented here. The format follows
   through a cache of `DbOptions::block_cache_bytes` (zero disables it) whose lookups and inserts never wait, sized
   for the keyspace's block size; a block that is not cached is read on the caller's thread when the storage can
   read it without blocking (`ReadableFile::try_read_at`: always for memory, pages the file system already holds on
-  Linux) and on a blocking thread otherwise, and `ReadOptions::fill_cache = false` leaves the cache as it was. `Table::open_with` opens a
+  Linux), otherwise in place on a multi-thread runtime's worker (its other tasks move to another thread) and on a
+  blocking thread elsewhere, and `ReadOptions::fill_cache = false` leaves the cache as it was. `Table::open_with` opens a
   table through positional reads with its data blocks served by a `BlockSource`, and `TableIter::pending` /
   `resume` let a walk wait for a block. A block read whose thread stops returns `Error::ReadFailed`.
 - Leveled compaction: level 0 goes whole into the base level once it holds

@@ -199,26 +199,23 @@ async fn overwritten_versions_leave_the_tables_unless_a_snapshot_needs_them() {
     let db = Db::open_with_storage(PATH, options(), Arc::new(storage.clone()))
         .await
         .unwrap();
-    let write = |round: u32| {
-        let db = &db;
-        async move {
-            for index in 0..KEYS {
-                let mut batch = WriteBatch::new();
-                batch
-                    .put(
-                        KeyspaceId::DEFAULT,
-                        &key(index),
-                        &value(round * KEYS + index),
-                    )
-                    .unwrap();
-                db.write(&batch, &WriteOptions::default()).await.unwrap();
-            }
+    async fn write(db: &Db, round: u32) {
+        for index in 0..KEYS {
+            let mut batch = WriteBatch::new();
+            batch
+                .put(
+                    KeyspaceId::DEFAULT,
+                    &key(index),
+                    &value(round * KEYS + index),
+                )
+                .unwrap();
+            db.write(&batch, &WriteOptions::default()).await.unwrap();
         }
-    };
-    write(0).await;
+    }
+    write(&db, 0).await;
     let first = db.snapshot().unwrap();
     for round in 1..6 {
-        write(round).await;
+        write(&db, round).await;
     }
     until("level 0 under its trigger", || {
         db.view
@@ -252,7 +249,14 @@ async fn overwritten_versions_leave_the_tables_unless_a_snapshot_needs_them() {
         "a level holds {most} versions of one key with one snapshot held"
     );
     // Versions kept for the snapshot stay in the tables written while it was held until those
-    // are compacted again; every table written after it is gone keeps one version per key.
+    // are compacted again; every table written by a compaction that starts after it is gone
+    // keeps one version per key. Closing finishes the compactions that started while it was
+    // held, so every table numbered above the reopened database's last one is of the second kind.
+    drop(first);
+    db.close().await.unwrap();
+    let db = Db::open_with_storage(PATH, options(), Arc::new(storage.clone()))
+        .await
+        .unwrap();
     let dropped_at = db
         .view
         .load()
@@ -260,9 +264,8 @@ async fn overwritten_versions_leave_the_tables_unless_a_snapshot_needs_them() {
         .map(|file| file.meta.id)
         .max()
         .unwrap_or(0);
-    drop(first);
     for round in 6..9 {
-        write(round).await;
+        write(&db, round).await;
     }
     until("level 0 under its trigger", || {
         db.view

@@ -156,7 +156,9 @@ async fn read_futures_can_move_between_threads() {
     db.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// One thread: only there does a block read that must block still suspend the move (a worker of
+// a multi-thread runtime reads it in place).
+#[tokio::test]
 async fn a_move_dropped_while_it_waits_for_storage_leaves_the_iterator_not_valid() {
     // No cache: every block a move reaches is read from storage.
     let cache = Arc::new(BlockCache::new(0, tessarikv_constants::DEFAULT_BLOCK_BYTES));
@@ -226,6 +228,13 @@ async fn a_block_that_can_be_read_without_blocking_is_read_inline_and_any_other_
         blocking, 0,
         "{blocking} blocks handed off with inline reads available"
     );
+    let (inline, blocking) = reopened_reads(CountedStorage::new(false)).await;
+    assert_eq!(inline, 0);
+    assert!(blocking > 0, "no block read where blocking is allowed");
+}
+
+#[tokio::test]
+async fn blocks_that_must_be_read_where_blocking_is_allowed_are_read_on_one_thread_too() {
     let (inline, blocking) = reopened_reads(CountedStorage::new(false)).await;
     assert_eq!(inline, 0);
     assert!(blocking > 0, "no block read where blocking is allowed");
