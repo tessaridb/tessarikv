@@ -35,6 +35,11 @@ impl Progress {
         }
     }
 
+    /// Every sequence up to this one is written or skipped.
+    pub(super) fn written(&self) -> u64 {
+        self.written
+    }
+
     /// Whether a frame ending at `last` has reached `wait`.
     pub(super) fn covers(&self, last: u64, wait: Wait) -> bool {
         match wait {
@@ -44,13 +49,33 @@ impl Progress {
     }
 }
 
-/// How far the log may remove finished segments, and the notice that wakes the task for it.
+/// How far the log may remove finished segments, and the notices that wake the task.
 #[derive(Default)]
 pub(super) struct Released {
     /// Finished segments whose frames are all at or below this sequence may be removed.
     pub(super) through: AtomicU64,
     /// Wakes the task when `through` moves while no entry arrives.
     pub(super) notice: Notify,
+    /// Wakes the task to sync everything it has written (see `LogWriter::sync`).
+    pub(super) sync: Notify,
+}
+
+/// Releases log segments once flushed tables hold their frames.
+pub(crate) struct LogRelease(pub(super) Arc<Released>);
+
+impl LogRelease {
+    /// Lets the log remove every finished segment whose frames all carry sequence numbers at
+    /// or below `sequence`; called once a table holding them is named by a synced manifest. The
+    /// removal happens on the log writer's next round, and at the latest when the log closes. A
+    /// smaller `sequence` than one already released changes nothing.
+    pub(crate) fn release_through(&self, sequence: u64) {
+        // Release: everything this thread did before (the table and manifest syncs) happens
+        // before the removal; pairs with the Acquire load in `Writer::released_through`.
+        self.0
+            .through
+            .fetch_max(sequence, std::sync::atomic::Ordering::Release);
+        self.0.notice.notify_one();
+    }
 }
 
 /// The task's state: entries waiting for their turn, and the segment files.
@@ -110,8 +135,10 @@ impl Writer {
         let released = Arc::clone(&self.released);
         loop {
             tokio::select! {
-                // Entries first: a closed channel ends the loop, which syncs and removes too.
+                // A sync asked for first, so a steady stream of entries cannot postpone it; then
+                // entries: a closed channel ends the loop, which syncs and removes too.
                 biased;
+                () = released.sync.notified() => self.write_ready(progress, true).await?,
                 entry = entries.recv() => {
                     let Some(entry) = entry else { break };
                     self.pending.insert(entry.first, entry);
@@ -156,14 +183,14 @@ impl Writer {
     }
 
     /// Writes the entries that continue the log without a gap; syncs when one of them waits
-    /// for durability, or when `closing`.
+    /// for durability, or when `force_sync` (closing, or a sync asked for).
     async fn write_ready(
         &mut self,
         progress: &watch::Sender<Progress>,
-        closing: bool,
+        force_sync: bool,
     ) -> Result<()> {
         let mut frames = Vec::new();
-        let mut sync = closing;
+        let mut sync = force_sync;
         let mut last = None;
         while let Some(entry) = self.pending.remove(&self.next) {
             self.next = entry.last.checked_add(1).ok_or(Error::SequenceExhausted)?;
@@ -171,7 +198,7 @@ impl Writer {
             last = Some(entry.last);
             frames.extend(entry.frame.map(|frame| (frame, entry.last)));
         }
-        if last.is_none() && !closing {
+        if last.is_none() && !force_sync {
             return Ok(());
         }
         let through = self.released_through();

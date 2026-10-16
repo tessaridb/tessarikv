@@ -139,4 +139,18 @@ impl Db {
             .flush_through(self.sequencer.visible())
             .await
     }
+
+    /// Makes every batch written before the call durable, those written with
+    /// [`crate::Durability::Buffered`] included: the log syncs once for all of them. Returns
+    /// at once in memory, where nothing outlives the process.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LogFailed`] when the log stopped or the sync failed.
+    pub async fn sync_wal(&self) -> Result<()> {
+        match &self.log {
+            Some(log) => log.sync().await,
+            None => Ok(()),
+        }
+    }
 }

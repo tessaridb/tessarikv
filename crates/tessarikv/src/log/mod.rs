@@ -43,6 +43,7 @@ use tokio::task::JoinHandle;
 use crate::storage::Storage;
 use crate::{Error, Result};
 
+pub(crate) use writer::LogRelease;
 use writer::{Progress, Released, Writer};
 
 /// The file of segment `log_number` in `dir`.
@@ -148,24 +149,6 @@ impl Slot<'_> {
     }
 }
 
-/// Releases log segments once flushed tables hold their frames.
-pub(crate) struct LogRelease(Arc<Released>);
-
-impl LogRelease {
-    /// Lets the log remove every finished segment whose frames all carry sequence numbers at
-    /// or below `sequence`; called once a table holding them is named by a synced manifest. The
-    /// removal happens on the log writer's next round, and at the latest when the log closes. A
-    /// smaller `sequence` than one already released changes nothing.
-    pub(crate) fn release_through(&self, sequence: u64) {
-        // Release: everything this thread did before (the table and manifest syncs) happens
-        // before the removal; pairs with the Acquire load in `Writer::released_through`.
-        self.0
-            .through
-            .fetch_max(sequence, std::sync::atomic::Ordering::Release);
-        self.0.notice.notify_one();
-    }
-}
-
 /// The handle writers append through; the log writer task runs until it is closed.
 pub(crate) struct LogWriter {
     entries: mpsc::Sender<Entry>,
@@ -259,6 +242,21 @@ impl LogWriter {
             Some(wait) => self.wait(last, wait).await,
             None => Ok(()),
         }
+    }
+
+    /// Returns once every record written before the call is on stable storage, those written
+    /// without a sync included: the log syncs what it has written, waiting writes too.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LogFailed`] when the log stopped before the sync, or the sync failed;
+    /// [`Error::Closed`] when the log was closed.
+    pub(crate) async fn sync(&self) -> Result<()> {
+        let written = self.progress.borrow().written();
+        // The task syncs everything it has written by the time it serves the notice, which is
+        // at least `written`: only the task writes, and `written` only grows.
+        self.released.sync.notify_one();
+        self.wait(written, Wait::Durable).await
     }
 
     /// The handle a flush releases log segments through.

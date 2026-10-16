@@ -99,6 +99,8 @@ mod stall_tests;
 #[cfg(test)]
 mod switch_tests;
 #[cfg(test)]
+mod sync_wal_tests;
+#[cfg(test)]
 mod table_tests;
 #[cfg(test)]
 mod tests;
