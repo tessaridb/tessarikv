@@ -9,6 +9,7 @@ mod bounds;
 mod db;
 mod keyspace;
 mod keyspace_bounds;
+mod keyspace_builder;
 mod read;
 mod write;
 
@@ -18,6 +19,7 @@ mod keyspace_tests;
 mod tests;
 
 pub use db::{DbOptions, DbOptionsBuilder, StorageMode, WalRecovery};
-pub use keyspace::{KeyspaceOptions, KeyspaceOptionsBuilder};
+pub use keyspace::KeyspaceOptions;
+pub use keyspace_builder::KeyspaceOptionsBuilder;
 pub use read::ReadOptions;
 pub use write::{Durability, WriteOptions};

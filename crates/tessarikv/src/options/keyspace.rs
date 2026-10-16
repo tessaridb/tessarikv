@@ -2,25 +2,26 @@
 
 use tessarikv_constants as limits;
 
-use super::keyspace_bounds::validate;
-use crate::Result;
+use super::keyspace_builder::KeyspaceOptionsBuilder;
 
 /// Validated options of one keyspace. Built through [`KeyspaceOptions::builder`] or a preset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyspaceOptions {
-    memtable_bytes: u64,
-    max_immutable_memtables: u32,
-    block_bytes: u64,
-    block_restart_interval: u32,
-    bloom_bits_per_key: u32,
-    level0_compaction_trigger: u32,
-    level0_slowdown_trigger: u32,
-    level0_stop_trigger: u32,
-    max_compactions: u32,
-    max_subcompactions: u32,
-    level_base_bytes: u64,
-    level_size_multiplier: u32,
-    target_file_bytes: u64,
+    pub(super) memtable_bytes: u64,
+    pub(super) max_immutable_memtables: u32,
+    pub(super) block_bytes: u64,
+    pub(super) block_restart_interval: u32,
+    pub(super) bloom_bits_per_key: u32,
+    pub(super) level0_compaction_trigger: u32,
+    pub(super) level0_slowdown_trigger: u32,
+    pub(super) level0_stop_trigger: u32,
+    pub(super) max_compactions: u32,
+    pub(super) max_subcompactions: u32,
+    pub(super) soft_pending_compaction_bytes: u64,
+    pub(super) hard_pending_compaction_bytes: u64,
+    pub(super) level_base_bytes: u64,
+    pub(super) level_size_multiplier: u32,
+    pub(super) target_file_bytes: u64,
 }
 
 impl Default for KeyspaceOptions {
@@ -36,6 +37,8 @@ impl Default for KeyspaceOptions {
             level0_stop_trigger: limits::DEFAULT_LEVEL0_STOP_TRIGGER,
             max_compactions: limits::DEFAULT_MAX_COMPACTIONS,
             max_subcompactions: limits::DEFAULT_MAX_SUBCOMPACTIONS,
+            soft_pending_compaction_bytes: limits::DEFAULT_SOFT_PENDING_COMPACTION_BYTES,
+            hard_pending_compaction_bytes: limits::DEFAULT_HARD_PENDING_COMPACTION_BYTES,
             level_base_bytes: limits::DEFAULT_LEVEL_BASE_BYTES,
             level_size_multiplier: limits::DEFAULT_LEVEL_SIZE_MULTIPLIER,
             target_file_bytes: limits::DEFAULT_TARGET_FILE_BYTES,
@@ -153,6 +156,20 @@ impl KeyspaceOptions {
         self.max_subcompactions
     }
 
+    /// Bytes compaction may owe (estimated after every install) before writes are paced as
+    /// past the level-0 slowdown trigger.
+    #[must_use]
+    pub const fn soft_pending_compaction_bytes(&self) -> u64 {
+        self.soft_pending_compaction_bytes
+    }
+
+    /// Bytes compaction may owe before writes wait for a compaction, as at the level-0 stop
+    /// trigger.
+    #[must_use]
+    pub const fn hard_pending_compaction_bytes(&self) -> u64 {
+        self.hard_pending_compaction_bytes
+    }
+
     /// Target size of the first level below level 0 that holds data, in bytes. Targets are
     /// computed from the bottom level up, so data first goes to the bottom level and the levels
     /// above it fill as it grows.
@@ -172,102 +189,5 @@ impl KeyspaceOptions {
     #[must_use]
     pub const fn target_file_bytes(&self) -> u64 {
         self.target_file_bytes
-    }
-}
-
-/// Builds a validated [`KeyspaceOptions`].
-#[derive(Debug, Clone)]
-#[must_use]
-pub struct KeyspaceOptionsBuilder {
-    options: KeyspaceOptions,
-}
-
-impl KeyspaceOptionsBuilder {
-    /// Sets [`KeyspaceOptions::memtable_bytes`].
-    pub const fn memtable_bytes(mut self, value: u64) -> Self {
-        self.options.memtable_bytes = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::max_immutable_memtables`].
-    pub const fn max_immutable_memtables(mut self, value: u32) -> Self {
-        self.options.max_immutable_memtables = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::block_bytes`].
-    pub const fn block_bytes(mut self, value: u64) -> Self {
-        self.options.block_bytes = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::block_restart_interval`].
-    pub const fn block_restart_interval(mut self, value: u32) -> Self {
-        self.options.block_restart_interval = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::bloom_bits_per_key`].
-    pub const fn bloom_bits_per_key(mut self, value: u32) -> Self {
-        self.options.bloom_bits_per_key = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::level0_compaction_trigger`].
-    pub const fn level0_compaction_trigger(mut self, value: u32) -> Self {
-        self.options.level0_compaction_trigger = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::level0_slowdown_trigger`].
-    pub const fn level0_slowdown_trigger(mut self, value: u32) -> Self {
-        self.options.level0_slowdown_trigger = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::level0_stop_trigger`].
-    pub const fn level0_stop_trigger(mut self, value: u32) -> Self {
-        self.options.level0_stop_trigger = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::max_compactions`].
-    pub const fn max_compactions(mut self, value: u32) -> Self {
-        self.options.max_compactions = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::max_subcompactions`].
-    pub const fn max_subcompactions(mut self, value: u32) -> Self {
-        self.options.max_subcompactions = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::level_base_bytes`].
-    pub const fn level_base_bytes(mut self, value: u64) -> Self {
-        self.options.level_base_bytes = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::level_size_multiplier`].
-    pub const fn level_size_multiplier(mut self, value: u32) -> Self {
-        self.options.level_size_multiplier = value;
-        self
-    }
-
-    /// Sets [`KeyspaceOptions::target_file_bytes`].
-    pub const fn target_file_bytes(mut self, value: u64) -> Self {
-        self.options.target_file_bytes = value;
-        self
-    }
-
-    /// Validates every field and returns the options.
-    ///
-    /// # Errors
-    ///
-    /// [`crate::Error::InvalidOptions`] naming the first field outside its bounds.
-    pub fn build(self) -> Result<KeyspaceOptions> {
-        validate(&self.options)?;
-        Ok(self.options)
     }
 }

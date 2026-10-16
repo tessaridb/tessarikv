@@ -216,3 +216,49 @@ async fn the_delayed_write_rate_reaches_the_installer() {
     assert_eq!(installer.signals.delayed_rate(), Some(3 * RATE));
     db.close().await.expect("closed");
 }
+
+#[tokio::test(start_paused = true)]
+async fn writes_slow_past_the_soft_pending_limit_and_stop_past_the_hard_one() {
+    let options = KeyspaceOptions::builder()
+        .soft_pending_compaction_bytes(1 << 20)
+        .hard_pending_compaction_bytes(4 << 20)
+        .build()
+        .expect("valid");
+    let signals = Arc::new(FlushSignals::new(&options, RATE));
+    let view = Arc::new(ArcSwap::from_pointee(view_with(0)));
+    signals.set_owed((1 << 20) - 1);
+    signals
+        .admit(&view, true, 1)
+        .await
+        .expect("under the soft limit");
+    signals.set_owed(1 << 20);
+    let reason = refusal(signals.admit(&view, true, 1).await);
+    assert!(reason.contains("soft"), "{reason}");
+    let start = tokio::time::Instant::now();
+    signals
+        .admit(&view, false, RATE)
+        .await
+        .expect("paced, then admitted");
+    assert!(
+        start.elapsed() >= Duration::from_millis(990),
+        "paced like a slowdown"
+    );
+    signals.set_owed(4 << 20);
+    let reason = refusal(signals.admit(&view, true, 1).await);
+    assert!(reason.contains("hard"), "{reason}");
+    let held = {
+        let (signals, view) = (Arc::clone(&signals), Arc::clone(&view));
+        tokio::spawn(async move { signals.admit(&view, false, 1).await })
+    };
+    // Paused time moves on only once the held write has run and is waiting.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert!(!held.is_finished(), "a write waits past the hard limit");
+    signals.set_owed(0);
+    while !held.is_finished() {
+        signals.installed();
+        tokio::task::yield_now().await;
+    }
+    held.await
+        .expect("joined")
+        .expect("admitted once compaction caught up");
+}

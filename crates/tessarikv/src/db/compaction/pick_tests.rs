@@ -4,7 +4,7 @@ use tessarikv_constants::LEVELS;
 use tessarikv_format::TableMeta;
 use tessarikv_types::{SequenceNumber, Trailer, ValueKind, encode_internal};
 
-use super::pick::{Busy, Shape, pick, pick_with};
+use super::pick::{Busy, Shape, pending_bytes, pick, pick_with};
 
 pub(super) const SHAPE: Shape = Shape {
     level0_trigger: 4,
@@ -190,5 +190,47 @@ fn level_zero_runs_one_compaction_at_a_time_and_lets_another_level_go_meanwhile(
     assert!(
         pick_with(&shape, SHAPE, &busy).is_none(),
         "level 0 is already being compacted"
+    );
+}
+
+#[test]
+fn compaction_owes_level_zero_at_its_trigger_and_every_level_s_excess_with_its_merge() {
+    let level_zero = |count: u64| {
+        (1..=count)
+            .map(|id| table(id, 0, b"c", b"d", 1))
+            .collect::<Vec<_>>()
+    };
+    let bottom = || table(20, 6, b"a", b"z", 5000);
+    assert_eq!(
+        pending_bytes(&levels(Vec::new()), SHAPE),
+        0,
+        "nothing to owe"
+    );
+    let mut tables = level_zero(3);
+    tables.push(bottom());
+    assert_eq!(
+        pending_bytes(&levels(tables), SHAPE),
+        0,
+        "level 0 under its trigger"
+    );
+    // The bottom's 5000 bytes make L4 the base with target 50, L5 500.
+    let mut tables = level_zero(4);
+    tables.push(bottom());
+    assert_eq!(
+        pending_bytes(&levels(tables.clone()), SHAPE),
+        4,
+        "level 0's own bytes"
+    );
+    tables.push(table(21, 4, b"x", b"y", 80));
+    assert_eq!(
+        pending_bytes(&levels(tables.clone()), SHAPE),
+        4 + 30 * 11,
+        "L4 30 over its target, merged into ten times as much below"
+    );
+    tables.push(table(22, 4, b"b", b"e", 20));
+    assert_eq!(
+        pending_bytes(&levels(tables), SHAPE),
+        (4 + 20) + 50 * 11,
+        "level 0 owes the base table it touches; L4 is now 50 over"
     );
 }

@@ -124,16 +124,8 @@ impl Compactions {
         }
         self.sweep(Arc::clone(&flusher.storage)).await;
         while start && self.has_room(&flusher.keyspace) {
-            let Some(version) = flusher.manifest.as_ref().map(|manifest| manifest.version()) else {
+            let Some((levels, shape)) = shape_of(flusher) else {
                 return Ok(published);
-            };
-            let levels: [Vec<Arc<TableMeta>>; LEVELS] =
-                std::array::from_fn(|level| version.tables(KEYSPACE, level).to_vec());
-            let keyspace = &flusher.keyspace;
-            let shape = Shape {
-                level0_trigger: keyspace.level0_compaction_trigger(),
-                base_bytes: keyspace.level_base_bytes(),
-                multiplier: keyspace.level_size_multiplier(),
             };
             let Some(pick) = pick::pick_with(&levels, shape, &self.busy()) else {
                 return Ok(published);
@@ -269,4 +261,25 @@ impl Compactions {
         .unwrap_or_default();
         self.obsolete.extend(failed);
     }
+}
+
+/// The levels the manifest holds and the shape the keyspace gives them; none while the
+/// manifest is lent to a flush.
+fn shape_of(flusher: &Flusher) -> Option<([Vec<Arc<TableMeta>>; LEVELS], Shape)> {
+    let version = flusher.manifest.as_ref()?.version();
+    let keyspace = &flusher.keyspace;
+    Some((
+        std::array::from_fn(|level| version.tables(KEYSPACE, level).to_vec()),
+        Shape {
+            level0_trigger: keyspace.level0_compaction_trigger(),
+            base_bytes: keyspace.level_base_bytes(),
+            multiplier: keyspace.level_size_multiplier(),
+        },
+    ))
+}
+
+/// The bytes compaction owes now (see [`pick::pending_bytes`]); none while the manifest is lent
+/// to a flush.
+pub(super) fn pending_bytes(flusher: &Flusher) -> Option<u64> {
+    shape_of(flusher).map(|(levels, shape)| pick::pending_bytes(&levels, shape))
 }

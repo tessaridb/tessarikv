@@ -83,6 +83,18 @@ pub const DEFAULT_MAX_COMPACTIONS: u32 = 4;
 /// Largest number of compactions a keyspace runs at once.
 pub const MAX_COMPACTIONS: u32 = 64;
 
+/// Default bytes compaction may owe before writes slow down.
+pub const DEFAULT_SOFT_PENDING_COMPACTION_BYTES: u64 = 64 << 30;
+
+/// Default bytes compaction may owe before writes stop.
+pub const DEFAULT_HARD_PENDING_COMPACTION_BYTES: u64 = 256 << 30;
+
+/// Smallest pending-compaction limit.
+pub const MIN_PENDING_COMPACTION_BYTES: u64 = 1 << 20;
+
+/// Largest pending-compaction limit.
+pub const MAX_PENDING_COMPACTION_BYTES: u64 = 1 << 50;
+
 /// Default number of parts a compaction is split into, merged side by side.
 pub const DEFAULT_MAX_SUBCOMPACTIONS: u32 = 4;
 

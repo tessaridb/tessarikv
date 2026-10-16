@@ -6,10 +6,11 @@
 //! waits for the next install, or is refused when it asked not to wait. Level 0 holding its
 //! slowdown trigger's worth of tables paces writes to the delayed-write rate, each waiting for
 //! its own bytes, so compaction catches up; holding its stop trigger's worth stops writes until
-//! an install takes it back under. A
+//! an install takes it back under. The bytes compaction owes, estimated after every install,
+//! slow writes the same way past the soft pending limit and stop them past the hard one. A
 //! failed flush or compaction is published once and refuses every later write.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -42,6 +43,14 @@ pub(super) struct FlushSignals {
     level0_stop: usize,
     /// Paces writes while level 0 is past its slowdown trigger; none paces nothing.
     delay: Option<RateLimiter>,
+    /// The bytes compaction owed at the last install, and the owed bytes at which writes slow
+    /// down and stop.
+    owed: AtomicU64,
+    soft_owed: u64,
+    hard_owed: u64,
+    /// The most compaction has owed, for tests to read.
+    #[cfg(test)]
+    peak_owed: AtomicU64,
 }
 
 /// How far ahead of the delayed-write rate a slowed write may go: a millisecond's worth.
@@ -67,6 +76,11 @@ impl FlushSignals {
                 .unwrap_or(usize::MAX),
             level0_stop: usize::try_from(keyspace.level0_stop_trigger()).unwrap_or(usize::MAX),
             delay: RateLimiter::new(delayed_writes, SLOWDOWN_BURST),
+            owed: AtomicU64::new(0),
+            soft_owed: keyspace.soft_pending_compaction_bytes(),
+            hard_owed: keyspace.hard_pending_compaction_bytes(),
+            #[cfg(test)]
+            peak_owed: AtomicU64::new(0),
         }
     }
 
@@ -114,14 +128,22 @@ impl FlushSignals {
                 let current = view.load();
                 (self.stalls(&current), current.level0_files(0))
             };
+            // Relaxed: a figure read on its own; a held writer reads it again after each install.
+            let owed = self.owed.load(Ordering::Relaxed);
             let reason = if stalled {
                 "the in-memory table is full and the frozen ones wait for flushes"
             } else if level0 >= self.level0_stop {
                 "level 0 holds its stop trigger's worth of tables, waiting for a compaction"
-            } else if level0 >= self.level0_slowdown {
+            } else if owed >= self.hard_owed {
+                "compaction owes its hard limit's worth of bytes, waiting for a compaction"
+            } else if level0 >= self.level0_slowdown || owed >= self.soft_owed {
                 if no_slowdown {
                     return Err(Error::WriteStalled {
-                        reason: "level 0 is past its slowdown trigger",
+                        reason: if level0 >= self.level0_slowdown {
+                            "level 0 is past its slowdown trigger"
+                        } else {
+                            "compaction owes its soft limit's worth of bytes"
+                        },
                     });
                 }
                 let wait = self
@@ -140,6 +162,21 @@ impl FlushSignals {
             }
             installed.await;
         }
+    }
+
+    /// Records the bytes compaction owes after an install; writers held by it look again at the
+    /// next [`FlushSignals::installed`].
+    pub(super) fn set_owed(&self, owed: u64) {
+        // Relaxed: see `admit`.
+        self.owed.store(owed, Ordering::Relaxed);
+        #[cfg(test)]
+        self.peak_owed.fetch_max(owed, Ordering::Relaxed);
+    }
+
+    /// The most compaction has owed, for tests to read.
+    #[cfg(test)]
+    pub(super) fn peak_owed(&self) -> u64 {
+        self.peak_owed.load(Ordering::Relaxed)
     }
 
     /// The delayed-write rate, for tests to read.

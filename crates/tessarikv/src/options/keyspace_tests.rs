@@ -34,6 +34,14 @@ fn keyspace_defaults_are_the_documented_constants() {
         limits::DEFAULT_MAX_SUBCOMPACTIONS
     );
     assert_eq!(
+        options.soft_pending_compaction_bytes(),
+        limits::DEFAULT_SOFT_PENDING_COMPACTION_BYTES
+    );
+    assert_eq!(
+        options.hard_pending_compaction_bytes(),
+        limits::DEFAULT_HARD_PENDING_COMPACTION_BYTES
+    );
+    assert_eq!(
         options.level_size_multiplier(),
         limits::DEFAULT_LEVEL_SIZE_MULTIPLIER
     );
@@ -45,7 +53,7 @@ fn keyspace_defaults_are_the_documented_constants() {
 
 #[test]
 fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
-    let edges: [Edge<KeyspaceOptions>; 11] = [
+    let edges: [Edge<KeyspaceOptions>; 13] = [
         (
             "keyspace.memtable_bytes",
             limits::MIN_MEMTABLE_BYTES,
@@ -108,6 +116,28 @@ fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
             |value| {
                 KeyspaceOptions::builder()
                     .max_compactions(narrow(value))
+                    .build()
+            },
+        ),
+        (
+            "keyspace.hard_pending_compaction_bytes",
+            limits::MIN_PENDING_COMPACTION_BYTES,
+            limits::MAX_PENDING_COMPACTION_BYTES,
+            |value| {
+                KeyspaceOptions::builder()
+                    .soft_pending_compaction_bytes(limits::MIN_PENDING_COMPACTION_BYTES)
+                    .hard_pending_compaction_bytes(value)
+                    .build()
+            },
+        ),
+        (
+            "keyspace.soft_pending_compaction_bytes",
+            limits::MIN_PENDING_COMPACTION_BYTES,
+            limits::MAX_PENDING_COMPACTION_BYTES,
+            |value| {
+                KeyspaceOptions::builder()
+                    .hard_pending_compaction_bytes(limits::MAX_PENDING_COMPACTION_BYTES)
+                    .soft_pending_compaction_bytes(value)
                     .build()
             },
         ),
@@ -178,5 +208,22 @@ fn level_zero_triggers_must_rise_from_compaction_to_slowdown_to_stop() {
     assert_eq!(
         options.level0_stop_trigger(),
         limits::DEFAULT_LEVEL0_STOP_TRIGGER
+    );
+}
+
+#[test]
+fn compaction_may_not_owe_more_before_writes_slow_than_before_they_stop() {
+    let refused = KeyspaceOptions::builder()
+        .soft_pending_compaction_bytes(2 << 30)
+        .hard_pending_compaction_bytes(1 << 30)
+        .build();
+    assert_refused(refused, "keyspace.soft_pending_compaction_bytes");
+    assert!(
+        KeyspaceOptions::builder()
+            .soft_pending_compaction_bytes(1 << 30)
+            .hard_pending_compaction_bytes(1 << 30)
+            .build()
+            .is_ok(),
+        "equal limits"
     );
 }

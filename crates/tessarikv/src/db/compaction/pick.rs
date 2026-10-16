@@ -97,6 +97,45 @@ pub(crate) fn pick_with(
         })
 }
 
+/// The bytes compaction still owes before every level is within bounds: level 0 at its trigger
+/// owes its own bytes and those of the base-level tables it touches; a level over its target
+/// owes its excess, and the next level's bytes merged with it, `multiplier` times as many.
+pub(crate) fn pending_bytes(levels: &[Vec<Arc<TableMeta>>; LEVELS], shape: Shape) -> u64 {
+    let Some(bottom) = LEVELS.checked_sub(1) else {
+        return 0;
+    };
+    let (base, targets) = targets(levels, shape, bottom);
+    let mut owed: u64 = 0;
+    if let Some(level_zero) = levels.first().filter(|tables| {
+        !tables.is_empty()
+            && u64::try_from(tables.len()).unwrap_or(u64::MAX) >= u64::from(shape.level0_trigger)
+    }) {
+        owed = owed.saturating_add(bytes_of(level_zero));
+        let smallest = level_zero
+            .iter()
+            .map(|table| user_key(&table.smallest))
+            .min();
+        let largest = level_zero
+            .iter()
+            .map(|table| user_key(&table.largest))
+            .max();
+        if let (Some(smallest), Some(largest), Some(base_tables)) =
+            (smallest, largest, levels.get(base))
+        {
+            owed = owed.saturating_add(bytes_of(&touching(base_tables, smallest, largest)));
+        }
+    }
+    let rewritten = u64::from(shape.multiplier.max(2)).saturating_add(1);
+    for level in base..bottom {
+        let bytes = levels.get(level).map_or(0, |tables| bytes_of(tables));
+        let target = targets.get(level).copied().unwrap_or(0);
+        if target > 0 && bytes > target {
+            owed = owed.saturating_add(bytes.saturating_sub(target).saturating_mul(rewritten));
+        }
+    }
+    owed
+}
+
 /// The next compaction of a keyspace whose levels hold `levels` (level 0 newest first, every
 /// other level by key) when none runs, or none when every score is below one.
 #[cfg(test)]

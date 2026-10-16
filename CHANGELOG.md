@@ -76,6 +76,8 @@ All notable changes to this project are documented here. The format follows
   `DbOptions::delayed_write_bytes_per_second` (16 MiB/s) and
   `level0_stop_trigger` (36) holds writes until a compaction takes level 0 under it; `no_slowdown` writes are refused
   with `Error::WriteStalled` naming the trigger. Writers see `Error::CompactionFailed` after a failed compaction.
+  The bytes compaction owes, estimated after every install, slow writes the same way past
+  `KeyspaceOptions::soft_pending_compaction_bytes` (64 GiB) and hold them past `hard_pending_compaction_bytes` (256 GiB).
 - Write stall: full in-memory tables queue for their flushes, up to `KeyspaceOptions::max_immutable_memtables`; past
   that a write waits for the next flush, or returns `Error::WriteStalled` when `WriteOptions::no_slowdown` is set.
 - Options: `DbOptions`, `KeyspaceOptions` with the `point_lookup`, `write_heavy` and `bulk_load`

@@ -73,6 +73,18 @@ pub(super) fn validate(options: &KeyspaceOptions) -> Result<()> {
         u64::from(limits::MAX_SUBCOMPACTIONS),
     )?;
     check_range(
+        "keyspace.hard_pending_compaction_bytes",
+        options.hard_pending_compaction_bytes(),
+        limits::MIN_PENDING_COMPACTION_BYTES,
+        limits::MAX_PENDING_COMPACTION_BYTES,
+    )?;
+    check_range(
+        "keyspace.soft_pending_compaction_bytes",
+        options.soft_pending_compaction_bytes(),
+        limits::MIN_PENDING_COMPACTION_BYTES,
+        options.hard_pending_compaction_bytes(),
+    )?;
+    check_range(
         "keyspace.level_base_bytes",
         options.level_base_bytes(),
         limits::MIN_LEVEL_BASE_BYTES,

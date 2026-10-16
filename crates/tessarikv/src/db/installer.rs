@@ -147,8 +147,14 @@ async fn run(
         // Finished work is recorded even while stopping; no new job starts then.
         match compactions.step(&mut flusher, !stopping).await {
             // Writers held by level 0 look again.
-            Ok(true) => signals.installed(),
-            Ok(false) => {}
+            Ok(published) => {
+                if let Some(owed) = compaction::pending_bytes(&flusher) {
+                    signals.set_owed(owed);
+                }
+                if published {
+                    signals.installed();
+                }
+            }
             Err(error) => {
                 signals.fail(&error);
                 return Err(error);
