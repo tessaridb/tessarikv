@@ -32,6 +32,10 @@ pub(super) struct FlushSignals {
     pub(super) visible: Notify,
     /// Wakes stalled writers after every install, and on failure.
     installed: Notify,
+    /// The highest sequence a caller of `Db::flush` wants on table files.
+    forced: AtomicU64,
+    /// The highest sequence on table files, raised after each install.
+    flushed: AtomicU64,
     /// What failed, as one of the `FAILED_` codes: writes are refused until the database is reopened.
     failed: AtomicU8,
     /// Bytes the newest in-memory table holds before it is frozen.
@@ -78,6 +82,8 @@ impl FlushSignals {
             wake: Notify::new(),
             visible: Notify::new(),
             installed: Notify::new(),
+            forced: AtomicU64::new(0),
+            flushed: AtomicU64::new(0),
             failed: AtomicU8::new(FAILED_NONE),
             memtable_bytes: keyspace.memtable_bytes(),
             max_frozen: usize::try_from(keyspace.max_immutable_memtables()).unwrap_or(usize::MAX),
@@ -94,12 +100,51 @@ impl FlushSignals {
 
     /// Asks for a switch when `newest` has reached its size.
     pub(super) fn check(&self, newest: &Memtable) {
-        if self.is_full(newest)
-            // AcqRel: one requester wins; pairs with the installer clearing the flag.
-            && !self.pending.swap(true, Ordering::AcqRel)
-        {
+        if self.is_full(newest) {
+            self.request();
+        }
+    }
+
+    /// Asks the installer to look for a switch.
+    fn request(&self) {
+        // AcqRel: one requester wins; pairs with the installer clearing the flag, which then
+        // sees what the requester did before (a forced target included).
+        if !self.pending.swap(true, Ordering::AcqRel) {
             self.wake.notify_one();
         }
+    }
+
+    /// Returns once every sequence up to `target` is on table files, asking for the in-memory
+    /// table holding it to be frozen and flushed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] after one failed.
+    pub(super) async fn flush_through(&self, target: u64) -> Result<()> {
+        loop {
+            let installed = self.installed.notified();
+            tokio::pin!(installed);
+            // Registered before the checks, so an install between them still wakes this wait.
+            installed.as_mut().enable();
+            if let Some(error) = self.failure() {
+                return Err(error);
+            }
+            // Acquire: pairs with the Release in `set_flushed`.
+            if self.flushed.load(Ordering::Acquire) >= target {
+                return Ok(());
+            }
+            // Relaxed: published to the installer by the request's read-modify-write.
+            self.forced.fetch_max(target, Ordering::Relaxed);
+            self.request();
+            installed.await;
+        }
+    }
+
+    /// Records that every sequence up to `flushed` is on table files and wakes waiters.
+    pub(super) fn set_flushed(&self, flushed: u64) {
+        // Release: a waiter that reads it sees the install that wrote the file.
+        self.flushed.fetch_max(flushed, Ordering::Release);
+        self.installed.notify_waiters();
     }
 
     /// The error that stopped the installer, if any: writes must stop.
@@ -223,9 +268,13 @@ impl FlushSignals {
         self.installed.notify_waiters();
     }
 
-    /// Whether the newest table of `view` should be frozen, with `frozen` tables already waiting.
-    pub(super) fn should_switch(&self, view: &View, frozen: usize) -> bool {
-        frozen < self.max_frozen && self.newest_is_full(view)
+    /// Whether the newest table of `view` should be frozen, with `frozen` tables already waiting
+    /// and every sequence up to `switched` in older tables: it is full, or a flush wants a
+    /// sequence it holds.
+    pub(super) fn should_switch(&self, view: &View, frozen: usize, switched: u64) -> bool {
+        // Relaxed: read after the installer's read-modify-write of the request flag.
+        let forced = self.forced.load(Ordering::Relaxed) > switched;
+        frozen < self.max_frozen && (forced || self.newest_is_full(view))
     }
 
     /// Whether `view` has no room for another write: its newest table is full and no more

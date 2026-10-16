@@ -138,6 +138,7 @@ impl Db {
             numbers: Arc::new(FileNumbers::new(next_file)),
             limiter: limiter.clone(),
             delayed_writes,
+            switched: last_sequence,
         });
         Ok(Self {
             sequencer,

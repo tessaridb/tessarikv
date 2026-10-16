@@ -64,6 +64,8 @@ pub(super) struct Flusher {
     pub(super) limiter: Option<Arc<RateLimiter>>,
     /// The rate writes go at while level 0 is past its slowdown trigger, in bytes a second.
     pub(super) delayed_writes: u64,
+    /// Every sequence up to this one is in a frozen table or on table files.
+    pub(super) switched: u64,
 }
 
 /// A frozen table waiting for its flush.
@@ -88,6 +90,8 @@ impl Installer {
     /// Starts the installer task on the current tokio runtime.
     pub(super) fn start(flusher: Flusher) -> Self {
         let signals = Arc::new(FlushSignals::new(&flusher.keyspace, flusher.delayed_writes));
+        // Everything at or below the last switch is on table files when the database opens.
+        signals.set_flushed(flusher.switched);
         let (shutdown, stop) = watch::channel(false);
         let task = tokio::spawn(run(flusher, Arc::clone(&signals), stop));
         Self {
@@ -128,12 +132,13 @@ async fn run(
             _ = stop.changed(), if !stopping => stopping = true,
             finished = wait(&mut running), if running.is_some() => {
                 running = None;
-                let installed = finished.and_then(|flushed| flusher.install(&mut frozen, flushed));
-                if let Err(error) = installed {
-                    signals.fail(&error);
-                    return Err(error);
+                match finished.and_then(|flushed| flusher.install(&mut frozen, flushed)) {
+                    Ok(through) => signals.set_flushed(through),
+                    Err(error) => {
+                        signals.fail(&error);
+                        return Err(error);
+                    }
                 }
-                signals.installed();
             }
             compacted = compactions.finished(), if compactions.is_running() => {
                 if let Err(error) = compacted {
@@ -189,7 +194,7 @@ impl Flusher {
     /// Freezes the newest table when it is full and another may be frozen.
     fn switch_if_full(&mut self, signals: &FlushSignals, frozen: &mut VecDeque<Frozen>) {
         let current = self.view.load_full();
-        if !signals.should_switch(&current, frozen.len()) {
+        if !signals.should_switch(&current, frozen.len(), self.switched) {
             return;
         }
         let epoch = current.newest_epoch();
@@ -199,6 +204,7 @@ impl Flusher {
         // The view naming the next table is published before its epoch starts.
         self.view.store(Arc::new(current.with_next_table()));
         let flushed = self.sequencer.switch().boundary().saturating_sub(1);
+        self.switched = flushed;
         frozen.push_back(Frozen {
             epoch,
             table,
@@ -244,8 +250,8 @@ impl Flusher {
     }
 
     /// Publishes the view in which the flushed file replaces the oldest frozen table, and
-    /// releases the log it covers.
-    fn install(&mut self, frozen: &mut VecDeque<Frozen>, flushed: Flushed) -> Result<()> {
+    /// releases the log it covers; returns the sequence now on table files.
+    fn install(&mut self, frozen: &mut VecDeque<Frozen>, flushed: Flushed) -> Result<u64> {
         let (manifest, written) = flushed;
         self.manifest = Some(manifest);
         let file = written?;
@@ -254,6 +260,6 @@ impl Flusher {
         self.view
             .store(Arc::new(current.after_flush(oldest.epoch, file)?));
         self.log.release_through(oldest.flushed);
-        Ok(())
+        Ok(oldest.flushed)
     }
 }

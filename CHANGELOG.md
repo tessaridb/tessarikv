@@ -50,6 +50,7 @@ All notable changes to this project are documented here. The format follows
 - `Db::begin`: a `Transaction` reads at the snapshot it began at and sees its own puts, deletes and range deletes,
   rolls back to a `Savepoint`, and commits everything as one atomic batch; dropping it writes nothing. New errors
   `Error::TooLarge` and `Error::InvalidArgument`.
+- `Db::flush`: writes every batch committed before the call to table files and returns once they are there.
 - `multi_get` on `Db`, `Snapshot` and `Transaction`: many keys read at one snapshot, values in the order asked.
 - `Db::oldest_snapshot`: the oldest snapshot a `Snapshot` or `Transaction` still holds, which keeps old versions
   from compaction.

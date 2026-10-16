@@ -257,6 +257,24 @@ impl Db {
         SequenceNumber::new(self.sequencer.visible()).map_err(|_| Error::SequenceExhausted)
     }
 
+    /// Writes every batch committed before the call to table files, and returns once they are
+    /// there: the in-memory table holding them is frozen even if not full, then flushed like a
+    /// full one. Later writes go on meanwhile. In memory there are no table files and it returns
+    /// at once.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work stopped.
+    pub async fn flush(&self) -> Result<()> {
+        let Some(installer) = &self.installer else {
+            return Ok(());
+        };
+        installer
+            .signals
+            .flush_through(self.sequencer.visible())
+            .await
+    }
+
     /// Whether serializable transactions can run on this database.
     pub(crate) fn checks_reads(&self) -> bool {
         self.commits.serializable()
