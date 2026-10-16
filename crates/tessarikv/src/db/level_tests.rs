@@ -118,3 +118,19 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_table_merged_within_level_zero_takes_the_place_of_the_runs_it_merged() {
+    // Level 0 newest first: 4 flushed while 3 and 2 were being merged; 1 is the oldest.
+    let files = vec![
+        holding(&[1, 2], 0, 4, 400),
+        holding(&[1, 2], 0, 3, 300),
+        holding(&[1, 2], 0, 2, 200),
+        holding(&[1, 2], 0, 1, 100),
+    ];
+    let view = View::recovered(Memtable::new(), files);
+    let merged = holding(&[1, 2], 0, 9, 300);
+    let after = view.after_compaction(0, &[3, 2], vec![merged]);
+    let order: Vec<u64> = after.files(0).map(|file| file.meta.id).collect();
+    assert_eq!(order, [4, 9, 1]);
+}

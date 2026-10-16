@@ -92,6 +92,28 @@ pub const MIN_FIFO_MAX_TABLE_BYTES: u64 = 1 << 20;
 /// Largest bytes a first-in-first-out keyspace keeps.
 pub const MAX_FIFO_MAX_TABLE_BYTES: u64 = 1 << 50;
 
+/// Default size ratio, in percent, within which universal compaction merges sorted runs.
+pub const DEFAULT_UNIVERSAL_SIZE_RATIO_PERCENT: u32 = 1;
+
+/// Largest universal size ratio, in percent.
+pub const MAX_UNIVERSAL_SIZE_RATIO_PERCENT: u32 = 1000;
+
+/// Default fewest sorted runs a universal compaction merges by size.
+pub const DEFAULT_UNIVERSAL_MIN_MERGE: u32 = 2;
+
+/// Largest fewest-runs setting of universal compaction.
+pub const MAX_UNIVERSAL_MIN_MERGE: u32 = 64;
+
+/// Default space amplification, in percent of the oldest run, at which universal compaction
+/// merges everything.
+pub const DEFAULT_UNIVERSAL_MAX_SIZE_AMPLIFICATION_PERCENT: u32 = 200;
+
+/// Smallest universal space-amplification bound, in percent.
+pub const MIN_UNIVERSAL_MAX_SIZE_AMPLIFICATION_PERCENT: u32 = 10;
+
+/// Largest universal space-amplification bound, in percent.
+pub const MAX_UNIVERSAL_MAX_SIZE_AMPLIFICATION_PERCENT: u32 = 10_000;
+
 /// Default bytes compaction may owe before writes slow down.
 pub const DEFAULT_SOFT_PENDING_COMPACTION_BYTES: u64 = 64 << 30;
 

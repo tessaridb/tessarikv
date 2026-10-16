@@ -73,13 +73,38 @@ pub(super) fn validate(options: &KeyspaceOptions) -> Result<()> {
         1,
         u64::from(limits::MAX_SUBCOMPACTIONS),
     )?;
-    if let CompactionStyle::Fifo { max_table_bytes } = options.compaction() {
-        check_range(
+    match options.compaction() {
+        CompactionStyle::Fifo { max_table_bytes } => check_range(
             "keyspace.compaction.max_table_bytes",
             max_table_bytes,
             limits::MIN_FIFO_MAX_TABLE_BYTES,
             limits::MAX_FIFO_MAX_TABLE_BYTES,
-        )?;
+        )?,
+        CompactionStyle::Universal {
+            size_ratio_percent,
+            min_merge,
+            max_size_amplification_percent,
+        } => {
+            check_range(
+                "keyspace.compaction.size_ratio_percent",
+                u64::from(size_ratio_percent),
+                0,
+                u64::from(limits::MAX_UNIVERSAL_SIZE_RATIO_PERCENT),
+            )?;
+            check_range(
+                "keyspace.compaction.min_merge",
+                u64::from(min_merge),
+                2,
+                u64::from(limits::MAX_UNIVERSAL_MIN_MERGE),
+            )?;
+            check_range(
+                "keyspace.compaction.max_size_amplification_percent",
+                u64::from(max_size_amplification_percent),
+                u64::from(limits::MIN_UNIVERSAL_MAX_SIZE_AMPLIFICATION_PERCENT),
+                u64::from(limits::MAX_UNIVERSAL_MAX_SIZE_AMPLIFICATION_PERCENT),
+            )?;
+        }
+        CompactionStyle::Leveled => {}
     }
     check_range(
         "keyspace.hard_pending_compaction_bytes",

@@ -143,12 +143,13 @@ impl View {
             .cloned()
             .collect();
         files.extend(added);
-        // Stable: level 0 keeps its newest-first order, every other level is put in key order.
+        // Level 0 newest first by its last sequence, so a table merged within level 0 takes the
+        // place of the runs it merged; every other level in key order.
         files.sort_by(|left, right| {
             (left.meta.keyspace, left.meta.level)
                 .cmp(&(right.meta.keyspace, right.meta.level))
                 .then_with(|| match left.meta.level {
-                    0 => std::cmp::Ordering::Equal,
+                    0 => right.meta.max_sequence.cmp(&left.meta.max_sequence),
                     _ => compare_internal(&left.meta.smallest, &right.meta.smallest),
                 })
         });

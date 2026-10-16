@@ -227,37 +227,3 @@ fn compaction_may_not_owe_more_before_writes_slow_than_before_they_stop() {
         "equal limits"
     );
 }
-
-#[test]
-fn a_first_in_first_out_keyspace_keeps_a_bounded_number_of_bytes() {
-    assert_eq!(
-        KeyspaceOptions::default().compaction(),
-        crate::CompactionStyle::Leveled
-    );
-    let fifo = |max_table_bytes| {
-        KeyspaceOptions::builder()
-            .compaction(crate::CompactionStyle::Fifo { max_table_bytes })
-            .build()
-    };
-    for edge in [
-        limits::MIN_FIFO_MAX_TABLE_BYTES,
-        limits::MAX_FIFO_MAX_TABLE_BYTES,
-        limits::DEFAULT_FIFO_MAX_TABLE_BYTES,
-    ] {
-        assert!(fifo(edge).is_ok(), "{edge}");
-    }
-    assert_refused(
-        fifo(limits::MIN_FIFO_MAX_TABLE_BYTES - 1),
-        "keyspace.compaction.max_table_bytes",
-    );
-    assert_refused(
-        fifo(limits::MAX_FIFO_MAX_TABLE_BYTES + 1),
-        "keyspace.compaction.max_table_bytes",
-    );
-    assert_eq!(
-        crate::CompactionStyle::fifo(),
-        crate::CompactionStyle::Fifo {
-            max_table_bytes: limits::DEFAULT_FIFO_MAX_TABLE_BYTES
-        }
-    );
-}

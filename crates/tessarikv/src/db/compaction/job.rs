@@ -82,7 +82,12 @@ impl Job {
                 storage: Arc::clone(&flusher.storage),
                 dir: flusher.dir.clone(),
                 options: table_options(&flusher.keyspace)?,
-                target_bytes: flusher.keyspace.target_file_bytes(),
+                // A merge within level 0 writes one table: one run takes the place of those merged.
+                target_bytes: if pick.output_level == 0 {
+                    u64::MAX
+                } else {
+                    flusher.keyspace.target_file_bytes()
+                },
                 numbers: Arc::clone(&flusher.numbers),
                 cache: Arc::clone(&flusher.cache),
                 keyspace: KEYSPACE,
@@ -90,13 +95,15 @@ impl Job {
                 limiter: flusher.limiter.clone(),
             },
             inputs,
-            deeper: levels
-                .iter()
-                .skip(pick.output_level.saturating_add(1))
-                .cloned()
-                .collect(),
+            deeper: deeper(pick, levels, &wanted),
             retention: Retention::new(horizon.visible(), horizon.snapshots()),
-            parts: usize::try_from(flusher.keyspace.max_subcompactions()).unwrap_or(1),
+            // Split parts write tables of one age side by side; within level 0 each would be a
+            // run of its own, so a merge there is never split.
+            parts: if pick.output_level == 0 {
+                1
+            } else {
+                usize::try_from(flusher.keyspace.max_subcompactions()).unwrap_or(1)
+            },
         })
     }
 
@@ -211,6 +218,31 @@ impl Job {
         }
         outputs.finish()
     }
+}
+
+/// The tables below `pick`'s output that may hold older versions of its keys, each list in key
+/// order: every level below the output level and, for a merge within level 0, each level-0
+/// table it leaves out (older than those it merges), as a list of its own.
+pub(super) fn deeper(
+    pick: &Pick,
+    levels: &[Vec<Arc<TableMeta>>; LEVELS],
+    merged: &[u64],
+) -> Vec<Vec<Arc<TableMeta>>> {
+    let older_runs = levels
+        .first()
+        .filter(|_| pick.output_level == 0)
+        .into_iter()
+        .flatten()
+        .filter(|table| !merged.contains(&table.id))
+        .map(|table| vec![Arc::clone(table)]);
+    older_runs
+        .chain(
+            levels
+                .iter()
+                .skip(pick.output_level.saturating_add(1))
+                .cloned(),
+        )
+        .collect()
 }
 
 /// Loads the blocks the last move of `versions` waits for, and reports a damaged block.

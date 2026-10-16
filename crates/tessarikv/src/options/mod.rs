@@ -15,6 +15,8 @@ mod read;
 mod write;
 
 #[cfg(test)]
+mod compaction_tests;
+#[cfg(test)]
 mod keyspace_tests;
 #[cfg(test)]
 mod tests;

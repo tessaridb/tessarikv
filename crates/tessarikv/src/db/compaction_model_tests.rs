@@ -10,7 +10,7 @@ use super::Db;
 use super::compaction_tests::{assert_levels_ordered, options};
 use super::flush_tests::{PATH, key, until};
 use crate::log::fault::FaultStorage;
-use crate::{KeyspaceId, ReadOptions, WriteBatch, WriteOptions};
+use crate::{CompactionStyle, DbOptions, KeyspaceId, ReadOptions, WriteBatch, WriteOptions};
 
 const KEYS: u32 = 150;
 
@@ -74,6 +74,33 @@ async fn assert_reads(db: &Db, model: &Model, what: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_snapshot_reads_as_the_model_across_compactions_and_a_reopen() {
+    differential(options).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn universal_compaction_reads_as_the_model_too() {
+    differential(universal).await;
+}
+
+/// The options of [`options`] with universal compaction.
+fn universal() -> DbOptions {
+    let leveled = options();
+    let keyspace = leveled
+        .default_keyspace()
+        .to_builder()
+        .compaction(CompactionStyle::universal())
+        .build()
+        .unwrap();
+    leveled
+        .to_builder()
+        .default_keyspace(keyspace)
+        .build()
+        .unwrap()
+}
+
+/// Random writes, deletes, range deletes and snapshots, then every snapshot, the latest state
+/// and a reopen read as the model, with the levels in order.
+async fn differential(options: fn() -> DbOptions) {
     for seed in 1..=3 {
         let storage = FaultStorage::default();
         let db = Db::open_with_storage(PATH, options(), Arc::new(storage.clone()))

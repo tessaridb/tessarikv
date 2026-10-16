@@ -19,12 +19,14 @@
 //! an older view may still read it. The installer checks after each install, every
 //! [`SWEEP_INTERVAL`] while a file waits, and when it stops.
 
+mod commit;
 mod fifo;
 mod job;
 mod output;
 mod pick;
 mod retain;
 mod split;
+mod universal;
 
 #[cfg(test)]
 mod fifo_tests;
@@ -38,17 +40,18 @@ mod retain_tests;
 mod running_tests;
 #[cfg(test)]
 mod split_tests;
+#[cfg(test)]
+mod universal_tests;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use tessarikv_constants::LEVELS;
-use tessarikv_format::{ManifestEdit, TableMeta, TableRef};
+use tessarikv_format::TableMeta;
 use tokio::task::JoinSet;
 
 use self::job::Job;
 use self::pick::{Busy, Pick, Shape};
-use super::flush_job::table_path;
 use super::installer::Flusher;
 use super::table_blocks::TableBlocks;
 use super::view::TableFile;
@@ -135,6 +138,20 @@ impl Compactions {
                 CompactionStyle::Fifo { max_table_bytes } => {
                     fifo::pick(&levels, max_table_bytes, &busy)
                 }
+                CompactionStyle::Universal {
+                    size_ratio_percent,
+                    min_merge,
+                    max_size_amplification_percent,
+                } => universal::pick(
+                    &levels,
+                    universal::Settings {
+                        level0_trigger: shape.level0_trigger,
+                        size_ratio_percent,
+                        min_merge,
+                        max_size_amplification_percent,
+                    },
+                    &busy,
+                ),
                 _ => pick::pick_with(&levels, shape, &busy),
             };
             let Some(pick) = next else {
@@ -173,82 +190,6 @@ impl Compactions {
             busy.ranges.extend(pick.busy_range());
         }
         busy
-    }
-
-    /// Appends the edit replacing `pick`'s tables by `outputs` (by the moved table when there
-    /// are none), then publishes the view that reads them.
-    async fn commit(
-        &mut self,
-        flusher: &mut Flusher,
-        pick: &Pick,
-        outputs: Vec<TableFile>,
-    ) -> Result<()> {
-        let moved = outputs.is_empty() && pick.is_move();
-        let added: Vec<TableFile> = if moved {
-            let current = flusher.view.load();
-            let level = u8::try_from(pick.output_level).map_err(|_| Error::CompactionFailed)?;
-            current
-                .files(KEYSPACE)
-                .filter(|file| pick.inputs.iter().any(|input| input.id == file.meta.id))
-                .map(|file| TableFile {
-                    meta: Arc::new(TableMeta {
-                        level,
-                        ..(*file.meta).clone()
-                    }),
-                    ..file.clone()
-                })
-                .collect()
-        } else {
-            outputs
-        };
-        let edit = ManifestEdit {
-            next_file: Some(flusher.numbers.bound()),
-            added: added.iter().map(|file| (*file.meta).clone()).collect(),
-            removed: pick
-                .inputs
-                .iter()
-                .chain(&pick.overlaps)
-                .map(|table| TableRef {
-                    keyspace: table.keyspace,
-                    level: table.level,
-                    id: table.id,
-                })
-                .collect(),
-            ..ManifestEdit::default()
-        };
-        let mut manifest = flusher.manifest.take().ok_or(Error::CompactionFailed)?;
-        let (manifest, appended) = tokio::task::spawn_blocking(move || {
-            let appended = manifest.append(&edit);
-            (manifest, appended)
-        })
-        .await
-        .map_err(|_| Error::CompactionFailed)?;
-        flusher.manifest = Some(manifest);
-        appended.map_err(|_| Error::CompactionFailed)?;
-        let removed: Vec<u64> = pick
-            .inputs
-            .iter()
-            .chain(&pick.overlaps)
-            .map(|table| table.id)
-            .collect();
-        let current = flusher.view.load_full();
-        if !moved {
-            self.obsolete.extend(
-                current
-                    .files(KEYSPACE)
-                    .filter(|file| removed.contains(&file.meta.id))
-                    .map(|file| {
-                        (
-                            Arc::downgrade(&file.blocks),
-                            table_path(&flusher.dir, file.meta.id),
-                        )
-                    }),
-            );
-        }
-        flusher.view.store(Arc::new(
-            current.after_compaction(KEYSPACE, &removed, added),
-        ));
-        Ok(())
     }
 
     /// Removes the input files no view names any more; a removal that fails is tried again at

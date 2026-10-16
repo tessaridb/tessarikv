@@ -18,6 +18,20 @@ pub enum CompactionStyle {
         /// Bytes of table files kept before the oldest go.
         max_table_bytes: u64,
     },
+    /// Every level-0 table is a sorted run, and so is the bottom level; runs of similar size are
+    /// merged, newest first, and everything is merged into the bottom once the runs above it
+    /// hold `max_size_amplification_percent` of its size. Fewer rewrites than leveled, paid for
+    /// in space (up to that bound beyond the live data, and twice the data during a full merge)
+    /// and in tables per read.
+    Universal {
+        /// A run joins a merge when it is at most this many percent larger than the runs merged
+        /// before it.
+        size_ratio_percent: u32,
+        /// Fewest runs a merge by size takes.
+        min_merge: u32,
+        /// Bytes above the bottom, in percent of the bottom's, at which everything is merged.
+        max_size_amplification_percent: u32,
+    },
 }
 
 impl CompactionStyle {
@@ -26,6 +40,17 @@ impl CompactionStyle {
     pub const fn fifo() -> Self {
         Self::Fifo {
             max_table_bytes: limits::DEFAULT_FIFO_MAX_TABLE_BYTES,
+        }
+    }
+
+    /// Universal, with the default ratio, run count and amplification bound.
+    #[must_use]
+    pub const fn universal() -> Self {
+        Self::Universal {
+            size_ratio_percent: limits::DEFAULT_UNIVERSAL_SIZE_RATIO_PERCENT,
+            min_merge: limits::DEFAULT_UNIVERSAL_MIN_MERGE,
+            max_size_amplification_percent:
+                limits::DEFAULT_UNIVERSAL_MAX_SIZE_AMPLIFICATION_PERCENT,
         }
     }
 }
