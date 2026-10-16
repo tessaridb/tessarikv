@@ -16,6 +16,10 @@ use crate::{
 pub(super) const PATH: &str = "/db";
 const WRITES: u32 = 400;
 
+/// Writes that fill two of the tiny memtables: once the table files hold sequences this high,
+/// at least two tables were flushed, whether or not compactions merged them since.
+const TWO_TABLES: u64 = 30;
+
 fn options() -> DbOptions {
     let keyspace = KeyspaceOptions::builder()
         .memtable_bytes(64 * 1024)
@@ -86,7 +90,7 @@ pub(super) fn table_files(db: &Db) -> usize {
     db.view.load().files(0).count()
 }
 
-fn files_on_storage(storage: &FaultStorage, suffix: &str) -> usize {
+pub(super) fn files_on_storage(storage: &FaultStorage, suffix: &str) -> usize {
     storage
         .list(Path::new(PATH))
         .expect("listable")
@@ -109,14 +113,18 @@ async fn full_tables_are_flushed_and_the_log_they_cover_is_removed() {
     let storage = FaultStorage::default();
     let db = open(&storage).await;
     write_all(&db, Durability::Buffered).await;
-    until("two tables are flushed", || table_files(&db) >= 2).await;
+    until("two tables are flushed", || flushed(&db) >= TWO_TABLES).await;
     let first_segment = segment_path(Path::new(PATH), 1);
     until("the first log segment is removed", || {
         !storage.exists(&first_segment).expect("exists")
     })
     .await;
     assert_all_readable(&db).await;
-    assert_eq!(files_on_storage(&storage, ".sst"), table_files(&db));
+    // A compacted table's file goes once its last reader lets go.
+    until("only the tables in the view are on storage", || {
+        files_on_storage(&storage, ".sst") == table_files(&db)
+    })
+    .await;
     db.close().await.expect("closed");
 }
 
@@ -125,7 +133,7 @@ async fn reopening_reads_the_tables_and_replays_only_the_log_above_them() {
     let storage = FaultStorage::default();
     let db = open(&storage).await;
     write_all(&db, Durability::Buffered).await;
-    until("two tables are flushed", || table_files(&db) >= 2).await;
+    until("two tables are flushed", || flushed(&db) >= TWO_TABLES).await;
     db.close().await.expect("closed");
     // A table file a crash left between writing it and naming it in the manifest.
     let orphan = Path::new(PATH).join(format!("{:020}.sst", 900));
@@ -198,7 +206,7 @@ async fn sequence_numbers_continue_after_the_tables_when_no_log_is_left() {
     let storage = FaultStorage::default();
     let db = open(&storage).await;
     write_all(&db, Durability::Buffered).await;
-    until("two tables are flushed", || table_files(&db) >= 2).await;
+    until("two tables are flushed", || flushed(&db) >= TWO_TABLES).await;
     let flushed = flushed(&db);
     db.close().await.expect("closed");
     for name in storage.list(Path::new(PATH)).expect("listable") {
@@ -244,7 +252,7 @@ async fn concurrent_writers_lose_nothing_across_flushes() {
     for writer in writers {
         writer.await.expect("joined");
     }
-    until("two tables are flushed", || table_files(&db) >= 2).await;
+    until("two tables are flushed", || flushed(&db) >= TWO_TABLES).await;
     assert_all_readable(&db).await;
     Arc::into_inner(db)
         .expect("only handle")

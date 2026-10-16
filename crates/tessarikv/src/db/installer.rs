@@ -19,18 +19,22 @@
 //!
 //! Writes stall while the newest table is full and as many tables are frozen as the keyspace
 //! allows: memory stays bounded by that many tables plus one.
+//!
+//! Between flushes the installer also runs compactions, one at a time (see
+//! [`super::compaction`]); a failed compaction stops writes like a failed flush.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tessarikv_sync::Sequencer;
+use tessarikv_sync::{Sequencer, SnapshotRegistry};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use super::block_cache::BlockCache;
-use super::flush_job::{Job, table_options};
+use super::compaction::{self, Compactions};
+use super::flush_job::{FileNumbers, Job, table_options};
 use super::flush_signals::FlushSignals;
 use super::view::{TableFile, View};
 use crate::log::LogRelease;
@@ -51,6 +55,10 @@ pub(super) struct Flusher {
     pub(super) keyspace: KeyspaceOptions,
     /// The cache flushed table files read their data blocks through.
     pub(super) cache: Arc<BlockCache>,
+    /// The snapshots readers hold, which compactions keep versions for.
+    pub(super) snapshots: Arc<SnapshotRegistry>,
+    /// Table file numbers, shared by flushes and compactions.
+    pub(super) numbers: Arc<FileNumbers>,
 }
 
 /// A frozen table waiting for its flush.
@@ -106,6 +114,7 @@ async fn run(
 ) -> Result<()> {
     let mut frozen = VecDeque::new();
     let mut running: Option<JoinHandle<Result<Flushed>>> = None;
+    let mut compactions = Compactions::default();
     let mut stopping = false;
     loop {
         tokio::select! {
@@ -121,10 +130,23 @@ async fn run(
                 }
                 signals.installed();
             }
+            compacted = compactions.finished(), if compactions.is_running() => {
+                if let Err(error) = compacted {
+                    signals.fail();
+                    return Err(error);
+                }
+            }
             () = signals.requested(), if !stopping => {}
+            () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
+        }
+        // Finished work is recorded even while stopping; no new job starts then.
+        if let Err(error) = compactions.step(&mut flusher, !stopping).await {
+            signals.fail();
+            return Err(error);
         }
         if stopping {
-            if running.is_none() {
+            if running.is_none() && !compactions.is_running() {
+                compactions.step(&mut flusher, false).await?;
                 return Ok(());
             }
             continue;
@@ -181,6 +203,7 @@ impl Flusher {
             options: table_options(&self.keyspace)?,
             table: Arc::clone(&oldest.table),
             flushed: oldest.flushed,
+            numbers: Arc::clone(&self.numbers),
             cache: Arc::clone(&self.cache),
         };
         let (sequencer, signals) = (Arc::clone(&self.sequencer), Arc::clone(signals));

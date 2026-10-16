@@ -88,6 +88,19 @@ impl TableBlocks {
         Ok(())
     }
 
+    /// Finishes the move of `versions` on this blocking thread, reading each block it waits
+    /// for without keeping it in the cache: a compaction reads every block once.
+    ///
+    /// # Errors
+    ///
+    /// As [`TableBlocks::load`].
+    pub(crate) fn complete_blocking(&self, versions: &mut TableIter) -> Result<()> {
+        while let Some(handle) = versions.pending() {
+            versions.resume(self.read(handle)?);
+        }
+        Ok(())
+    }
+
     /// Reads and verifies the block at `handle`. Runs on a blocking thread.
     fn read(&self, handle: BlockHandle) -> Result<Block> {
         let corrupt = |detail: &str| Error::Corruption {

@@ -129,6 +129,11 @@ pub enum Error {
     /// from the manifest and the log.
     #[error("a flush failed to write its table or the manifest; reopen the database")]
     FlushFailed,
+    /// A compaction failed to read its tables, write its outputs or record them in the
+    /// manifest. Every table it read is still in place and named by the manifest; nothing else
+    /// is written until the database is reopened, which removes the outputs no edit named.
+    #[error("a compaction failed to write its tables or the manifest; reopen the database")]
+    CompactionFailed,
     /// The thread reading a table block stopped without an answer. Nothing was changed.
     #[error("a table block read stopped without an answer")]
     ReadFailed,
@@ -167,7 +172,7 @@ impl Error {
             Self::Memtable { .. } | Self::SequenceExhausted | Self::ReadFailed => {
                 ErrorCategory::Internal
             }
-            Self::LogFailed | Self::FlushFailed => ErrorCategory::Io,
+            Self::LogFailed | Self::FlushFailed | Self::CompactionFailed => ErrorCategory::Io,
             Self::WriteStalled { .. } => ErrorCategory::Unavailable,
             Self::AlreadyExists { .. } => ErrorCategory::Conflict,
             Self::Closed => ErrorCategory::ShutDown,
@@ -190,6 +195,7 @@ impl Error {
             Self::Memtable { .. } => "memtable",
             Self::LogFailed => "log_failed",
             Self::FlushFailed => "flush_failed",
+            Self::CompactionFailed => "compaction_failed",
             Self::ReadFailed => "read_failed",
             Self::WriteStalled { .. } => "write_stalled",
             Self::AlreadyExists { .. } => "already_exists",
@@ -216,6 +222,7 @@ impl Error {
             | Self::Memtable { .. }
             | Self::LogFailed
             | Self::FlushFailed
+            | Self::CompactionFailed
             | Self::ReadFailed
             | Self::AlreadyExists { .. }
             | Self::Closed => false,

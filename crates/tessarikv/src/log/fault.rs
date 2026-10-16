@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
 
 use crate::storage::{MemoryStorage, ReadableFile, Storage, StorageLock, WritableFile};
 use crate::{Error, Result};
@@ -25,6 +25,9 @@ struct State {
     resumed: std::sync::Condvar,
     /// When armed, crash images are taken around every durable step outside the log.
     capture: OnceLock<Capture>,
+    /// Held shared by every change to the files and exclusively by a crash image, so an image
+    /// is one instant: a change made while it copies is wholly in it or wholly after it.
+    instant: RwLock<()>,
 }
 
 #[derive(Debug)]
@@ -73,6 +76,11 @@ impl FaultStorage {
         assert!(self.state.capture.set(capture).is_ok(), "armed once");
     }
 
+    /// Holds off crash images while one change to the files is made.
+    fn change(&self) -> RwLockReadGuard<'_, ()> {
+        self.state.instant.read().expect("the instant")
+    }
+
     /// The crash images taken so far.
     pub(crate) fn take_images(&self) -> Vec<CrashImage> {
         self.state.capture.get().map_or_else(Vec::new, |capture| {
@@ -112,6 +120,7 @@ impl FaultStorage {
     /// The files of `dir` as a crash would leave them: everything appended after a process
     /// crash, only what was synced after a power loss.
     pub(crate) fn crash(&self, dir: &Path, power_loss: bool) -> Self {
+        let _instant = self.state.instant.write().expect("the instant");
         let image = Self::default();
         image.files.create_dir_all(dir).expect("directory");
         for name in self.files.list(dir).expect("listable") {
@@ -164,6 +173,7 @@ fn contents(file: &dyn ReadableFile) -> Vec<u8> {
 
 impl Storage for FaultStorage {
     fn create(&self, path: &Path) -> Result<Box<dyn WritableFile>> {
+        let _change = self.change();
         Ok(Box::new(FaultFile {
             inner: self.files.create(path)?,
             path: path.to_path_buf(),
@@ -180,12 +190,16 @@ impl Storage for FaultStorage {
     }
 
     fn remove(&self, path: &Path) -> Result<()> {
-        self.files.remove(path)?;
+        {
+            let _change = self.change();
+            self.files.remove(path)?;
+        }
         self.capture(path, "removed");
         Ok(())
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        let _change = self.change();
         self.files.rename(from, to)?;
         // What was synced stays synced: the bytes follow the file to its new name. (Whether the
         // new NAME survives a power loss before the directory is synced is not modelled.)
@@ -224,6 +238,7 @@ struct FaultFile {
 
 impl WritableFile for FaultFile {
     fn append(&mut self, data: &[u8]) -> Result<()> {
+        let _change = self.storage.change();
         self.inner.append(data)
     }
 
@@ -242,11 +257,14 @@ impl WritableFile for FaultFile {
             });
         }
         self.storage.capture(&self.path, "before syncing");
-        self.inner.sync()?;
-        state
-            .synced
-            .pin()
-            .insert(self.path.clone(), self.inner.len());
+        {
+            let _change = self.storage.change();
+            self.inner.sync()?;
+            state
+                .synced
+                .pin()
+                .insert(self.path.clone(), self.inner.len());
+        }
         self.storage.capture(&self.path, "after syncing");
         Ok(())
     }

@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use tessarikv_format::{Table, TableMeta};
+use tessarikv_types::compare_internal;
 
 use super::table_blocks::TableBlocks;
 use super::tables;
@@ -127,6 +128,36 @@ impl View {
         Ok(Self { tables, files })
     }
 
+    /// This view with the table files numbered in `removed` replaced by `added`, the outputs of
+    /// a compaction of `keyspace`; every level keeps its order.
+    pub(crate) fn after_compaction(
+        &self,
+        keyspace: u32,
+        removed: &[u64],
+        added: Vec<TableFile>,
+    ) -> Self {
+        let mut files: Vec<TableFile> = self
+            .files
+            .iter()
+            .filter(|file| file.meta.keyspace != keyspace || !removed.contains(&file.meta.id))
+            .cloned()
+            .collect();
+        files.extend(added);
+        // Stable: level 0 keeps its newest-first order, every other level is put in key order.
+        files.sort_by(|left, right| {
+            (left.meta.keyspace, left.meta.level)
+                .cmp(&(right.meta.keyspace, right.meta.level))
+                .then_with(|| match left.meta.level {
+                    0 => std::cmp::Ordering::Equal,
+                    _ => compare_internal(&left.meta.smallest, &right.meta.smallest),
+                })
+        });
+        Self {
+            tables: self.shared_tables(),
+            files,
+        }
+    }
+
     /// The table holding the writes of `epoch`.
     ///
     /// # Errors
@@ -156,6 +187,17 @@ impl View {
             .ok_or(Error::Memtable {
                 reason: "no in-memory table holds the epoch being flushed",
             })
+    }
+
+    /// The in-memory tables with their epochs, shared with a new view.
+    fn shared_tables(&self) -> Vec<EpochTable> {
+        self.tables
+            .iter()
+            .map(|kept| EpochTable {
+                epoch: kept.epoch,
+                table: Arc::clone(&kept.table),
+            })
+            .collect()
     }
 
     /// The in-memory tables, newest first.

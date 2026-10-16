@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessarikv_format::{Compression, ManifestEdit, TableMeta, TableOptions};
 
@@ -21,6 +22,7 @@ pub(super) struct Job {
     pub(super) options: TableOptions,
     pub(super) table: Arc<Memtable>,
     pub(super) flushed: u64,
+    pub(super) numbers: Arc<FileNumbers>,
     /// The cache the new table file reads its data blocks through.
     pub(super) cache: Arc<BlockCache>,
 }
@@ -41,7 +43,7 @@ impl Job {
             return Ok(None);
         }
         let built = build(&self.table, self.options)?;
-        let id = manifest.version().next_file();
+        let id = self.numbers.take()?;
         let path = table_path(&self.dir, id);
         let mut file = self.storage.create(&path)?;
         file.append(&built.bytes)?;
@@ -58,7 +60,7 @@ impl Job {
             min_sequence: built.min_sequence,
             max_sequence: built.max_sequence,
         };
-        edit.next_file = Some(id.checked_add(1).ok_or(Error::SequenceExhausted)?);
+        edit.next_file = Some(self.numbers.bound());
         edit.added.push(meta.clone());
         manifest.append(&edit)?;
         // The metadata comes from the bytes just written; data blocks from the file.
@@ -74,6 +76,49 @@ impl Job {
             table,
             blocks,
         }))
+    }
+}
+
+/// Table file numbers, handed out once each to flushes and compactions that run side by side.
+#[derive(Debug)]
+pub(super) struct FileNumbers {
+    next: AtomicU64,
+}
+
+impl FileNumbers {
+    /// Numbers from `next` on.
+    pub(super) fn new(next: u64) -> Self {
+        Self {
+            next: AtomicU64::new(next),
+        }
+    }
+
+    /// A number no other table has had.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::SequenceExhausted`] when the numbers have run out.
+    pub(super) fn take(&self) -> Result<u64> {
+        // Relaxed: uniqueness comes from the read-modify-write alone; nothing else is published.
+        let mut next = self.next.load(Ordering::Relaxed);
+        loop {
+            let after = next.checked_add(1).ok_or(Error::SequenceExhausted)?;
+            match self
+                .next
+                .compare_exchange_weak(next, after, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(taken) => return Ok(taken),
+                Err(seen) => next = seen,
+            }
+        }
+    }
+
+    /// Above every number taken so far by this thread or by a job joined since: the next file
+    /// number an edit records. Edits are appended one at a time, so the bound they record only
+    /// grows.
+    pub(super) fn bound(&self) -> u64 {
+        // Relaxed: this thread's own takes, and those of joined jobs, are ordered before it.
+        self.next.load(Ordering::Relaxed)
     }
 }
 

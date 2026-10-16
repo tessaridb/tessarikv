@@ -13,6 +13,7 @@
 //! table file in the background (see `installer`); in memory, every batch stays in memory.
 
 mod block_cache;
+mod compaction;
 mod flush_job;
 mod flush_signals;
 mod installer;
@@ -30,6 +31,10 @@ mod write;
 
 #[cfg(test)]
 mod cache_tests;
+#[cfg(test)]
+mod compaction_model_tests;
+#[cfg(test)]
+mod compaction_tests;
 #[cfg(test)]
 mod crash_step_tests;
 #[cfg(test)]
@@ -99,7 +104,7 @@ pub struct Db {
     /// The tables reads consult and writes land in.
     view: Arc<ArcSwap<View>>,
     /// The snapshots readers hold, which compaction keeps versions for.
-    snapshots: SnapshotRegistry,
+    snapshots: Arc<SnapshotRegistry>,
     /// Set while a switch runs, so switches never overlap.
     #[cfg(test)]
     switching: std::sync::atomic::AtomicBool,
@@ -133,7 +138,7 @@ impl Db {
             StorageMode::Memory => Ok(Self {
                 sequencer: Arc::new(Sequencer::new(0, COMMIT_RING_SLOTS)),
                 view: Arc::new(ArcSwap::from_pointee(View::new(0, Memtable::new()))),
-                snapshots: SnapshotRegistry::new(),
+                snapshots: Arc::new(SnapshotRegistry::new()),
                 #[cfg(test)]
                 switching: std::sync::atomic::AtomicBool::new(false),
                 log: None,

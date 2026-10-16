@@ -13,7 +13,9 @@ logged. On storage, a full in-memory table is flushed in the background to a tab
 a synced manifest, and the log segments it covers are removed; opening reads the manifest and its
 table files and replays only the log above them. A table file keeps only its index, filter and
 properties in memory; data blocks are read on demand through a lock-free CLOCK block cache of
-`DbOptions::block_cache_bytes`, on a blocking thread when a block is not cached. Writes wait while the in-memory tables
+`DbOptions::block_cache_bytes`, on a blocking thread when a block is not cached. Table files are compacted in the
+background into sorted levels sized from the bottom up; versions no snapshot can read are dropped, and a point read
+consults the level-0 tables holding its key and one table per deeper level. Writes wait while the in-memory tables
 awaiting flushes reach the keyspace's limit. Underneath it:
 
 - the internal-key encoding and its ordering (`tessarikv-types`);

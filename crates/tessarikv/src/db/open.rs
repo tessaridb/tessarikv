@@ -9,7 +9,7 @@ use tessarikv_sync::Sequencer;
 
 use super::Db;
 use super::block_cache::BlockCache;
-use super::flush_job::table_path;
+use super::flush_job::{FileNumbers, table_path};
 use super::installer::{Flusher, Installer};
 use super::recover::recover;
 use super::table_blocks::open_table;
@@ -84,6 +84,8 @@ impl Db {
         )?;
         let sequencer = Arc::new(Sequencer::new(last_sequence, COMMIT_RING_SLOTS));
         let view = Arc::new(arc_swap::ArcSwap::from_pointee(view));
+        let snapshots = Arc::new(tessarikv_sync::SnapshotRegistry::new());
+        let next_file = manifest.version().next_file();
         let installer = Installer::start(Flusher {
             storage,
             dir: path,
@@ -93,11 +95,13 @@ impl Db {
             log: log.releaser(),
             keyspace,
             cache,
+            snapshots: Arc::clone(&snapshots),
+            numbers: Arc::new(FileNumbers::new(next_file)),
         });
         Ok(Self {
             sequencer,
             view,
-            snapshots: tessarikv_sync::SnapshotRegistry::new(),
+            snapshots,
             #[cfg(test)]
             switching: std::sync::atomic::AtomicBool::new(false),
             log: Some(log),

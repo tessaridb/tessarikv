@@ -61,6 +61,12 @@ All notable changes to this project are documented here. The format follows
   blocking thread, and `ReadOptions::fill_cache = false` leaves the cache as it was. `Table::open_with` opens a
   table through positional reads with its data blocks served by a `BlockSource`, and `TableIter::pending` /
   `resume` let a walk wait for a block. A block read whose thread stops returns `Error::ReadFailed`.
+- Leveled compaction: level 0 goes whole into the base level once it holds
+  `KeyspaceOptions::level0_compaction_trigger` tables, and a level over its target (computed from the bottom level up
+  with `level_base_bytes` and `level_size_multiplier`) moves its least-overlapping table down; outputs close at
+  `target_file_bytes` between keys. A compaction keeps the newest version per snapshot, drops a delete nothing below
+  needs, carries range deletes, and removes its inputs once no reader holds them. A point read consults only the
+  tables whose range holds its key. `Error::CompactionFailed` stops writes like a failed flush.
 - Write stall: full in-memory tables queue for their flushes, up to `KeyspaceOptions::max_immutable_memtables`; past
   that a write waits for the next flush, or returns `Error::WriteStalled` when `WriteOptions::no_slowdown` is set.
 - Options: `DbOptions`, `KeyspaceOptions` with the `point_lookup`, `write_heavy` and `bulk_load`

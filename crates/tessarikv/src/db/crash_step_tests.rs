@@ -1,5 +1,6 @@
-//! A crash at any durable step of a flush keeps every acknowledged write: the table written, the
-//! table synced, the manifest edit synced, the log segment it covers removed.
+//! A crash at any durable step of a flush or a compaction keeps every acknowledged write: a
+//! table written, a table synced, the manifest edit synced, the log segment a flush covers
+//! removed, the input tables of a compaction removed.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,11 +18,19 @@ use crate::{
 /// About 1.6 MiB of log: past the first segment, and some twenty-five flushes.
 const WRITES: u32 = 400;
 
-fn options() -> DbOptions {
-    let keyspace = KeyspaceOptions::builder()
-        .memtable_bytes(64 * 1024)
-        .build()
-        .expect("valid");
+/// Tiny memtables; with `compacting`, a level-0 trigger of two and small levels as well.
+fn options(compacting: bool) -> DbOptions {
+    let keyspace = KeyspaceOptions::builder().memtable_bytes(64 * 1024);
+    let keyspace = if compacting {
+        keyspace
+            .level0_compaction_trigger(2)
+            .level_base_bytes(64 * 1024)
+            .level_size_multiplier(2)
+            .target_file_bytes(16 * 1024)
+    } else {
+        keyspace
+    };
+    let keyspace = keyspace.build().expect("valid");
     DbOptions::builder()
         .default_keyspace(keyspace)
         .wal_segment_bytes(1024 * 1024)
@@ -29,8 +38,8 @@ fn options() -> DbOptions {
         .expect("valid")
 }
 
-async fn open(storage: &FaultStorage) -> Db {
-    Db::open_with_storage(PATH, options(), Arc::new(storage.clone()))
+async fn open(storage: &FaultStorage, compacting: bool) -> Db {
+    Db::open_with_storage(PATH, options(compacting), Arc::new(storage.clone()))
         .await
         .expect("opened")
 }
@@ -54,9 +63,9 @@ async fn write_counting(db: &Db, acknowledged: &AtomicU64) {
 
 /// Reopens `image` and checks that it holds a prefix of the writes, covering every write
 /// acknowledged before the image was taken.
-async fn check(image: CrashImage) {
+async fn check(image: CrashImage, compacting: bool) {
     let step = &image.step;
-    let db = Db::open_with_storage(PATH, options(), Arc::new(image.storage))
+    let db = Db::open_with_storage(PATH, options(compacting), Arc::new(image.storage))
         .await
         .unwrap_or_else(|error| panic!("{step}: reopen failed: {error}"));
     let mut present = 0_u32;
@@ -82,10 +91,11 @@ async fn check(image: CrashImage) {
     db.close().await.expect("closed");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_crash_at_any_install_step_keeps_every_acknowledged_write() {
+/// Writes with crash images captured at every durable step, then checks every image; returns
+/// the steps crashed at.
+async fn crash_everywhere(compacting: bool) -> Vec<String> {
     let storage = FaultStorage::default();
-    let db = open(&storage).await;
+    let db = open(&storage, compacting).await;
     let acknowledged = Arc::new(AtomicU64::new(0));
     storage.capture_steps(Path::new(PATH), Arc::clone(&acknowledged));
     write_counting(&db, &acknowledged).await;
@@ -94,13 +104,24 @@ async fn a_crash_at_any_install_step_keeps_every_acknowledged_write() {
         !storage.exists(&first_segment).expect("exists")
     })
     .await;
+    if compacting {
+        until("a table below level 0", || {
+            db.view.load().files(0).any(|file| file.meta.level > 0)
+        })
+        .await;
+    }
     db.close().await.expect("closed");
-
     let images = storage.take_images();
     let steps: Vec<String> = images.iter().map(|image| image.step.clone()).collect();
     for image in images {
-        check(image).await;
+        check(image, compacting).await;
     }
+    steps
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crash_at_any_install_step_keeps_every_acknowledged_write() {
+    let steps = crash_everywhere(false).await;
     // Every install step was crashed at.
     for (step, file) in [
         ("before syncing", ".sst"),
@@ -116,4 +137,15 @@ async fn a_crash_at_any_install_step_keeps_every_acknowledged_write() {
             "no image {step} a {file} file"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crash_at_any_compaction_step_keeps_every_acknowledged_write() {
+    let steps = crash_everywhere(true).await;
+    assert!(
+        steps
+            .iter()
+            .any(|taken| taken.starts_with("removed") && taken.contains(".sst")),
+        "no image after a compaction removed an input table"
+    );
 }
