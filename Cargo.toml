@@ -42,7 +42,7 @@ getrandom = "0.4.3"
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)"] }
 
 [workspace.lints.clippy]
 cast_possible_truncation = "deny"

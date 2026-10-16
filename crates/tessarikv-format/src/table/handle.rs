@@ -157,7 +157,8 @@ impl Footer {
             });
         }
         let checksum = crc32c::crc32c(bytes.get(..FOOTER_CHECKSUM_AT).unwrap_or_default());
-        if checksum != u32_at(FOOTER_CHECKSUM_AT) {
+        // A fuzzing build skips the comparison so mutated input reaches the decoders behind it.
+        if !cfg!(fuzzing) && checksum != u32_at(FOOTER_CHECKSUM_AT) {
             return Err(Error::Malformed {
                 what: "table footer",
                 reason: "checksum mismatch",
@@ -265,7 +266,8 @@ pub(super) fn unseal(sealed: &[u8], at: u64, sealer: Option<&FileSealer>) -> Res
         .and_then(|field| field.try_into().ok())
         .map(u32::from_le_bytes)
         .ok_or(corrupt("seal"))?;
-    if crc32c::crc32c_append(crc32c::crc32c(stored), &[kind]) != expected {
+    // A fuzzing build skips the comparison so mutated input reaches the decompressors.
+    if !cfg!(fuzzing) && crc32c::crc32c_append(crc32c::crc32c(stored), &[kind]) != expected {
         return Err(corrupt("checksum mismatch"));
     }
     codec::decompress(kind, stored).map_err(corrupt)
