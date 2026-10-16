@@ -52,8 +52,13 @@ fn a_filter_smaller_than_a_line_still_has_one() {
 #[test]
 fn concurrent_inserts_are_all_seen_once_published() {
     let threads = 4_u64;
-    let per_thread = 20_000_u64;
-    let bloom = Arc::new(ConcurrentBloom::new(256 * 1024));
+    // Under Miri a smaller filter and fewer inserts keep the run within minutes.
+    let per_thread = if cfg!(miri) { 200_u64 } else { 20_000_u64 };
+    let bloom = Arc::new(ConcurrentBloom::new(if cfg!(miri) {
+        4 * 1024
+    } else {
+        256 * 1024
+    }));
     let start = Arc::new(Barrier::new(usize::try_from(threads).unwrap()));
     let workers: Vec<_> = (0..threads)
         .map(|thread| {
@@ -74,12 +79,17 @@ fn concurrent_inserts_are_all_seen_once_published() {
 
 #[test]
 fn a_reader_that_sees_a_publication_sees_the_hashes_inserted_before_it() {
-    let bloom = Arc::new(ConcurrentBloom::new(64 * 1024));
+    let inserted = if cfg!(miri) { 200 } else { 10_000 };
+    let bloom = Arc::new(ConcurrentBloom::new(if cfg!(miri) {
+        4 * 1024
+    } else {
+        64 * 1024
+    }));
     let published = Arc::new(AtomicBool::new(false));
     let writer = {
         let (bloom, published) = (Arc::clone(&bloom), Arc::clone(&published));
         std::thread::spawn(move || {
-            for n in 0..10_000 {
+            for n in 0..inserted {
                 bloom.insert(hash(n));
             }
             published.store(true, Ordering::Release);
@@ -88,7 +98,7 @@ fn a_reader_that_sees_a_publication_sees_the_hashes_inserted_before_it() {
     let mut checked = false;
     while !checked {
         if published.load(Ordering::Acquire) {
-            assert!((0..10_000).all(|n| bloom.may_contain(hash(n))));
+            assert!((0..inserted).all(|n| bloom.may_contain(hash(n))));
             checked = true;
         } else {
             std::hint::spin_loop();

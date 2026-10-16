@@ -16,11 +16,16 @@ fn an_absent_slot_reads_as_none_and_an_installed_one_as_its_value() {
 #[test]
 fn indices_across_block_boundaries_keep_their_own_values() {
     let directory = SlotDirectory::<u64>::new();
-    let indices = [0, 1, 2, 3, 6, 7, 8, 1023, 1024, 65_535, 1 << 20];
-    for index in indices {
+    // Under Miri the far blocks (tens of thousands of slots each) take minutes to allocate.
+    let indices: &[u64] = if cfg!(miri) {
+        &[0, 1, 2, 3, 6, 7, 8, 1023, 1024]
+    } else {
+        &[0, 1, 2, 3, 6, 7, 8, 1023, 1024, 65_535, 1 << 20]
+    };
+    for &index in indices {
         directory.get_or_install(index, || index.wrapping_mul(3));
     }
-    for index in indices {
+    for &index in indices {
         assert_eq!(
             directory.get(index).copied(),
             Some(index.wrapping_mul(3)),
