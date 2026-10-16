@@ -13,23 +13,27 @@ pub(super) const SLOTS: usize = BUCKETS + 1;
 pub enum Histogram {
     /// Microseconds a point read took, from the call to its answer.
     GetMicros,
+    /// Microseconds a write took, from the call until it was applied as durably as it asked.
+    WriteMicros,
 }
 
 impl Histogram {
     /// Every histogram, in a stable order.
-    pub const ALL: [Self; 1] = [Self::GetMicros];
+    pub const ALL: [Self; 2] = [Self::GetMicros, Self::WriteMicros];
 
     /// The histogram's stable name, for exporting.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::GetMicros => "get.micros",
+            Self::WriteMicros => "write.micros",
         }
     }
 
     pub(super) const fn index(self) -> usize {
         match self {
             Self::GetMicros => 0,
+            Self::WriteMicros => 1,
         }
     }
 
@@ -37,6 +41,7 @@ impl Histogram {
     pub(super) const fn base(self) -> usize {
         match self {
             Self::GetMicros => 0,
+            Self::WriteMicros => SLOTS,
         }
     }
 }

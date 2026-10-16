@@ -11,6 +11,7 @@ use tokio::sync::{Notify, mpsc, watch};
 
 use super::segments::Segments;
 use super::{Entry, FinishedSegment, Wait};
+use crate::statistics::Statistics;
 use crate::storage::Storage;
 use crate::{Error, Result};
 
@@ -118,6 +119,14 @@ impl Writer {
     pub(super) fn with_seal_header(mut self, header: Option<[u8; SEAL_HEADER_BYTES]>) -> Self {
         if let Some(segments) = self.segments.as_mut() {
             segments.header = header;
+        }
+        self
+    }
+
+    /// Counts the bytes it writes and its syncs in `statistics`, when there are any.
+    pub(super) fn with_statistics(mut self, statistics: Option<Arc<Statistics>>) -> Self {
+        if let Some(segments) = self.segments.as_mut() {
+            segments.statistics = statistics;
         }
         self
     }

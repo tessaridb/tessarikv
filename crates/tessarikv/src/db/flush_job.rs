@@ -13,6 +13,7 @@ use super::table_blocks::open_table;
 use super::tables::build;
 use super::view::TableFile;
 use crate::memtable::Memtable;
+use crate::statistics::Ticker;
 use crate::storage::Storage;
 use crate::version::manifest::ManifestStore;
 use crate::{Error, KeyspaceOptions, Result};
@@ -65,6 +66,12 @@ impl Job {
             };
             edit.added.push(meta.clone());
             written.push((meta, path, built));
+        }
+        if let Some(statistics) = self.cache.statistics() {
+            let bytes = written
+                .iter()
+                .fold(0_u64, |total, (meta, _, _)| total.saturating_add(meta.size));
+            statistics.record(Ticker::FlushBytes, bytes);
         }
         if !written.is_empty() {
             self.storage.sync_dir(&self.dir)?;

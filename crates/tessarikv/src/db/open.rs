@@ -24,7 +24,7 @@ use super::keyspaces::options_of;
 use super::rate_limiter::RateLimiter;
 use super::recover::recover;
 use super::view::View;
-use crate::log::LogWriter;
+use crate::log::{LogExtras, LogWriter};
 use crate::sealing::Sealing;
 use crate::statistics::Statistics;
 use crate::storage::Storage;
@@ -165,7 +165,10 @@ impl Db {
             next_sequence,
             segment_bytes,
             recovered.segments,
-            log_seal,
+            LogExtras {
+                seal: log_seal,
+                statistics: statistics.clone(),
+            },
         )?;
         if replayed {
             // The replayed records are in a table the manifest names: their segments may go.

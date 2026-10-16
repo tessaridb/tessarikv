@@ -48,7 +48,7 @@ impl Db {
     /// [`Error::Conflict`] when a write committed after its snapshot touched one of its keys or,
     /// for a serializable one, something it read (see `commits`). A refused batch is not applied
     /// and reaches the log only as a skip.
-    pub(crate) async fn commit_batch(
+    pub(super) async fn commit_uncounted(
         &self,
         batch: &WriteBatch,
         options: &WriteOptions,
@@ -94,14 +94,8 @@ impl Db {
         // and handing the range over can wait or be cancelled.
         let installer = self.installer.as_ref();
         if let Some(installer) = installer {
-            installer
-                .signals
-                .admit(
-                    &self.view,
-                    options.no_slowdown,
-                    u64::try_from(batch.as_bytes().len()).unwrap_or(u64::MAX),
-                )
-                .await?;
+            let bytes = u64::try_from(batch.as_bytes().len()).unwrap_or(u64::MAX);
+            self.admit(installer, options.no_slowdown, bytes).await?;
         }
         let slot = log.reserve().await?;
         let completed = installer.map(|installer| &installer.signals.visible);

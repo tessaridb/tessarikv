@@ -73,8 +73,9 @@ All notable changes to this project are documented here. The format follows
 - `StripedCounters`: counters split over per-thread 128-byte stripes, with wait-free adds, sums exact once adds
   stop, and takes that reset a counter without losing an add.
 - `DbOptions::statistics` and `Db::statistics`: tickers since open (`Ticker`) for point reads, in-memory table
-  hits and misses, block cache hits and misses, block bytes read and filter outcomes, and a point-read latency
-  `Histogram` covering the interval since the previous read.
+  hits and misses, block cache hits and misses, block bytes read, filter outcomes, entries and bytes written,
+  log bytes and syncs, stall time, flush bytes, compaction bytes read and written and entries compactions
+  dropped; point-read and write latency `Histogram`s covering the interval since the previous read.
 - `DbOptions::max_open_files`: keeps at most that many table files open (zero, the default, keeps every one);
   a read of a file let go opens it again, and a removed file lets go of its handle.
 - Opening refuses a log whose segments skip a number (a segment removed from outside), in every recovery mode,

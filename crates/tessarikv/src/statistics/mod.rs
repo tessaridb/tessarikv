@@ -36,11 +36,29 @@ pub enum Ticker {
     BloomUseful,
     /// Table files whose filter said the key may be present, so their blocks were read.
     BloomMaybe,
+    /// Entries written by committed batches (puts, deletes and range deletes).
+    KeysWritten,
+    /// Bytes of committed batches, as encoded.
+    BytesWritten,
+    /// Bytes appended to the write-ahead log, frame headers included.
+    WalBytes,
+    /// Syncs of the write-ahead log: one serves every write waiting on it.
+    WalSyncs,
+    /// Microseconds writes waited for flushes or compaction before going ahead.
+    StallMicros,
+    /// Bytes of table files written by flushes.
+    FlushBytes,
+    /// Bytes of table files compactions read.
+    CompactionBytesRead,
+    /// Bytes of table files compactions wrote.
+    CompactionBytesWritten,
+    /// Entries compactions left out: overwritten or deleted versions no snapshot needs.
+    CompactionKeysDropped,
 }
 
 impl Ticker {
     /// Every ticker, in a stable order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 17] = [
         Self::GetCalls,
         Self::MemtableHit,
         Self::MemtableMiss,
@@ -49,6 +67,15 @@ impl Ticker {
         Self::BlockBytesRead,
         Self::BloomUseful,
         Self::BloomMaybe,
+        Self::KeysWritten,
+        Self::BytesWritten,
+        Self::WalBytes,
+        Self::WalSyncs,
+        Self::StallMicros,
+        Self::FlushBytes,
+        Self::CompactionBytesRead,
+        Self::CompactionBytesWritten,
+        Self::CompactionKeysDropped,
     ];
 
     /// The ticker's stable name, for exporting.
@@ -63,6 +90,15 @@ impl Ticker {
             Self::BlockBytesRead => "block.bytes.read",
             Self::BloomUseful => "bloom.useful",
             Self::BloomMaybe => "bloom.maybe",
+            Self::KeysWritten => "keys.written",
+            Self::BytesWritten => "bytes.written",
+            Self::WalBytes => "wal.bytes",
+            Self::WalSyncs => "wal.syncs",
+            Self::StallMicros => "stall.micros",
+            Self::FlushBytes => "flush.bytes",
+            Self::CompactionBytesRead => "compaction.bytes.read",
+            Self::CompactionBytesWritten => "compaction.bytes.written",
+            Self::CompactionKeysDropped => "compaction.keys.dropped",
         }
     }
 
@@ -77,6 +113,15 @@ impl Ticker {
             Self::BlockBytesRead => 5,
             Self::BloomUseful => 6,
             Self::BloomMaybe => 7,
+            Self::KeysWritten => 8,
+            Self::BytesWritten => 9,
+            Self::WalBytes => 10,
+            Self::WalSyncs => 11,
+            Self::StallMicros => 12,
+            Self::FlushBytes => 13,
+            Self::CompactionBytesRead => 14,
+            Self::CompactionBytesWritten => 15,
+            Self::CompactionKeysDropped => 16,
         }
     }
 }

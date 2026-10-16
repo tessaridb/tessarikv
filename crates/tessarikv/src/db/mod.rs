@@ -41,6 +41,7 @@ mod table_versions;
 mod tables;
 mod view;
 mod write;
+mod write_statistics;
 
 #[cfg(test)]
 mod approximate_size_tests;
@@ -118,6 +119,8 @@ mod recovery_tests;
 mod stall_tests;
 #[cfg(test)]
 mod statistics_tests;
+#[cfg(test)]
+mod statistics_write_tests;
 #[cfg(test)]
 mod switch_tests;
 #[cfg(test)]

@@ -43,6 +43,7 @@ use tessarikv_format::{FileSealer, SealHeader};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+use crate::statistics::Statistics;
 use crate::storage::Storage;
 use crate::{Error, Result};
 
@@ -126,6 +127,14 @@ pub(crate) struct LogWriter {
     sealer: Option<Arc<FileSealer>>,
 }
 
+/// What a log needs beyond where its segments go: the seal of an encrypted log, and where it
+/// counts the bytes it writes and its syncs.
+#[derive(Default)]
+pub(crate) struct LogExtras {
+    pub(crate) seal: Option<(SealHeader, Arc<FileSealer>)>,
+    pub(crate) statistics: Option<Arc<Statistics>>,
+}
+
 impl LogWriter {
     /// Starts the log writer task on the current tokio runtime. Its first segment is
     /// `log_number` in `dir`, created when the first frame arrives; it expects the first entry
@@ -144,8 +153,9 @@ impl LogWriter {
         next_sequence: u64,
         segment_bytes: u64,
         finished: Vec<FinishedSegment>,
-        seal: Option<(SealHeader, Arc<FileSealer>)>,
+        extras: LogExtras,
     ) -> Result<Self> {
+        let LogExtras { seal, statistics } = extras;
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Unsupported {
             what: "a database outside a tokio runtime",
         })?;
@@ -161,7 +171,8 @@ impl LogWriter {
             finished,
             Arc::clone(&released),
         )
-        .with_seal_header(seal.as_ref().map(|(header, _)| header.encode()));
+        .with_seal_header(seal.as_ref().map(|(header, _)| header.encode()))
+        .with_statistics(statistics);
         let task = runtime.spawn(writer.run(receiver, publisher));
         Ok(Self {
             entries,

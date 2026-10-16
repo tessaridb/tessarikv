@@ -109,8 +109,8 @@ async fn segments_found_on_storage_are_released_too() {
             last: 6,
         },
     ];
-    let log =
-        LogWriter::start(files, dir(), 3, 7, 1 << 20, finished, None).expect("inside a runtime");
+    let log = LogWriter::start(files, dir(), 3, 7, 1 << 20, finished, LogExtras::default())
+        .expect("inside a runtime");
     log.releaser().release_through(5);
     removed(&storage, 1).await;
     log.close().await.expect("closed");

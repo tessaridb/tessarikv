@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tessarikv_format::{FRAME_HEADER_BYTES, SEAL_HEADER_BYTES, frame_header};
 
 use super::{FinishedSegment, Frame, segment_path};
+use crate::statistics::{Statistics, Ticker};
 use crate::storage::{Storage, WritableFile};
 use crate::{Error, Result};
 
@@ -28,6 +29,8 @@ pub(super) struct Segments {
     finished: VecDeque<FinishedSegment>,
     /// The seal header every new segment starts with, when the log is encrypted.
     pub(super) header: Option<[u8; SEAL_HEADER_BYTES]>,
+    /// Where the bytes written and the syncs are counted, when the database keeps statistics.
+    pub(super) statistics: Option<Arc<Statistics>>,
 }
 
 impl Segments {
@@ -50,6 +53,7 @@ impl Segments {
             current_last: 0,
             finished: finished.into(),
             header: None,
+            statistics: None,
         }
     }
 
@@ -86,6 +90,7 @@ impl Segments {
         self.append()?;
         if sync && let Some(file) = self.file.as_mut() {
             file.sync()?;
+            self.count(Ticker::WalSyncs, 1);
         }
         Ok(())
     }
@@ -103,6 +108,8 @@ impl Segments {
             && !self.buffer.is_empty()
         {
             file.append(&self.buffer)?;
+            let bytes = u64::try_from(self.buffer.len()).unwrap_or(u64::MAX);
+            self.count(Ticker::WalBytes, bytes);
         }
         self.buffer.clear();
         Ok(())
@@ -113,6 +120,7 @@ impl Segments {
         self.append()?;
         if let Some(mut file) = self.file.take() {
             file.sync()?;
+            self.count(Ticker::WalSyncs, 1);
         }
         self.finished.push_back(FinishedSegment {
             log_number: self.log_number,
@@ -120,6 +128,13 @@ impl Segments {
         });
         self.log_number = self.log_number.checked_add(1).ok_or(Error::LogFailed)?;
         Ok(())
+    }
+
+    /// Adds `amount` to `ticker`, when the database keeps statistics.
+    fn count(&self, ticker: Ticker, amount: u64) {
+        if let Some(statistics) = &self.statistics {
+            statistics.record(ticker, amount);
+        }
     }
 
     /// Whether the oldest finished segment holds nothing past `through`.

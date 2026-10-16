@@ -26,6 +26,7 @@ use crate::db::flush_job::table_options;
 use crate::db::installer::Flusher;
 use crate::db::tables::{self, format_error, user_key};
 use crate::db::view::TableFile;
+use crate::statistics::{Statistics, Ticker};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
@@ -154,6 +155,9 @@ impl Job {
         if !written.is_empty() {
             self.to.storage.sync_dir(&self.to.dir)?;
         }
+        if let Some(statistics) = self.to.cache.statistics() {
+            count(statistics, &self.inputs, &written);
+        }
         Ok(written)
     }
 
@@ -272,4 +276,23 @@ fn corrupt() -> Error {
         offset: None,
         detail: "a stored key has no trailer or a kind this build does not read".to_owned(),
     }
+}
+
+/// Counts a compaction of `inputs` into `outputs`: the bytes it read and wrote, and the entries
+/// it left out.
+fn count(statistics: &Statistics, inputs: &[TableFile], outputs: &[TableFile]) {
+    let bytes = |files: &[TableFile]| {
+        files
+            .iter()
+            .fold(0_u64, |total, file| total.saturating_add(file.meta.size))
+    };
+    let entries = |files: &[TableFile]| {
+        files.iter().fold(0_u64, |total, file| {
+            total.saturating_add(file.table.entries())
+        })
+    };
+    statistics.record(Ticker::CompactionBytesRead, bytes(inputs));
+    statistics.record(Ticker::CompactionBytesWritten, bytes(outputs));
+    let dropped = entries(inputs).saturating_sub(entries(outputs));
+    statistics.record(Ticker::CompactionKeysDropped, dropped);
 }
