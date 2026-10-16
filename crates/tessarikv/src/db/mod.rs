@@ -64,6 +64,8 @@ mod keyspace_compaction_tests;
 #[cfg(test)]
 mod keyspace_create_tests;
 #[cfg(test)]
+mod keyspace_drop_tests;
+#[cfg(test)]
 mod keyspace_open_tests;
 #[cfg(test)]
 mod keyspace_tests;

@@ -155,7 +155,8 @@ async fn run(
             }
             Some(command) = requests.recv(), if !stopping => match command {
                 Command::Compact(request) => compactions.request(request),
-                Command::Create(create) => catalog.request(create),
+                Command::Create(create) => catalog.create(create),
+                Command::Drop(drop) => catalog.drop_keyspace(drop),
             },
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
@@ -197,7 +198,7 @@ async fn settle(
     start: bool,
 ) -> Result<()> {
     let stepped = async {
-        let created = catalog.step(flusher).await?;
+        let created = catalog.step(flusher, compactions).await?;
         Ok::<_, Error>(compactions.step(flusher, start).await? || created)
     };
     match stepped.await {

@@ -8,7 +8,7 @@ use tessarikv_types::KeyspaceId;
 use tokio::sync::oneshot;
 
 use super::Db;
-use super::catalog::{Command, Create, check_new};
+use super::catalog::{Command, Create, DropKeyspace, check_new};
 use super::installer::Flusher;
 use super::view::Names;
 use crate::memtable::Memtable;
@@ -81,6 +81,57 @@ impl Db {
             .await
             .map_err(|_| stopped())?;
         created.await.map_err(|_| stopped())?
+    }
+
+    /// Drops `keyspace` with every key it holds: reads and writes naming it are refused from now
+    /// on, while a write that found it before still applies its other entries. Its table files
+    /// are removed once no reader holds them. Its name may be taken again, by a keyspace with a
+    /// new id. On storage the drop is recorded before this returns, and later opens must no longer
+    /// name it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] for the default keyspace, which is never dropped,
+    /// [`Error::UnknownKeyspace`] for a keyspace this database does not hold; on storage,
+    /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work stopped,
+    /// and the storage's error when recording the drop failed.
+    pub async fn drop_keyspace(&self, keyspace: KeyspaceId) -> Result<()> {
+        if keyspace == KeyspaceId::DEFAULT {
+            return Err(Error::InvalidArgument {
+                what: "dropping a keyspace",
+                reason: "the default keyspace is never dropped",
+            });
+        }
+        let Some(installer) = &self.installer else {
+            return self.drop_in_memory(keyspace.get());
+        };
+        let (done, dropped) = oneshot::channel();
+        let stopped = || installer.signals.failure().unwrap_or(Error::FlushFailed);
+        installer
+            .requests
+            .send(Command::Drop(DropKeyspace {
+                keyspace: keyspace.get(),
+                done,
+            }))
+            .await
+            .map_err(|_| stopped())?;
+        dropped.await.map_err(|_| stopped())?
+    }
+
+    /// Drops a keyspace of a database without a manifest, publishing the view without it by
+    /// compare-and-swap.
+    fn drop_in_memory(&self, keyspace: u32) -> Result<()> {
+        loop {
+            let current = self.view.load_full();
+            if !current.holds(keyspace) {
+                return Err(Error::UnknownKeyspace { keyspace });
+            }
+            let (next, _) = current.without_keyspace(keyspace);
+            let previous = self.view.compare_and_swap(&current, Arc::new(next));
+            if Arc::ptr_eq(&previous, &current) {
+                return Ok(());
+            }
+        }
     }
 
     /// Creates a keyspace in a database without a manifest: the view naming it is published by
@@ -159,6 +210,11 @@ impl Flusher {
     /// The options of `keyspace`; the default keyspace's for 0.
     pub(super) fn keyspace_options(&self, keyspace: u32) -> &KeyspaceOptions {
         options_of(&self.keyspaces, &self.keyspace, keyspace)
+    }
+
+    /// Whether `keyspace` is held: the default one, or one opened or created and not dropped.
+    pub(super) fn holds(&self, keyspace: u32) -> bool {
+        keyspace == 0 || self.keyspaces.iter().any(|(id, _)| *id == keyspace)
     }
 
     /// Every keyspace held, the default one first, with its options.

@@ -1,19 +1,24 @@
-//! Keyspaces created while the database runs.
+//! Keyspaces created and dropped while the database runs.
 //!
 //! On storage the installer is the one writer of the manifest and of the view, so a change goes
 //! to it as a [`Command`] and waits on its own reply channel. It is made once the manifest is at
-//! hand (a running flush holds it): one synced manifest edit records the keyspace with an id never
-//! handed out before, then the installer takes the keyspace's options and publishes a view in
-//! which it holds an in-memory table. A failed edit stops the installer like a failed flush.
+//! hand (a running flush holds it), as one synced manifest edit and then a new view. A creation
+//! records the keyspace with an id never handed out before and gives it an in-memory table. A
+//! drop removes the keyspace and its tables; its files go once no reader holds them, a flush or
+//! compaction of it writes nothing, its range requests are refused, and a write that found it
+//! before the drop still applies its other entries (see `Db::apply`). A failed edit stops the
+//! installer like a failed flush.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 use tessarikv_constants as limits;
-use tessarikv_format::{KeyspaceRecord, ManifestEdit};
+use tessarikv_constants::LEVELS;
+use tessarikv_format::{KeyspaceRecord, ManifestEdit, TableRef};
 use tessarikv_types::KeyspaceId;
 use tokio::sync::oneshot;
 
+use super::compaction::Compactions;
 use super::compaction::manual::Request;
 use super::installer::Flusher;
 use crate::memtable::Memtable;
@@ -26,6 +31,8 @@ pub(crate) enum Command {
     Compact(Request),
     /// Create a keyspace (see [`crate::Db::create_keyspace`]).
     Create(Create),
+    /// Drop a keyspace (see [`crate::Db::drop_keyspace`]).
+    Drop(DropKeyspace),
 }
 
 /// A request to create the keyspace `name` with `options`, and where its id goes.
@@ -35,16 +42,33 @@ pub(crate) struct Create {
     pub(crate) done: oneshot::Sender<Result<KeyspaceId>>,
 }
 
-/// Keyspace changes waiting for the manifest.
+/// A request to drop `keyspace`, and where the outcome goes.
+pub(crate) struct DropKeyspace {
+    pub(crate) keyspace: u32,
+    pub(crate) done: oneshot::Sender<Result<()>>,
+}
+
+/// A keyspace change waiting for the manifest.
+enum Change {
+    Create(Create),
+    Drop(DropKeyspace),
+}
+
+/// Keyspace changes waiting for the manifest, in the order asked.
 #[derive(Default)]
 pub(super) struct Catalog {
-    queued: VecDeque<Create>,
+    queued: VecDeque<Change>,
 }
 
 impl Catalog {
-    /// Queues a change; [`Catalog::step`] makes it.
-    pub(super) fn request(&mut self, create: Create) {
-        self.queued.push_back(create);
+    /// Queues a creation; [`Catalog::step`] makes it.
+    pub(super) fn create(&mut self, create: Create) {
+        self.queued.push_back(Change::Create(create));
+    }
+
+    /// Queues a drop; [`Catalog::step`] makes it.
+    pub(super) fn drop_keyspace(&mut self, drop: DropKeyspace) {
+        self.queued.push_back(Change::Drop(drop));
     }
 
     /// Makes the waiting changes while the manifest is at hand; returns whether a new view was
@@ -53,57 +77,121 @@ impl Catalog {
     /// # Errors
     ///
     /// The manifest's error when an edit fails: the installer stops.
-    pub(super) async fn step(&mut self, flusher: &mut Flusher) -> Result<bool> {
+    pub(super) async fn step(
+        &mut self,
+        flusher: &mut Flusher,
+        compactions: &mut Compactions,
+    ) -> Result<bool> {
         let mut published = false;
         while flusher.manifest.is_some()
-            && let Some(Create {
-                name,
-                options,
-                done,
-            }) = self.queued.pop_front()
+            && let Some(change) = self.queued.pop_front()
         {
-            let Some(manifest) = flusher.manifest.as_ref() else {
-                break;
+            published |= match change {
+                Change::Create(create) => created(flusher, create).await?,
+                Change::Drop(drop) => dropped(flusher, compactions, drop).await?,
             };
-            let version = manifest.version();
-            let held = version.keyspaces().count();
-            let id = version.next_keyspace().max(1);
-            let checked = check_new(&name, version.keyspaces().map(|(_, held)| held), held)
-                .and_then(|()| {
-                    id.checked_add(1)
-                        .ok_or(refuse("its keyspace ids are exhausted"))
-                });
-            let next = match checked {
-                Ok(next) => next,
-                Err(refused) => {
-                    let _ = done.send(Err(refused));
-                    continue;
-                }
-            };
-            append(
-                flusher,
-                ManifestEdit {
-                    added_keyspaces: vec![KeyspaceRecord {
-                        id,
-                        name: name.clone(),
-                    }],
-                    next_keyspace: Some(next),
-                    ..ManifestEdit::default()
-                },
-            )
-            .await?;
-            let table = Memtable::sized(options.memtable_bytes());
-            flusher.keyspaces.push((id, options));
-            let current = flusher.view.load_full();
-            flusher
-                .view
-                .store(Arc::new(current.with_keyspace(id, &name, table)?));
-            published = true;
-            // The caller may have stopped waiting.
-            let _ = done.send(Ok(KeyspaceId::new(id)));
         }
         Ok(published)
     }
+}
+
+/// Creates a keyspace: one synced edit naming it with an id never handed out before, then its
+/// options and a view in which it holds a table. Returns whether it was created.
+async fn created(flusher: &mut Flusher, create: Create) -> Result<bool> {
+    let Create {
+        name,
+        options,
+        done,
+    } = create;
+    let Some(manifest) = flusher.manifest.as_ref() else {
+        return Ok(false);
+    };
+    let version = manifest.version();
+    let held = version.keyspaces().count();
+    let id = version.next_keyspace().max(1);
+    let checked =
+        check_new(&name, version.keyspaces().map(|(_, held)| held), held).and_then(|()| {
+            id.checked_add(1)
+                .ok_or(refuse("its keyspace ids are exhausted"))
+        });
+    let next = match checked {
+        Ok(next) => next,
+        Err(refused) => {
+            let _ = done.send(Err(refused));
+            return Ok(false);
+        }
+    };
+    let added = vec![KeyspaceRecord {
+        id,
+        name: name.clone(),
+    }];
+    append(
+        flusher,
+        ManifestEdit {
+            added_keyspaces: added,
+            next_keyspace: Some(next),
+            ..ManifestEdit::default()
+        },
+    )
+    .await?;
+    let table = Memtable::sized(options.memtable_bytes());
+    flusher.keyspaces.push((id, options));
+    let current = flusher.view.load_full();
+    flusher
+        .view
+        .store(Arc::new(current.with_keyspace(id, &name, table)?));
+    // The caller may have stopped waiting.
+    let _ = done.send(Ok(KeyspaceId::new(id)));
+    Ok(true)
+}
+
+/// Drops a keyspace: one synced edit removing its tables and the keyspace, then a view without
+/// it; its files go once no reader holds them, its range requests are answered. Returns
+/// whether it was dropped.
+async fn dropped(
+    flusher: &mut Flusher,
+    compactions: &mut Compactions,
+    drop: DropKeyspace,
+) -> Result<bool> {
+    let DropKeyspace { keyspace, done } = drop;
+    let Some(manifest) = flusher.manifest.as_ref() else {
+        return Ok(false);
+    };
+    let version = manifest.version();
+    if keyspace == 0 {
+        let _ = done.send(Err(Error::InvalidArgument {
+            what: "dropping a keyspace",
+            reason: "the default keyspace is never dropped",
+        }));
+        return Ok(false);
+    }
+    if !version.keyspaces().any(|(id, _)| id == keyspace) {
+        let _ = done.send(Err(Error::UnknownKeyspace { keyspace }));
+        return Ok(false);
+    }
+    let removed = (0..LEVELS)
+        .flat_map(|level| version.tables(keyspace, level))
+        .map(|table| TableRef {
+            keyspace,
+            level: table.level,
+            id: table.id,
+        })
+        .collect();
+    append(
+        flusher,
+        ManifestEdit {
+            removed,
+            dropped_keyspaces: vec![keyspace],
+            ..ManifestEdit::default()
+        },
+    )
+    .await?;
+    flusher.keyspaces.retain(|(id, _)| *id != keyspace);
+    let (view, files) = flusher.view.load().without_keyspace(keyspace);
+    flusher.view.store(Arc::new(view));
+    compactions.retire(files, &flusher.dir);
+    let _ = done.send(Ok(()));
+    Ok(true)
 }
 
 /// Appends `edit` to the manifest, synced, on a blocking thread.

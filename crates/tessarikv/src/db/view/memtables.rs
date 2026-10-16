@@ -16,13 +16,14 @@ impl View {
         self.tables.first().map_or(0, |newest| newest.epoch)
     }
 
-    /// This view with new, empty tables in front, one per keyspace, for the epoch after the
-    /// newest one.
+    /// This view with new, empty tables in front, one per keyspace it holds, for the epoch after
+    /// the newest one.
     pub(crate) fn with_next_table(&self) -> Self {
         let keyspaces = match self.tables.first() {
             Some(newest) => newest
                 .keyspaces
                 .iter()
+                .filter(|(keyspace, _)| self.holds(*keyspace))
                 .map(|(keyspace, table)| (*keyspace, Arc::new(table.successor())))
                 .collect(),
             None => vec![(
@@ -67,6 +68,30 @@ impl View {
             names: names.into(),
             next_keyspace: self.next_keyspace.max(id.saturating_add(1)),
         })
+    }
+
+    /// This view without keyspace `id`, and the table files it held: its name and files go,
+    /// while its in-memory tables stay in their epochs, so a write that found it before it was
+    /// dropped still finds its table; new tables leave it out (see [`View::with_next_table`]).
+    pub(crate) fn without_keyspace(&self, id: u32) -> (Self, Vec<TableFile>) {
+        let (removed, files) = self
+            .files
+            .iter()
+            .cloned()
+            .partition(|file| file.meta.keyspace == id);
+        let names: Vec<(u32, String)> = self
+            .names
+            .iter()
+            .filter(|(held, _)| *held != id)
+            .cloned()
+            .collect();
+        let view = Self {
+            tables: self.shared_tables(),
+            files,
+            names: names.into(),
+            next_keyspace: self.next_keyspace,
+        };
+        (view, removed)
     }
 
     /// The id the next keyspace takes in a database without a manifest.
@@ -163,11 +188,14 @@ impl View {
             .flat_map(|newest| newest.keyspaces.iter().map(|(_, table)| table.as_ref()))
     }
 
-    /// Whether the view serves `keyspace`.
+    /// Whether the view serves `keyspace`: the default one, or one it names. A dropped
+    /// keyspace's in-memory tables may stay until their epochs are flushed; it is not served.
     pub(crate) fn holds(&self, keyspace: u32) -> bool {
-        self.tables
-            .first()
-            .is_some_and(|newest| Self::of(newest, keyspace).is_some())
+        keyspace == 0
+            || self
+                .names
+                .binary_search_by_key(&keyspace, |(id, _)| *id)
+                .is_ok()
     }
 
     /// How many epochs have in-memory tables: the newest and those frozen behind it.

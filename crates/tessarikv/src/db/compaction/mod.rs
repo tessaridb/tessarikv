@@ -27,6 +27,7 @@ mod levels;
 pub(super) mod manual;
 mod output;
 mod pick;
+mod request;
 mod retain;
 mod split;
 mod universal;
@@ -139,10 +140,16 @@ impl Compactions {
             return Ok(published);
         }
         for (number, keyspace, pick, outputs) in std::mem::take(&mut self.ready) {
-            self.commit(flusher, keyspace, &pick, outputs).await?;
+            // A keyspace dropped while its job ran takes the job's outputs with it.
+            if flusher.holds(keyspace) {
+                self.commit(flusher, keyspace, &pick, outputs).await?;
+                published = true;
+            } else {
+                self.retire(outputs, &flusher.dir);
+            }
             self.recorded(number);
-            published = true;
         }
+        self.refuse_unheld(flusher);
         self.sweep(Arc::clone(&flusher.storage)).await;
         // Keyspace 0, then the named ones in id order: index 0 is the default keyspace.
         let mut index = 0_usize;

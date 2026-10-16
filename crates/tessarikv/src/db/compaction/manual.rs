@@ -18,15 +18,14 @@
 
 use std::sync::Arc;
 
-use tessarikv_constants::LEVELS;
-use tessarikv_format::TableMeta;
-use tokio::sync::oneshot;
-
 use super::Compactions;
 use super::pick::{Busy, Pick, Shape, targets};
+pub(crate) use super::request::Request;
+use crate::CompactionStyle;
 use crate::db::installer::Flusher;
 use crate::db::tables::user_key;
-use crate::{CompactionStyle, Result};
+use tessarikv_constants::LEVELS;
+use tessarikv_format::TableMeta;
 
 #[cfg(test)]
 #[path = "manual_tests.rs"]
@@ -34,15 +33,6 @@ mod tests;
 
 /// Requests waiting for the installer at most; more callers wait to send.
 pub(crate) const QUEUE: usize = 16;
-
-/// A caller's request: the user keys `[start, end)` of `keyspace` (unbounded above when `end`
-/// is `None`), and where the outcome goes.
-pub(crate) struct Request {
-    keyspace: u32,
-    start: Vec<u8>,
-    end: Option<Vec<u8>>,
-    done: oneshot::Sender<Result<()>>,
-}
 
 /// The request being served: the level its next step reads, the job it waits for, and the first
 /// file number written after it began.
@@ -123,24 +113,6 @@ impl Compactions {
     }
 }
 
-impl Request {
-    /// A request for the user keys `[start, end)` of `keyspace`, and where its outcome arrives.
-    pub(crate) fn new(
-        keyspace: u32,
-        start: &[u8],
-        end: Option<&[u8]>,
-    ) -> (Self, oneshot::Receiver<Result<()>>) {
-        let (done, outcome) = oneshot::channel();
-        let request = Self {
-            keyspace,
-            start: start.to_vec(),
-            end: end.map(<[u8]>::to_vec),
-            done,
-        };
-        (request, outcome)
-    }
-}
-
 impl Active {
     /// Starts serving `request`; files numbered `fresh_from` or above are written after it began.
     pub(super) fn new(request: Request, fresh_from: u64) -> Self {
@@ -155,6 +127,16 @@ impl Active {
     /// Reports success to the caller, who may have stopped waiting.
     pub(super) fn finish(self) {
         let _ = self.request.done.send(Ok(()));
+    }
+
+    /// The request being served.
+    pub(super) fn request(&self) -> &Request {
+        &self.request
+    }
+
+    /// Stops serving the request and hands it back.
+    pub(super) fn into_request(self) -> Request {
+        self.request
     }
 
     /// The request's next step over `levels`, beside the compactions `busy` describes.

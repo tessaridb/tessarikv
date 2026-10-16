@@ -134,18 +134,24 @@ impl Db {
     }
 
     /// Inserts `batch` from sequence `first` into the in-memory tables of `epoch`, each entry
-    /// into its keyspace's.
-    fn apply(&self, epoch: u8, first: u64, batch: &WriteBatch) -> Result<()> {
+    /// into its keyspace's. An entry of a keyspace dropped after the batch was checked, whose
+    /// table this epoch no longer has, goes with the keyspace, as replaying the log would drop it.
+    pub(super) fn apply(&self, epoch: u8, first: u64, batch: &WriteBatch) -> Result<()> {
         let view = self.view.load();
         let mut sequence = first;
         for entry in batch {
             let number = SequenceNumber::new(sequence).map_err(|_| Error::SequenceExhausted)?;
-            view.table(entry.keyspace.get(), epoch)?.insert(
-                number,
-                entry.kind,
-                entry.key,
-                entry.value.unwrap_or_default(),
-            )?;
+            let keyspace = entry.keyspace.get();
+            match view.table(keyspace, epoch) {
+                Ok(table) => table.insert(
+                    number,
+                    entry.kind,
+                    entry.key,
+                    entry.value.unwrap_or_default(),
+                )?,
+                Err(_) if !view.holds(keyspace) => {}
+                Err(missing) => return Err(missing),
+            }
             sequence = sequence.checked_add(1).ok_or(Error::SequenceExhausted)?;
         }
         Ok(())

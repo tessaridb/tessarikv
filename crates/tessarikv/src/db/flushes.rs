@@ -61,9 +61,11 @@ impl Flusher {
         oldest: &Frozen,
         signals: &Arc<FlushSignals>,
     ) -> Result<JoinHandle<Result<Flushed>>> {
+        // A keyspace dropped since the epoch froze has nothing to flush: its writes go with it.
         let tables = oldest
             .tables
             .iter()
+            .filter(|(keyspace, _)| self.holds(*keyspace))
             .map(|(keyspace, table)| {
                 let options = table_options(self.keyspace_options(*keyspace), 0)?;
                 Ok((*keyspace, options, Arc::clone(table)))
