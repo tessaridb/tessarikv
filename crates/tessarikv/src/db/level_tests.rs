@@ -112,7 +112,7 @@ proptest! {
             }
             let at = SequenceNumber::new(snapshot).unwrap();
             for key in 0_u8..12 {
-                let read = block_on(get_in(&view, KeyspaceId::DEFAULT, &user_key(key), at, true)).unwrap();
+                let read = block_on(get_in(&view, KeyspaceId::DEFAULT, &user_key(key), at, true, None)).unwrap();
                 prop_assert_eq!(read, expected.get(&key).map(|value| vec![*value]), "key {} at {}", key, snapshot);
             }
         }

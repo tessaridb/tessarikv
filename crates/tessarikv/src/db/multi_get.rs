@@ -5,6 +5,7 @@ use tessarikv_types::{KeyspaceId, SequenceNumber};
 use super::Db;
 use super::read::get_in;
 use super::view::View;
+use crate::statistics::Statistics;
 use crate::{ReadOptions, Result};
 
 impl Db {
@@ -25,7 +26,15 @@ impl Db {
         // The view before the sequence, as in `Db::get`: one of each for every key.
         let view = self.view.load();
         let snapshot = self.visible_sequence()?;
-        read_all(&view, keyspace, keys, snapshot, options).await
+        read_all(
+            &view,
+            keyspace,
+            keys,
+            snapshot,
+            options,
+            self.statistics.as_deref(),
+        )
+        .await
     }
 
     /// The values of `keys` in `keyspace` at `snapshot`, as [`Db::multi_get`] returns them.
@@ -38,7 +47,15 @@ impl Db {
     ) -> Result<Vec<Option<Vec<u8>>>> {
         self.check_keyspace(keyspace)?;
         let view = self.view.load();
-        read_all(&view, keyspace, keys, snapshot, options).await
+        read_all(
+            &view,
+            keyspace,
+            keys,
+            snapshot,
+            options,
+            self.statistics.as_deref(),
+        )
+        .await
     }
 }
 
@@ -49,11 +66,22 @@ async fn read_all<K: AsRef<[u8]>>(
     keys: impl IntoIterator<Item = K>,
     snapshot: SequenceNumber,
     options: &ReadOptions,
+    statistics: Option<&Statistics>,
 ) -> Result<Vec<Option<Vec<u8>>>> {
     let keys = keys.into_iter();
     let mut values = Vec::with_capacity(keys.size_hint().0);
     for key in keys {
-        values.push(get_in(view, keyspace, key.as_ref(), snapshot, options.fill_cache).await?);
+        values.push(
+            get_in(
+                view,
+                keyspace,
+                key.as_ref(),
+                snapshot,
+                options.fill_cache,
+                statistics,
+            )
+            .await?,
+        );
     }
     Ok(values)
 }

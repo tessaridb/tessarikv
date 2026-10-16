@@ -20,6 +20,7 @@ use tessarikv_sync::ClockCache;
 
 use crate::Result;
 use crate::sealing::Sealing;
+use crate::statistics::{Statistics, Ticker};
 use crate::storage::{ReadableFile, Storage};
 
 #[cfg(test)]
@@ -40,6 +41,8 @@ pub(crate) struct BlockCache {
     files: Option<FileHandles>,
     /// How table files are encrypted, when they are.
     sealing: Option<Arc<Sealing>>,
+    /// Where block reads are counted, when the database keeps statistics.
+    statistics: Option<Arc<Statistics>>,
 }
 
 /// Open table files by file id, at most [`crate::DbOptions::max_open_files`] of them: a read
@@ -61,6 +64,7 @@ impl BlockCache {
             blocks: ClockCache::new(capacity, block_bytes),
             files: None,
             sealing: None,
+            statistics: None,
         }
     }
 
@@ -82,6 +86,25 @@ impl BlockCache {
     pub(crate) fn with_sealing(mut self, sealing: Option<Arc<Sealing>>) -> Self {
         self.sealing = sealing;
         self
+    }
+
+    /// Counts block reads in `statistics`.
+    pub(crate) fn with_statistics(mut self, statistics: Option<Arc<Statistics>>) -> Self {
+        self.statistics = statistics;
+        self
+    }
+
+    /// Where reads of table files are counted; `None` when the database keeps no statistics.
+    pub(crate) fn statistics(&self) -> Option<&Statistics> {
+        self.statistics.as_deref()
+    }
+
+    /// Counts a data block not found here, of `bytes` bytes on storage, read from its file.
+    pub(crate) fn count_read(&self, bytes: u64) {
+        if let Some(statistics) = self.statistics() {
+            statistics.record(Ticker::BlockCacheMiss, 1);
+            statistics.record(Ticker::BlockBytesRead, bytes);
+        }
     }
 
     /// How table files are encrypted; `None` when they are not.
@@ -139,7 +162,11 @@ impl BlockCache {
 
     /// The block at `key`, when the cache holds it.
     pub(crate) fn get(&self, key: BlockKey) -> Option<Block> {
-        self.blocks.get(&key)
+        let block = self.blocks.get(&key);
+        if let (Some(statistics), Some(_)) = (self.statistics(), &block) {
+            statistics.record(Ticker::BlockCacheHit, 1);
+        }
+        block
     }
 
     /// Keeps `block` as the block at `key`, making room by evicting blocks not read recently. A

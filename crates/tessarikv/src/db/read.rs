@@ -1,5 +1,7 @@
 //! Point reads and ordered scans at a snapshot.
 
+use std::time::Instant;
+
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::Db;
@@ -8,6 +10,7 @@ use super::table_versions::TableVersions;
 use super::tables::{TableLookup, lookup};
 use super::view::View;
 use crate::memtable::Lookup;
+use crate::statistics::{Histogram, Statistics, Ticker};
 use crate::tombstones::Fragments;
 use crate::{ReadOptions, Result};
 
@@ -38,7 +41,15 @@ impl Db {
         // above it. The other way round, a compaction could drop a version this read needs.
         let view = self.view.load();
         let snapshot = self.visible_sequence()?;
-        get_in(&view, keyspace, key, snapshot, options.fill_cache).await
+        get_in(
+            &view,
+            keyspace,
+            key,
+            snapshot,
+            options.fill_cache,
+            self.statistics.as_deref(),
+        )
+        .await
     }
 
     /// The value of `key` in `keyspace` at `snapshot`.
@@ -52,7 +63,15 @@ impl Db {
         self.check_keyspace(keyspace)?;
         // A guard, not a shared count: holding it costs other readers nothing.
         let view = self.view.load();
-        get_in(&view, keyspace, key, snapshot, options.fill_cache).await
+        get_in(
+            &view,
+            keyspace,
+            key,
+            snapshot,
+            options.fill_cache,
+            self.statistics.as_deref(),
+        )
+        .await
     }
 
     /// Up to `limit` live entries of `keyspace` with keys in `[start, end)` (unbounded above
@@ -96,7 +115,7 @@ impl Db {
 }
 
 /// The value of `key` in `keyspace` of `view` at `snapshot`, keeping the blocks it reads in the
-/// cache unless `fill_cache` is false.
+/// cache unless `fill_cache` is false, and counted in `statistics` when there are any.
 ///
 /// # Errors
 ///
@@ -108,6 +127,28 @@ pub(super) async fn get_in(
     key: &[u8],
     snapshot: SequenceNumber,
     fill_cache: bool,
+    statistics: Option<&Statistics>,
+) -> Result<Option<Vec<u8>>> {
+    let Some(statistics) = statistics else {
+        return get_uncounted(view, keyspace, key, snapshot, fill_cache, None).await;
+    };
+    let started = Instant::now();
+    statistics.record(Ticker::GetCalls, 1);
+    let found = get_uncounted(view, keyspace, key, snapshot, fill_cache, Some(statistics)).await;
+    let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    statistics.observe(Histogram::GetMicros, micros);
+    found
+}
+
+/// [`get_in`] without the call and its time counted; `statistics` counts what the in-memory
+/// tables answered.
+async fn get_uncounted(
+    view: &View,
+    keyspace: KeyspaceId,
+    key: &[u8],
+    snapshot: SequenceNumber,
+    fill_cache: bool,
+    statistics: Option<&Statistics>,
 ) -> Result<Option<Vec<u8>>> {
     let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
     if !fragments.is_empty() {
@@ -116,15 +157,26 @@ pub(super) async fn get_in(
     // Newest first, in-memory tables before table files: the first that decides the key
     // answers for it. Without range deletes a table file whose key range misses the key cannot
     // decide it, so only the files whose range holds it are read.
-    for table in view.memtables(keyspace.get()) {
-        match table.get(key, snapshot) {
-            Lookup::Value(value) => return Ok(Some(value.to_vec())),
-            Lookup::Deleted => return Ok(None),
-            Lookup::Absent => {}
-        }
+    let decided = view
+        .memtables(keyspace.get())
+        .find_map(|table| match table.get(key, snapshot) {
+            Lookup::Value(value) => Some(Some(value.to_vec())),
+            Lookup::Deleted => Some(None),
+            Lookup::Absent => None,
+        });
+    if let Some(statistics) = statistics {
+        let ticker = if decided.is_some() {
+            Ticker::MemtableHit
+        } else {
+            Ticker::MemtableMiss
+        };
+        statistics.record(ticker, 1);
+    }
+    if let Some(value) = decided {
+        return Ok(value);
     }
     for file in view.candidates(keyspace.get(), key) {
-        match lookup(file, key, snapshot, fill_cache).await? {
+        match lookup(file, key, snapshot, fill_cache, statistics).await? {
             TableLookup::Value(value) => return Ok(Some(value)),
             TableLookup::Deleted => return Ok(None),
             TableLookup::Absent => {}

@@ -70,6 +70,11 @@ All notable changes to this project are documented here. The format follows
   the open in every recovery mode. Manifests and the options record are encrypted as well, each manifest edit
   bound to its place in the file, and the key is checked before the manifest is read. Keys rotate by id: new
   files take the current one, and an old key is needed only until no file names it.
+- `StripedCounters`: counters split over per-thread 128-byte stripes, with wait-free adds, sums exact once adds
+  stop, and takes that reset a counter without losing an add.
+- `DbOptions::statistics` and `Db::statistics`: tickers since open (`Ticker`) for point reads, in-memory table
+  hits and misses, block cache hits and misses, block bytes read and filter outcomes, and a point-read latency
+  `Histogram` covering the interval since the previous read.
 - `DbOptions::max_open_files`: keeps at most that many table files open (zero, the default, keeps every one);
   a read of a file let go opens it again, and a removed file lets go of its handle.
 - Opening refuses a log whose segments skip a number (a segment removed from outside), in every recovery mode,

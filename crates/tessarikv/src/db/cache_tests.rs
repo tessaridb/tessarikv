@@ -115,7 +115,7 @@ async fn a_read_that_asks_not_to_fill_the_cache_leaves_it_as_it_was() {
         fill_cache: false,
         ..ReadOptions::default()
     };
-    let read = get_in(&view, default, &user_key(7), at, false).await;
+    let read = get_in(&view, default, &user_key(7), at, false, None).await;
     assert_eq!(read.unwrap(), Some(vec![7; 30]));
     let page = scan_in(&view, default, from(b"", usize::MAX), at, false).await;
     assert_eq!(page.unwrap().entries.len(), 40);
@@ -126,7 +126,7 @@ async fn a_read_that_asks_not_to_fill_the_cache_leaves_it_as_it_was() {
     }
     assert_eq!(cache.used_bytes(), 0);
     // The same reads that may fill it do.
-    get_in(&view, default, &user_key(7), at, true)
+    get_in(&view, default, &user_key(7), at, true, None)
         .await
         .unwrap();
     assert!(cache.used_bytes() > 0);

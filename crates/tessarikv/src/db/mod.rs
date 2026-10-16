@@ -117,6 +117,8 @@ mod recovery_tests;
 #[cfg(test)]
 mod stall_tests;
 #[cfg(test)]
+mod statistics_tests;
+#[cfg(test)]
 mod switch_tests;
 #[cfg(test)]
 mod sync_wal_tests;
@@ -135,6 +137,7 @@ use tessarikv_sync::{Sequencer, SnapshotRegistry};
 use tessarikv_types::SequenceNumber;
 
 use crate::log::LogWriter;
+use crate::statistics::{Statistics, StatisticsSnapshot};
 use crate::storage::{OsStorage, Storage, StorageLock};
 use crate::{DbOptions, Error, Result, StorageMode};
 use view::View;
@@ -180,6 +183,8 @@ pub struct Db {
     log: Option<LogWriter>,
     /// The flush installer; none for a database in memory.
     installer: Option<installer::Installer>,
+    /// What the engine counts, when [`DbOptions::statistics`] is set.
+    statistics: Option<Arc<Statistics>>,
     /// Held for as long as the database is open.
     _lock: Option<Box<dyn StorageLock>>,
 }
@@ -222,6 +227,7 @@ impl Db {
                 limiter: None,
                 log: None,
                 installer: None,
+                statistics: options.statistics().then(|| Arc::new(Statistics::new())),
                 _lock: None,
             }),
             StorageMode::Os => Self::open_with_storage(path, options, Arc::new(OsStorage)).await,
@@ -265,6 +271,14 @@ impl Db {
     /// The snapshot a read takes: the highest sequence covering only completed batches.
     fn visible_sequence(&self) -> Result<SequenceNumber> {
         SequenceNumber::new(self.sequencer.visible()).map_err(|_| Error::SequenceExhausted)
+    }
+
+    /// What the engine counted: tickers since the database opened, and histograms since the
+    /// previous call, which this call starts a new interval for. `None` unless
+    /// [`DbOptions::statistics`] is set.
+    #[must_use]
+    pub fn statistics(&self) -> Option<StatisticsSnapshot> {
+        self.statistics.as_deref().map(Statistics::snapshot)
     }
 
     /// Whether serializable transactions can run on this database.

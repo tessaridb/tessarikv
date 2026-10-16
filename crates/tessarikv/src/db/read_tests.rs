@@ -198,7 +198,7 @@ proptest! {
             for key in 0_u8..13 {
                 let key = user_key(key);
                 prop_assert_eq!(
-                    block_on(get_in(&after, default, &key, at, true)).unwrap(),
+                    block_on(get_in(&after, default, &key, at, true, None)).unwrap(),
                     expected.get(key.as_slice()).cloned(),
                     "key {:?} at {}", key, snapshot
                 );

@@ -15,6 +15,7 @@ mod keyspace_builder;
 mod keyspaces;
 mod memory;
 mod read;
+mod statistics;
 mod transaction;
 mod write;
 

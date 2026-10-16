@@ -84,6 +84,7 @@ impl TableBlocks {
                     .map_err(|_| Error::ReadFailed)??
             }
         };
+        self.cache.count_read(handle.size());
         if fill_cache {
             self.cache.insert(self.key(handle), block.clone());
         }

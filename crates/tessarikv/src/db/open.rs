@@ -26,6 +26,7 @@ use super::recover::recover;
 use super::view::View;
 use crate::log::LogWriter;
 use crate::sealing::Sealing;
+use crate::statistics::Statistics;
 use crate::storage::Storage;
 use crate::version::Version;
 use crate::version::manifest::{CURRENT, ManifestStore};
@@ -61,10 +62,12 @@ impl Db {
         let sealing = options
             .encryption()
             .map(|encryption| Arc::new(Sealing::new(encryption)));
+        let statistics = options.statistics().then(|| Arc::new(Statistics::new()));
         let cache = Arc::new(
             BlockCache::new(options.block_cache_bytes(), keyspace.block_bytes())
                 .with_open_files(options.max_open_files(), Arc::clone(&storage))
-                .with_sealing(sealing),
+                .with_sealing(sealing)
+                .with_statistics(statistics.clone()),
         );
         let opened = {
             let storage = Arc::clone(&storage);
@@ -201,6 +204,7 @@ impl Db {
             limiter,
             log: Some(log),
             installer: Some(installer),
+            statistics,
             _lock: Some(lock),
         })
     }

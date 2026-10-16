@@ -17,6 +17,7 @@ use tessarikv_types::{
 use super::view::TableFile;
 use crate::memtable::Memtable;
 use crate::sealing::Sealing;
+use crate::statistics::{Statistics, Ticker};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
@@ -211,7 +212,7 @@ pub(crate) fn tombstones(table: &Table, out: &mut Vec<RangeTombstone>) -> Result
 }
 
 /// The newest version of `key` in `file` at `snapshot`, keeping the blocks it reads in the
-/// cache unless `fill_cache` is false.
+/// cache unless `fill_cache` is false, and counting the filter's answer in `statistics`.
 ///
 /// # Errors
 ///
@@ -222,10 +223,20 @@ pub(crate) async fn lookup(
     key: &[u8],
     snapshot: SequenceNumber,
     fill_cache: bool,
+    statistics: Option<&Statistics>,
 ) -> Result<TableLookup> {
     let mut target = Vec::with_capacity(key.len().saturating_add(TRAILER_BYTES));
     encode_internal(key, seek_trailer(snapshot), &mut target);
-    if !file.table.may_contain(&target) {
+    let may_contain = file.table.may_contain(&target);
+    if let Some(statistics) = statistics {
+        let ticker = if may_contain {
+            Ticker::BloomMaybe
+        } else {
+            Ticker::BloomUseful
+        };
+        statistics.record(ticker, 1);
+    }
+    if !may_contain {
         return Ok(TableLookup::Absent);
     }
     let mut versions = file.table.iter();

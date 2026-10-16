@@ -18,6 +18,7 @@ mod log;
 mod memtable;
 mod options;
 mod sealing;
+mod statistics;
 mod storage;
 mod tombstones;
 mod transaction;
@@ -30,6 +31,7 @@ pub use options::{
     KeyspaceOptions, KeyspaceOptionsBuilder, ReadOptions, StorageMode, TransactionOptions,
     WalRecovery, WriteOptions,
 };
+pub use statistics::{Histogram, HistogramSnapshot, StatisticsSnapshot, Ticker};
 pub use storage::{MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile};
 pub use tessarikv_format::{BatchEntry, Compression, ROOT_KEY_BYTES, RootKey, WriteBatch};
 pub use tessarikv_types::{KeyspaceId, SequenceNumber};
