@@ -222,3 +222,65 @@ async fn tables_larger_than_a_write_chunk_are_flushed_compacted_and_reopened_who
     }
     db.close().await.expect("closed");
 }
+
+/// A kilobyte that does not compress, different for every index and round.
+fn noise(index: u32, round: u32) -> Vec<u8> {
+    let mut state = u64::from(index) << 32 | u64::from(round) | 1;
+    (0..128)
+        .flat_map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()
+        })
+        .collect()
+}
+
+async fn put_noise(db: &Db, index: u32, round: u32) {
+    let mut batch = WriteBatch::new();
+    batch
+        .put(KeyspaceId::DEFAULT, &key(index), &noise(index, round))
+        .expect("entry");
+    db.write(&batch, &WriteOptions::default())
+        .await
+        .expect("written");
+}
+
+/// With versions spread over several levels, a manual compaction keeps every level newer than
+/// the ones below it: the newest write of each key still reads back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_manual_compaction_keeps_newer_versions_above_older_ones() {
+    const KEYS: u32 = 200;
+    let db = Db::open_with_storage(PATH, options(), Arc::new(FaultStorage::default()))
+        .await
+        .expect("opened");
+    for round in 0..3 {
+        for index in 0..KEYS {
+            put_noise(&db, index, round).await;
+        }
+    }
+    until("tables in two levels below level 0", || {
+        let view = db.view.load();
+        let mut levels: Vec<u8> = view
+            .files(0)
+            .map(|file| file.meta.level)
+            .filter(|level| *level > 0)
+            .collect();
+        levels.sort_unstable();
+        levels.dedup();
+        levels.len() >= 2
+    })
+    .await;
+    for index in 0..KEYS {
+        put_noise(&db, index, 9).await;
+    }
+    db.compact_range(None, None).await.expect("compacted");
+    for index in 0..KEYS {
+        let read = db
+            .get(KeyspaceId::DEFAULT, &key(index), &ReadOptions::default())
+            .await
+            .expect("read");
+        assert_eq!(read, Some(noise(index, 9)), "key {index}");
+    }
+    assert_levels_ordered(&db.view.load());
+}

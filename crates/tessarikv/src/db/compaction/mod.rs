@@ -22,6 +22,7 @@
 mod commit;
 mod fifo;
 mod job;
+pub(super) mod manual;
 mod output;
 mod pick;
 mod retain;
@@ -43,6 +44,7 @@ mod split_tests;
 #[cfg(test)]
 mod universal_tests;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
@@ -51,6 +53,7 @@ use tessarikv_format::TableMeta;
 use tokio::task::JoinSet;
 
 use self::job::Job;
+use self::manual::{Active, Request};
 use self::pick::{Busy, Pick, Shape};
 use super::installer::Flusher;
 use super::table_blocks::TableBlocks;
@@ -76,8 +79,12 @@ pub(super) struct Compactions {
     /// What each running job took, by its number.
     running: Vec<(u64, Pick)>,
     next_job: u64,
-    ready: Vec<(Pick, Vec<TableFile>)>,
+    /// Finished jobs: number, what each took and its outputs, waiting for the manifest.
+    ready: Vec<(u64, Pick, Vec<TableFile>)>,
     obsolete: Vec<(Weak<TableBlocks>, PathBuf)>,
+    /// Range requests waiting, and the one being served.
+    queued: VecDeque<Request>,
+    active: Option<Active>,
 }
 
 impl Compactions {
@@ -108,8 +115,13 @@ impl Compactions {
             .position(|(running, _)| *running == number)
             .ok_or(Error::CompactionFailed)?;
         let (_, pick) = self.running.swap_remove(at);
-        self.ready.push((pick, outputs?));
+        self.ready.push((number, pick, outputs?));
         Ok(())
+    }
+
+    /// Queues a range request; [`Compactions::step`] serves it.
+    pub(super) fn request(&mut self, request: Request) {
+        self.queued.push_back(request);
     }
 
     /// Records finished work and starts the next job, while the manifest is at hand: commits
@@ -124,8 +136,9 @@ impl Compactions {
         if flusher.manifest.is_none() {
             return Ok(published);
         }
-        for (pick, outputs) in std::mem::take(&mut self.ready) {
+        for (number, pick, outputs) in std::mem::take(&mut self.ready) {
             self.commit(flusher, &pick, outputs).await?;
+            self.recorded(number);
             published = true;
         }
         self.sweep(Arc::clone(&flusher.storage)).await;
@@ -134,25 +147,11 @@ impl Compactions {
                 return Ok(published);
             };
             let busy = self.busy();
-            let next = match flusher.keyspace.compaction() {
-                CompactionStyle::Fifo { max_table_bytes } => {
-                    fifo::pick(&levels, max_table_bytes, &busy)
-                }
-                CompactionStyle::Universal {
-                    size_ratio_percent,
-                    min_merge,
-                    max_size_amplification_percent,
-                } => universal::pick(
-                    &levels,
-                    universal::Settings {
-                        level0_trigger: shape.level0_trigger,
-                        size_ratio_percent,
-                        min_merge,
-                        max_size_amplification_percent,
-                    },
-                    &busy,
-                ),
-                _ => pick::pick_with(&levels, shape, &busy),
+            // A range request goes first; while its tables are busy, nothing new starts.
+            let (next, requested) = match self.manual_step(flusher, &levels, shape, &busy) {
+                manual::Next::Run(pick) => (Some(pick), true),
+                manual::Next::Blocked => return Ok(published),
+                manual::Next::Idle => (automatic(flusher, &levels, shape, &busy), false),
             };
             let Some(pick) = next else {
                 return Ok(published);
@@ -165,6 +164,9 @@ impl Compactions {
             let job = Job::start(flusher, &pick, &levels)?;
             let number = self.next_job;
             self.next_job = number.wrapping_add(1);
+            if requested && let Some(active) = &mut self.active {
+                active.waiting = Some(number);
+            }
             self.running.push((number, pick));
             self.jobs.spawn_blocking(move || (number, job.run()));
         }
@@ -211,6 +213,33 @@ impl Compactions {
         .await
         .unwrap_or_default();
         self.obsolete.extend(failed);
+    }
+}
+
+/// The next automatic compaction for the keyspace's style.
+fn automatic(
+    flusher: &Flusher,
+    levels: &[Vec<Arc<TableMeta>>; LEVELS],
+    shape: Shape,
+    busy: &Busy,
+) -> Option<Pick> {
+    match flusher.keyspace.compaction() {
+        CompactionStyle::Fifo { max_table_bytes } => fifo::pick(levels, max_table_bytes, busy),
+        CompactionStyle::Universal {
+            size_ratio_percent,
+            min_merge,
+            max_size_amplification_percent,
+        } => universal::pick(
+            levels,
+            universal::Settings {
+                level0_trigger: shape.level0_trigger,
+                size_ratio_percent,
+                min_merge,
+                max_size_amplification_percent,
+            },
+            busy,
+        ),
+        _ => pick::pick_with(levels, shape, busy),
     }
 }
 

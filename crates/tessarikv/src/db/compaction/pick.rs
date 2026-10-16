@@ -48,8 +48,11 @@ pub(crate) struct Pick {
 
 impl Pick {
     /// Whether the compaction only moves one table down: nothing in the output level touches it.
+    /// A table rewritten within its own level is not a move.
     pub(crate) fn is_move(&self) -> bool {
-        !self.drop && self.overlaps.is_empty() && self.inputs.len() == 1
+        !self.drop
+            && self.overlaps.is_empty()
+            && matches!(self.inputs.as_slice(), [table] if usize::from(table.level) != self.output_level)
     }
 }
 
@@ -236,7 +239,7 @@ impl Busy {
 
 /// The base level and every level's target bytes; levels above the base, and the bottom one,
 /// have target zero.
-fn targets(
+pub(super) fn targets(
     levels: &[Vec<Arc<TableMeta>>; LEVELS],
     shape: Shape,
     bottom: usize,

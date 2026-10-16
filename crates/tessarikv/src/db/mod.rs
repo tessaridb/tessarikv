@@ -14,6 +14,7 @@
 
 mod block_cache;
 mod commits;
+mod compact_range;
 mod compaction;
 mod flush_job;
 mod flush_signals;
@@ -55,6 +56,8 @@ mod kill_tests;
 mod level0_stall_tests;
 #[cfg(test)]
 mod level_tests;
+#[cfg(test)]
+mod manual_compaction_tests;
 #[cfg(test)]
 mod multi_get_tests;
 #[cfg(test)]

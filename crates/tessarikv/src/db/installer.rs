@@ -29,10 +29,11 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tessarikv_sync::{Sequencer, SnapshotRegistry};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::block_cache::BlockCache;
+use super::compaction::manual::{QUEUE, Request};
 use super::compaction::{self, Compactions};
 use super::flush_job::{FileNumbers, Job, table_options};
 use super::flush_signals::FlushSignals;
@@ -82,6 +83,8 @@ type Flushed = (ManifestStore, Result<Option<TableFile>>);
 /// The installer task and the handles that steer it.
 pub(super) struct Installer {
     pub(super) signals: Arc<FlushSignals>,
+    /// Range compaction requests (see `Db::compact_range`).
+    pub(super) requests: mpsc::Sender<Request>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<()>>,
 }
@@ -93,9 +96,11 @@ impl Installer {
         // Everything at or below the last switch is on table files when the database opens.
         signals.set_flushed(flusher.switched);
         let (shutdown, stop) = watch::channel(false);
-        let task = tokio::spawn(run(flusher, Arc::clone(&signals), stop));
+        let (requests, requested) = mpsc::channel(QUEUE);
+        let task = tokio::spawn(run(flusher, Arc::clone(&signals), stop, requested));
         Self {
             signals,
+            requests,
             shutdown,
             task,
         }
@@ -120,6 +125,7 @@ async fn run(
     mut flusher: Flusher,
     signals: Arc<FlushSignals>,
     mut stop: watch::Receiver<bool>,
+    mut requests: mpsc::Receiver<Request>,
 ) -> Result<()> {
     let mut frozen = VecDeque::new();
     let mut running: Option<JoinHandle<Result<Flushed>>> = None;
@@ -146,6 +152,7 @@ async fn run(
                     return Err(error);
                 }
             }
+            Some(request) = requests.recv(), if !stopping => compactions.request(request),
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
         }
