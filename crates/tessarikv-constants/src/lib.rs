@@ -71,6 +71,15 @@ pub const DEFAULT_LEVEL0_COMPACTION_TRIGGER: u32 = 4;
 /// Largest level-0 compaction trigger: a point read consults every level-0 table, so more would make reads pay for it.
 pub const MAX_LEVEL0_COMPACTION_TRIGGER: u32 = 1024;
 
+/// Default number of level-0 tables past which writes are slowed down.
+pub const DEFAULT_LEVEL0_SLOWDOWN_TRIGGER: u32 = 20;
+
+/// Default number of level-0 tables at which writes wait for a compaction.
+pub const DEFAULT_LEVEL0_STOP_TRIGGER: u32 = 36;
+
+/// Largest level-0 slowdown or stop trigger.
+pub const MAX_LEVEL0_STALL_TRIGGER: u32 = 4096;
+
 /// Default target size of the first level below level 0 (256 MiB).
 pub const DEFAULT_LEVEL_BASE_BYTES: u64 = 256 * 1024 * 1024;
 

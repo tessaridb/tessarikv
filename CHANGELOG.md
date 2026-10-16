@@ -67,6 +67,9 @@ All notable changes to this project are documented here. The format follows
   `target_file_bytes` between keys. A compaction keeps the newest version per snapshot, drops a delete nothing below
   needs, carries range deletes, and removes its inputs once no reader holds them. A point read consults only the
   tables whose range holds its key. `Error::CompactionFailed` stops writes like a failed flush.
+- Level-0 stalls: `KeyspaceOptions::level0_slowdown_trigger` (20) delays each write by a millisecond and
+  `level0_stop_trigger` (36) holds writes until a compaction takes level 0 under it; `no_slowdown` writes are refused
+  with `Error::WriteStalled` naming the trigger. Writers see `Error::CompactionFailed` after a failed compaction.
 - Write stall: full in-memory tables queue for their flushes, up to `KeyspaceOptions::max_immutable_memtables`; past
   that a write waits for the next flush, or returns `Error::WriteStalled` when `WriteOptions::no_slowdown` is set.
 - Options: `DbOptions`, `KeyspaceOptions` with the `point_lookup`, `write_heavy` and `bulk_load`

@@ -91,22 +91,24 @@ impl Compactions {
 
     /// Records finished work and starts the next job, while the manifest is at hand: commits
     /// waiting outputs, records moves, removes files no view names, and starts a job when one
-    /// is due.
+    /// is due. Returns whether a new view was published.
     ///
     /// # Errors
     ///
     /// [`Error::CompactionFailed`] when the manifest edit or a job's start fails.
-    pub(super) async fn step(&mut self, flusher: &mut Flusher, start: bool) -> Result<()> {
+    pub(super) async fn step(&mut self, flusher: &mut Flusher, start: bool) -> Result<bool> {
+        let mut published = false;
         if flusher.manifest.is_none() {
-            return Ok(());
+            return Ok(published);
         }
         if let Some((pick, outputs)) = self.ready.take() {
             self.commit(flusher, &pick, outputs).await?;
+            published = true;
         }
         self.sweep(Arc::clone(&flusher.storage)).await;
         while start && self.running.is_none() {
             let Some(version) = flusher.manifest.as_ref().map(|manifest| manifest.version()) else {
-                return Ok(());
+                return Ok(published);
             };
             let levels: [Vec<Arc<TableMeta>>; LEVELS] =
                 std::array::from_fn(|level| version.tables(KEYSPACE, level).to_vec());
@@ -117,16 +119,17 @@ impl Compactions {
                 multiplier: keyspace.level_size_multiplier(),
             };
             let Some(pick) = pick::pick(&levels, shape) else {
-                return Ok(());
+                return Ok(published);
             };
             if pick.is_move() {
                 self.commit(flusher, &pick, Vec::new()).await?;
+                published = true;
                 continue;
             }
             let job = job(flusher, &pick, &levels)?;
             self.running = Some((pick, tokio::task::spawn_blocking(move || job.run())));
         }
-        Ok(())
+        Ok(published)
     }
 
     /// Appends the edit replacing `pick`'s tables by `outputs` (by the moved table when there

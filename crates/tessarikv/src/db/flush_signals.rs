@@ -3,10 +3,12 @@
 //! A writer whose batch fills the newest in-memory table asks for a switch; the installer clears
 //! the request when it looks, so requests made while it is busy fold into one. A writer is
 //! admitted while the newest table has room or another table may still be frozen; otherwise it
-//! waits for the next install, or is refused when it asked not to wait. A failed flush is
-//! published once and refuses every later write.
+//! waits for the next install, or is refused when it asked not to wait. Level 0 holding its
+//! slowdown trigger's worth of tables delays each write by [`SLOWDOWN`] so compaction catches
+//! up; holding its stop trigger's worth stops writes until an install takes it back under. A
+//! failed flush or compaction is published once and refuses every later write.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use arc_swap::ArcSwap;
 use tokio::sync::Notify;
@@ -26,13 +28,24 @@ pub(super) struct FlushSignals {
     pub(super) visible: Notify,
     /// Wakes stalled writers after every install, and on failure.
     installed: Notify,
-    /// A flush failed: writes are refused until the database is reopened.
-    failed: AtomicBool,
+    /// What failed, as one of the `FAILED_` codes: writes are refused until the database is reopened.
+    failed: AtomicU8,
     /// Bytes the newest in-memory table holds before it is frozen.
     memtable_bytes: u64,
     /// Frozen tables allowed to wait for flushes.
     max_frozen: usize,
+    /// Level-0 tables at which writes slow down, and at which they stop.
+    level0_slowdown: usize,
+    level0_stop: usize,
 }
+
+/// How long a write waits while level 0 is past its slowdown trigger.
+const SLOWDOWN: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// No failure; a flush failed; a compaction failed.
+const FAILED_NONE: u8 = 0;
+const FAILED_FLUSH: u8 = 1;
+const FAILED_COMPACTION: u8 = 2;
 
 impl FlushSignals {
     pub(super) fn new(keyspace: &KeyspaceOptions) -> Self {
@@ -41,9 +54,12 @@ impl FlushSignals {
             wake: Notify::new(),
             visible: Notify::new(),
             installed: Notify::new(),
-            failed: AtomicBool::new(false),
+            failed: AtomicU8::new(FAILED_NONE),
             memtable_bytes: keyspace.memtable_bytes(),
             max_frozen: usize::try_from(keyspace.max_immutable_memtables()).unwrap_or(usize::MAX),
+            level0_slowdown: usize::try_from(keyspace.level0_slowdown_trigger())
+                .unwrap_or(usize::MAX),
+            level0_stop: usize::try_from(keyspace.level0_stop_trigger()).unwrap_or(usize::MAX),
         }
     }
 
@@ -57,33 +73,52 @@ impl FlushSignals {
         }
     }
 
-    /// Whether a flush failed, so writes must stop.
-    pub(super) fn failed(&self) -> bool {
+    /// The error that stopped the installer, if any: writes must stop.
+    pub(super) fn failure(&self) -> Option<Error> {
         // Acquire: pairs with the Release store when the installer gives up.
-        self.failed.load(Ordering::Acquire)
+        match self.failed.load(Ordering::Acquire) {
+            FAILED_NONE => None,
+            FAILED_COMPACTION => Some(Error::CompactionFailed),
+            _ => Some(Error::FlushFailed),
+        }
     }
 
-    /// Returns once a write may go ahead: the newest table has room, or another table may be
-    /// frozen.
+    /// Returns once a write may go ahead: the newest table has room or another table may be
+    /// frozen, and level 0 is under its stop trigger; past its slowdown trigger the write is
+    /// delayed first.
     ///
     /// # Errors
     ///
-    /// [`Error::WriteStalled`] instead of waiting when `no_slowdown`, and
-    /// [`Error::FlushFailed`] after a flush failed.
+    /// [`Error::WriteStalled`] instead of waiting or being delayed when `no_slowdown`, and
+    /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] after one failed.
     pub(super) async fn admit(&self, view: &ArcSwap<View>, no_slowdown: bool) -> Result<()> {
         loop {
             // Created before the check: a later `notify_waiters` reaches it even unpolled.
             let installed = self.installed.notified();
-            if self.failed() {
-                return Err(Error::FlushFailed);
+            if let Some(failure) = self.failure() {
+                return Err(failure);
             }
-            if !self.stalls(&view.load()) {
+            let (stalled, level0) = {
+                let current = view.load();
+                (self.stalls(&current), current.level0_files(0))
+            };
+            let reason = if stalled {
+                "the in-memory table is full and the frozen ones wait for flushes"
+            } else if level0 >= self.level0_stop {
+                "level 0 holds its stop trigger's worth of tables, waiting for a compaction"
+            } else if level0 >= self.level0_slowdown {
+                if no_slowdown {
+                    return Err(Error::WriteStalled {
+                        reason: "level 0 is past its slowdown trigger",
+                    });
+                }
+                tokio::time::sleep(SLOWDOWN).await;
                 return Ok(());
-            }
+            } else {
+                return Ok(());
+            };
             if no_slowdown {
-                return Err(Error::WriteStalled {
-                    reason: "the in-memory table is full and the frozen ones wait for flushes",
-                });
+                return Err(Error::WriteStalled { reason });
             }
             installed.await;
         }
@@ -108,10 +143,14 @@ impl FlushSignals {
         self.installed.notify_waiters();
     }
 
-    /// Publishes a failed flush and wakes stalled writers to see it.
-    pub(super) fn fail(&self) {
+    /// Publishes the installer's failure, `error`, and wakes stalled writers to see it.
+    pub(super) fn fail(&self, error: &Error) {
+        let failure = match error {
+            Error::CompactionFailed => FAILED_COMPACTION,
+            _ => FAILED_FLUSH,
+        };
         // Release: writers that see the flag see the failure's effects.
-        self.failed.store(true, Ordering::Release);
+        self.failed.store(failure, Ordering::Release);
         self.installed.notify_waiters();
     }
 

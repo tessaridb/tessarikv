@@ -2,7 +2,7 @@
 
 use tessarikv_constants as limits;
 
-use super::bounds::check_range;
+use super::keyspace_bounds::validate;
 use crate::Result;
 
 /// Validated options of one keyspace. Built through [`KeyspaceOptions::builder`] or a preset.
@@ -14,6 +14,8 @@ pub struct KeyspaceOptions {
     block_restart_interval: u32,
     bloom_bits_per_key: u32,
     level0_compaction_trigger: u32,
+    level0_slowdown_trigger: u32,
+    level0_stop_trigger: u32,
     level_base_bytes: u64,
     level_size_multiplier: u32,
     target_file_bytes: u64,
@@ -28,6 +30,8 @@ impl Default for KeyspaceOptions {
             block_restart_interval: limits::DEFAULT_BLOCK_RESTART_INTERVAL,
             bloom_bits_per_key: limits::DEFAULT_BLOOM_BITS_PER_KEY,
             level0_compaction_trigger: limits::DEFAULT_LEVEL0_COMPACTION_TRIGGER,
+            level0_slowdown_trigger: limits::DEFAULT_LEVEL0_SLOWDOWN_TRIGGER,
+            level0_stop_trigger: limits::DEFAULT_LEVEL0_STOP_TRIGGER,
             level_base_bytes: limits::DEFAULT_LEVEL_BASE_BYTES,
             level_size_multiplier: limits::DEFAULT_LEVEL_SIZE_MULTIPLIER,
             target_file_bytes: limits::DEFAULT_TARGET_FILE_BYTES,
@@ -117,6 +121,20 @@ impl KeyspaceOptions {
         self.level0_compaction_trigger
     }
 
+    /// Level-0 tables at which each write is delayed a little, so compaction catches up before
+    /// writes must stop. At least the compaction trigger.
+    #[must_use]
+    pub const fn level0_slowdown_trigger(&self) -> u32 {
+        self.level0_slowdown_trigger
+    }
+
+    /// Level-0 tables at which writes wait until a compaction takes level 0 back under it. At
+    /// least the slowdown trigger.
+    #[must_use]
+    pub const fn level0_stop_trigger(&self) -> u32 {
+        self.level0_stop_trigger
+    }
+
     /// Target size of the first level below level 0 that holds data, in bytes. Targets are
     /// computed from the bottom level up, so data first goes to the bottom level and the levels
     /// above it fill as it grows.
@@ -183,6 +201,18 @@ impl KeyspaceOptionsBuilder {
         self
     }
 
+    /// Sets [`KeyspaceOptions::level0_slowdown_trigger`].
+    pub const fn level0_slowdown_trigger(mut self, value: u32) -> Self {
+        self.options.level0_slowdown_trigger = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::level0_stop_trigger`].
+    pub const fn level0_stop_trigger(mut self, value: u32) -> Self {
+        self.options.level0_stop_trigger = value;
+        self
+    }
+
     /// Sets [`KeyspaceOptions::level_base_bytes`].
     pub const fn level_base_bytes(mut self, value: u64) -> Self {
         self.options.level_base_bytes = value;
@@ -207,61 +237,7 @@ impl KeyspaceOptionsBuilder {
     ///
     /// [`crate::Error::InvalidOptions`] naming the first field outside its bounds.
     pub fn build(self) -> Result<KeyspaceOptions> {
-        let options = self.options;
-        check_range(
-            "keyspace.memtable_bytes",
-            options.memtable_bytes,
-            limits::MIN_MEMTABLE_BYTES,
-            limits::MAX_MEMTABLE_BYTES,
-        )?;
-        check_range(
-            "keyspace.max_immutable_memtables",
-            u64::from(options.max_immutable_memtables),
-            1,
-            u64::from(limits::MAX_IMMUTABLE_MEMTABLES),
-        )?;
-        check_range(
-            "keyspace.block_bytes",
-            options.block_bytes,
-            limits::MIN_BLOCK_BYTES,
-            limits::MAX_BLOCK_BYTES,
-        )?;
-        check_range(
-            "keyspace.block_restart_interval",
-            u64::from(options.block_restart_interval),
-            1,
-            u64::from(limits::MAX_BLOCK_RESTART_INTERVAL),
-        )?;
-        check_range(
-            "keyspace.bloom_bits_per_key",
-            u64::from(options.bloom_bits_per_key),
-            0,
-            u64::from(limits::MAX_BLOOM_BITS_PER_KEY),
-        )?;
-        check_range(
-            "keyspace.level0_compaction_trigger",
-            u64::from(options.level0_compaction_trigger),
-            1,
-            u64::from(limits::MAX_LEVEL0_COMPACTION_TRIGGER),
-        )?;
-        check_range(
-            "keyspace.level_base_bytes",
-            options.level_base_bytes,
-            limits::MIN_LEVEL_BASE_BYTES,
-            limits::MAX_LEVEL_BASE_BYTES,
-        )?;
-        check_range(
-            "keyspace.level_size_multiplier",
-            u64::from(options.level_size_multiplier),
-            u64::from(limits::MIN_LEVEL_SIZE_MULTIPLIER),
-            u64::from(limits::MAX_LEVEL_SIZE_MULTIPLIER),
-        )?;
-        check_range(
-            "keyspace.target_file_bytes",
-            options.target_file_bytes,
-            limits::MIN_TARGET_FILE_BYTES,
-            limits::MAX_TARGET_FILE_BYTES,
-        )?;
-        Ok(options)
+        validate(&self.options)?;
+        Ok(self.options)
     }
 }

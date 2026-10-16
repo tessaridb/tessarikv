@@ -110,6 +110,9 @@ fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
             |value| {
                 KeyspaceOptions::builder()
                     .level0_compaction_trigger(narrow(value))
+                    // Above the compaction trigger at any value it takes.
+                    .level0_slowdown_trigger(limits::MAX_LEVEL0_STALL_TRIGGER)
+                    .level0_stop_trigger(limits::MAX_LEVEL0_STALL_TRIGGER)
                     .build()
             },
         ),
@@ -144,6 +147,33 @@ fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
         }
         assert_refused(build(max + 1), option);
     }
+}
+
+#[test]
+fn level_zero_triggers_must_rise_from_compaction_to_slowdown_to_stop() {
+    let triggers = |compaction, slowdown, stop| {
+        KeyspaceOptions::builder()
+            .level0_compaction_trigger(compaction)
+            .level0_slowdown_trigger(slowdown)
+            .level0_stop_trigger(stop)
+            .build()
+    };
+    assert!(triggers(4, 4, 4).is_ok(), "equal triggers are allowed");
+    assert!(triggers(4, 20, 36).is_ok());
+    assert_refused(triggers(4, 3, 36), "keyspace.level0_slowdown_trigger");
+    assert_refused(triggers(4, 20, 19), "keyspace.level0_stop_trigger");
+    let most = limits::MAX_LEVEL0_STALL_TRIGGER;
+    assert!(triggers(4, most, most).is_ok());
+    assert_refused(triggers(4, 20, most + 1), "keyspace.level0_stop_trigger");
+    let options = KeyspaceOptions::default();
+    assert_eq!(
+        options.level0_slowdown_trigger(),
+        limits::DEFAULT_LEVEL0_SLOWDOWN_TRIGGER
+    );
+    assert_eq!(
+        options.level0_stop_trigger(),
+        limits::DEFAULT_LEVEL0_STOP_TRIGGER
+    );
 }
 
 #[test]

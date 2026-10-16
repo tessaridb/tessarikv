@@ -8,6 +8,7 @@
 mod bounds;
 mod db;
 mod keyspace;
+mod keyspace_bounds;
 mod read;
 mod write;
 

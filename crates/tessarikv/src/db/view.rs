@@ -259,6 +259,13 @@ impl View {
             .chain(deeper)
     }
 
+    /// The level-0 table files of `keyspace`: found by binary search, cheap enough for every
+    /// write to ask.
+    pub(crate) fn level0_files(&self, keyspace: u32) -> usize {
+        self.keyspace_files(keyspace)
+            .partition_point(|file| file.meta.level == 0)
+    }
+
     /// The files of `keyspace`, a contiguous run of the ordered list.
     fn keyspace_files(&self, keyspace: u32) -> &[TableFile] {
         let start = self

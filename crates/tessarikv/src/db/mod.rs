@@ -44,6 +44,8 @@ mod iterator_tests;
 #[cfg(test)]
 mod kill_tests;
 #[cfg(test)]
+mod level0_stall_tests;
+#[cfg(test)]
 mod level_tests;
 #[cfg(test)]
 mod range_delete_tests;

@@ -125,14 +125,14 @@ async fn run(
                 running = None;
                 let installed = finished.and_then(|flushed| flusher.install(&mut frozen, flushed));
                 if let Err(error) = installed {
-                    signals.fail();
+                    signals.fail(&error);
                     return Err(error);
                 }
                 signals.installed();
             }
             compacted = compactions.finished(), if compactions.is_running() => {
                 if let Err(error) = compacted {
-                    signals.fail();
+                    signals.fail(&error);
                     return Err(error);
                 }
             }
@@ -140,9 +140,14 @@ async fn run(
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
         }
         // Finished work is recorded even while stopping; no new job starts then.
-        if let Err(error) = compactions.step(&mut flusher, !stopping).await {
-            signals.fail();
-            return Err(error);
+        match compactions.step(&mut flusher, !stopping).await {
+            // Writers held by level 0 look again.
+            Ok(true) => signals.installed(),
+            Ok(false) => {}
+            Err(error) => {
+                signals.fail(&error);
+                return Err(error);
+            }
         }
         if stopping {
             if running.is_none() && !compactions.is_running() {
