@@ -62,6 +62,8 @@ pub(super) struct Flusher {
     pub(super) numbers: Arc<FileNumbers>,
     /// Paces compaction output, when the options ask for it.
     pub(super) limiter: Option<Arc<RateLimiter>>,
+    /// The rate writes go at while level 0 is past its slowdown trigger, in bytes a second.
+    pub(super) delayed_writes: u64,
 }
 
 /// A frozen table waiting for its flush.
@@ -85,7 +87,7 @@ pub(super) struct Installer {
 impl Installer {
     /// Starts the installer task on the current tokio runtime.
     pub(super) fn start(flusher: Flusher) -> Self {
-        let signals = Arc::new(FlushSignals::new(&flusher.keyspace));
+        let signals = Arc::new(FlushSignals::new(&flusher.keyspace, flusher.delayed_writes));
         let (shutdown, stop) = watch::channel(false);
         let task = tokio::spawn(run(flusher, Arc::clone(&signals), stop));
         Self {

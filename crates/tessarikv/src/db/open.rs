@@ -28,6 +28,9 @@ const IDENTITY: &str = "IDENTITY";
 /// The file whose lock keeps a second process from opening the same database.
 const LOCK: &str = "LOCK";
 
+/// How far ahead of their rate compactions may write: a second's worth.
+const COMPACTION_BURST: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl Db {
     /// Opens the database at `path` on `storage`, creating it when `options` allow, and replays
     /// its log.
@@ -38,7 +41,9 @@ impl Db {
     ) -> Result<Self> {
         let recovery = options.wal_recovery();
         let segment_bytes = options.wal_segment_bytes();
-        let limiter = RateLimiter::new(options.compaction_bytes_per_second()).map(Arc::new);
+        let limiter =
+            RateLimiter::new(options.compaction_bytes_per_second(), COMPACTION_BURST).map(Arc::new);
+        let delayed_writes = options.delayed_write_bytes_per_second();
         let keyspace = options.default_keyspace().clone();
         let cache = Arc::new(BlockCache::new(
             options.block_cache_bytes(),
@@ -100,6 +105,7 @@ impl Db {
             snapshots: Arc::clone(&snapshots),
             numbers: Arc::new(FileNumbers::new(next_file)),
             limiter: limiter.clone(),
+            delayed_writes,
         });
         Ok(Self {
             sequencer,

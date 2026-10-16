@@ -2,6 +2,7 @@
 //! with, and go on once an install takes it back under the limit.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use tessarikv_types::{SequenceNumber, ValueKind};
@@ -12,6 +13,9 @@ use super::read_tests::{file, user_key};
 use super::view::View;
 use crate::memtable::Memtable;
 use crate::{Error, KeyspaceOptions};
+
+/// A mebibyte a second.
+const RATE: u64 = 1024 * 1024;
 
 fn keyspace() -> KeyspaceOptions {
     KeyspaceOptions::builder()
@@ -52,30 +56,30 @@ fn refusal(result: crate::Result<()>) -> &'static str {
 
 #[tokio::test]
 async fn level_zero_past_its_slowdown_trigger_refuses_a_write_that_must_not_wait() {
-    let signals = FlushSignals::new(&keyspace());
+    let signals = FlushSignals::new(&keyspace(), RATE);
     let below = ArcSwap::from_pointee(view_with(2));
     signals
-        .admit(&below, true)
+        .admit(&below, true, 1)
         .await
         .expect("under the slowdown trigger");
     let slowed = ArcSwap::from_pointee(view_with(3));
-    let reason = refusal(signals.admit(&slowed, true).await);
+    let reason = refusal(signals.admit(&slowed, true, 1).await);
     assert!(reason.contains("slowdown"), "{reason}");
     signals
-        .admit(&slowed, false)
+        .admit(&slowed, false, 1)
         .await
         .expect("a write that may wait goes after its delay");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn level_zero_at_its_stop_trigger_holds_writes_until_an_install_takes_it_under() {
-    let signals = Arc::new(FlushSignals::new(&keyspace()));
+    let signals = Arc::new(FlushSignals::new(&keyspace(), RATE));
     let view = Arc::new(ArcSwap::from_pointee(view_with(4)));
-    let reason = refusal(signals.admit(&view, true).await);
+    let reason = refusal(signals.admit(&view, true, 1).await);
     assert!(reason.contains("stop"), "{reason}");
     let waiting = {
         let (signals, view) = (Arc::clone(&signals), Arc::clone(&view));
-        tokio::spawn(async move { signals.admit(&view, false).await })
+        tokio::spawn(async move { signals.admit(&view, false, 1).await })
     };
     for _ in 0..1000 {
         tokio::task::yield_now().await;
@@ -103,9 +107,9 @@ async fn level_zero_at_its_stop_trigger_holds_writes_until_an_install_takes_it_u
 
 #[test]
 fn a_failed_compaction_is_reported_as_one() {
-    let signals = FlushSignals::new(&keyspace());
+    let signals = FlushSignals::new(&keyspace(), RATE);
     signals.fail(&Error::CompactionFailed);
-    let refused = futures_lite_block(signals.admit(&ArcSwap::from_pointee(view_with(0)), true));
+    let refused = futures_lite_block(signals.admit(&ArcSwap::from_pointee(view_with(0)), true, 1));
     assert!(
         matches!(refused, Err(Error::CompactionFailed)),
         "{refused:?}"
@@ -164,5 +168,51 @@ async fn writes_stopped_by_level_zero_go_on_once_compactions_take_it_under() {
             .expect("readable");
         assert_eq!(read, Some(value(index)), "key {index}");
     }
+    db.close().await.expect("closed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_write_past_the_slowdown_trigger_waits_for_its_bytes_at_the_delayed_rate() {
+    let signals = FlushSignals::new(&keyspace(), RATE);
+    let slowed = ArcSwap::from_pointee(view_with(3));
+    let start = tokio::time::Instant::now();
+    signals.admit(&slowed, false, 512).await.expect("admitted");
+    assert_eq!(
+        start.elapsed(),
+        Duration::ZERO,
+        "within a millisecond's worth"
+    );
+    let start = tokio::time::Instant::now();
+    signals.admit(&slowed, false, RATE).await.expect("admitted");
+    let paid = start.elapsed();
+    assert!(
+        paid >= Duration::from_millis(990) && paid <= Duration::from_millis(1010),
+        "a mebibyte at a mebibyte a second, less the burst: {paid:?}"
+    );
+    let start = tokio::time::Instant::now();
+    let below = ArcSwap::from_pointee(view_with(2));
+    signals.admit(&below, false, RATE).await.expect("admitted");
+    assert_eq!(
+        start.elapsed(),
+        Duration::ZERO,
+        "under the trigger nothing waits"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_delayed_write_rate_reaches_the_installer() {
+    let options = crate::DbOptions::builder()
+        .delayed_write_bytes_per_second(3 * RATE)
+        .build()
+        .expect("valid");
+    let db = super::Db::open_with_storage(
+        super::flush_tests::PATH,
+        options,
+        Arc::new(crate::log::fault::FaultStorage::default()),
+    )
+    .await
+    .expect("opened");
+    let installer = db.installer.as_ref().expect("on storage");
+    assert_eq!(installer.signals.delayed_rate(), Some(3 * RATE));
     db.close().await.expect("closed");
 }

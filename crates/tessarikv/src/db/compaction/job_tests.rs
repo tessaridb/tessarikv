@@ -226,7 +226,7 @@ fn a_paced_compaction_charges_its_limiter_every_byte_it_writes() {
     let entries: Vec<Entry<'_>> = (1..=30)
         .map(|sequence| (&b"k"[..], sequence, Some(&big[..])))
         .collect();
-    let limiter = Arc::new(RateLimiter::new(1 << 40).unwrap());
+    let limiter = Arc::new(RateLimiter::new(1 << 40, std::time::Duration::from_secs(1)).unwrap());
     let outputs = Job {
         to: Destination {
             limiter: Some(Arc::clone(&limiter)),

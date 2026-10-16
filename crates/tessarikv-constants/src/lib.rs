@@ -146,6 +146,15 @@ pub const MIN_COMPACTION_BYTES_PER_SECOND: u64 = 1024 * 1024;
 /// Largest compaction write rate.
 pub const MAX_COMPACTION_BYTES_PER_SECOND: u64 = 1 << 40;
 
+/// Default rate of writes while level 0 is past its slowdown trigger.
+pub const DEFAULT_DELAYED_WRITE_BYTES_PER_SECOND: u64 = 16 * 1024 * 1024;
+
+/// Smallest rate of writes while level 0 is past its slowdown trigger.
+pub const MIN_DELAYED_WRITE_BYTES_PER_SECOND: u64 = 1024;
+
+/// Largest rate of writes while level 0 is past its slowdown trigger.
+pub const MAX_DELAYED_WRITE_BYTES_PER_SECOND: u64 = 1 << 40;
+
 /// The largest key the engine accepts (8 MiB).
 ///
 /// Keys are held in index blocks and compared on every seek; a key this large is already a

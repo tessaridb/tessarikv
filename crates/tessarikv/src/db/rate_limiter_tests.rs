@@ -2,10 +2,12 @@ use std::time::{Duration, Instant};
 
 use super::rate_limiter::RateLimiter;
 
+const SECOND: Duration = Duration::from_secs(1);
+
 #[test]
 fn a_second_of_bytes_goes_at_once_and_more_waits_for_the_rate() {
     let origin = Instant::now();
-    let limiter = RateLimiter::starting(1000, origin).unwrap();
+    let limiter = RateLimiter::starting(1000, SECOND, origin).unwrap();
     assert_eq!(
         limiter.reserve(1000, origin),
         Duration::ZERO,
@@ -32,9 +34,9 @@ fn a_second_of_bytes_goes_at_once_and_more_waits_for_the_rate() {
 
 #[test]
 fn a_rate_of_zero_paces_nothing_and_a_huge_reservation_saturates() {
-    assert!(RateLimiter::new(0).is_none());
+    assert!(RateLimiter::new(0, SECOND).is_none());
     let origin = Instant::now();
-    let limiter = RateLimiter::starting(1, origin).unwrap();
+    let limiter = RateLimiter::starting(1, SECOND, origin).unwrap();
     let wait = limiter.reserve(u64::MAX, origin);
     // The wait saturates at the nanoseconds a u64 holds, some 584 years.
     assert!(wait > Duration::from_secs(1 << 33), "{wait:?}");
@@ -47,7 +49,7 @@ fn concurrent_reservations_each_take_their_own_slot_and_none_is_lost() {
     const EACH: u64 = 2000;
     let origin = Instant::now();
     // One byte a second: the n-th reservation, in the order they take effect, waits n - 1 seconds.
-    let limiter = RateLimiter::starting(1, origin).unwrap();
+    let limiter = RateLimiter::starting(1, SECOND, origin).unwrap();
     let mut waits: Vec<u64> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..THREADS)
             .map(|_| {

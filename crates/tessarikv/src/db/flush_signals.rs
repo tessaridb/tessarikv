@@ -4,16 +4,19 @@
 //! the request when it looks, so requests made while it is busy fold into one. A writer is
 //! admitted while the newest table has room or another table may still be frozen; otherwise it
 //! waits for the next install, or is refused when it asked not to wait. Level 0 holding its
-//! slowdown trigger's worth of tables delays each write by [`SLOWDOWN`] so compaction catches
-//! up; holding its stop trigger's worth stops writes until an install takes it back under. A
+//! slowdown trigger's worth of tables paces writes to the delayed-write rate, each waiting for
+//! its own bytes, so compaction catches up; holding its stop trigger's worth stops writes until
+//! an install takes it back under. A
 //! failed flush or compaction is published once and refuses every later write.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 
+use super::rate_limiter::RateLimiter;
 use super::view::View;
 use crate::memtable::Memtable;
 use crate::{Error, KeyspaceOptions, Result};
@@ -37,10 +40,12 @@ pub(super) struct FlushSignals {
     /// Level-0 tables at which writes slow down, and at which they stop.
     level0_slowdown: usize,
     level0_stop: usize,
+    /// Paces writes while level 0 is past its slowdown trigger; none paces nothing.
+    delay: Option<RateLimiter>,
 }
 
-/// How long a write waits while level 0 is past its slowdown trigger.
-const SLOWDOWN: std::time::Duration = std::time::Duration::from_millis(1);
+/// How far ahead of the delayed-write rate a slowed write may go: a millisecond's worth.
+const SLOWDOWN_BURST: Duration = Duration::from_millis(1);
 
 /// No failure; a flush failed; a compaction failed.
 const FAILED_NONE: u8 = 0;
@@ -48,7 +53,8 @@ const FAILED_FLUSH: u8 = 1;
 const FAILED_COMPACTION: u8 = 2;
 
 impl FlushSignals {
-    pub(super) fn new(keyspace: &KeyspaceOptions) -> Self {
+    /// Signals for a keyspace, slowing writes to `delayed_writes` bytes a second.
+    pub(super) fn new(keyspace: &KeyspaceOptions, delayed_writes: u64) -> Self {
         Self {
             pending: AtomicBool::new(false),
             wake: Notify::new(),
@@ -60,6 +66,7 @@ impl FlushSignals {
             level0_slowdown: usize::try_from(keyspace.level0_slowdown_trigger())
                 .unwrap_or(usize::MAX),
             level0_stop: usize::try_from(keyspace.level0_stop_trigger()).unwrap_or(usize::MAX),
+            delay: RateLimiter::new(delayed_writes, SLOWDOWN_BURST),
         }
     }
 
@@ -83,15 +90,20 @@ impl FlushSignals {
         }
     }
 
-    /// Returns once a write may go ahead: the newest table has room or another table may be
-    /// frozen, and level 0 is under its stop trigger; past its slowdown trigger the write is
-    /// delayed first.
+    /// Returns once a write of `bytes` may go ahead: the newest table has room or another table
+    /// may be frozen, and level 0 is under its stop trigger; past its slowdown trigger the write
+    /// first waits for its bytes at the delayed-write rate.
     ///
     /// # Errors
     ///
     /// [`Error::WriteStalled`] instead of waiting or being delayed when `no_slowdown`, and
     /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] after one failed.
-    pub(super) async fn admit(&self, view: &ArcSwap<View>, no_slowdown: bool) -> Result<()> {
+    pub(super) async fn admit(
+        &self,
+        view: &ArcSwap<View>,
+        no_slowdown: bool,
+        bytes: u64,
+    ) -> Result<()> {
         loop {
             // Created before the check: a later `notify_waiters` reaches it even unpolled.
             let installed = self.installed.notified();
@@ -112,7 +124,13 @@ impl FlushSignals {
                         reason: "level 0 is past its slowdown trigger",
                     });
                 }
-                tokio::time::sleep(SLOWDOWN).await;
+                let wait = self
+                    .delay
+                    .as_ref()
+                    .map_or(Duration::ZERO, |delay| delay.reserve(bytes, Instant::now()));
+                if !wait.is_zero() {
+                    tokio::time::sleep(wait).await;
+                }
                 return Ok(());
             } else {
                 return Ok(());
@@ -122,6 +140,12 @@ impl FlushSignals {
             }
             installed.await;
         }
+    }
+
+    /// The delayed-write rate, for tests to read.
+    #[cfg(test)]
+    pub(super) fn delayed_rate(&self) -> Option<u64> {
+        self.delay.as_ref().map(RateLimiter::rate)
     }
 
     /// Resolves when a writer asks for a switch.

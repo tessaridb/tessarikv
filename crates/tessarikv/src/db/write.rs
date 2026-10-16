@@ -61,7 +61,11 @@ impl Db {
         if let Some(installer) = installer {
             installer
                 .signals
-                .admit(&self.view, options.no_slowdown)
+                .admit(
+                    &self.view,
+                    options.no_slowdown,
+                    u64::try_from(batch.as_bytes().len()).unwrap_or(u64::MAX),
+                )
                 .await?;
         }
         let slot = log.reserve().await?;

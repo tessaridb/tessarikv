@@ -45,11 +45,15 @@ fn db_defaults_are_the_documented_constants() {
         limits::DEFAULT_BACKGROUND_THREADS
     );
     assert_eq!(options.compaction_bytes_per_second(), 0, "not paced");
+    assert_eq!(
+        options.delayed_write_bytes_per_second(),
+        limits::DEFAULT_DELAYED_WRITE_BYTES_PER_SECOND
+    );
 }
 
 #[test]
 fn db_bounds_accept_the_edges_and_refuse_past_them() {
-    let edges: [Edge<DbOptions>; 3] = [
+    let edges: [Edge<DbOptions>; 4] = [
         (
             "db.wal_segment_bytes",
             limits::MIN_WAL_SEGMENT_BYTES,
@@ -73,6 +77,16 @@ fn db_bounds_accept_the_edges_and_refuse_past_them() {
             |value| {
                 DbOptions::builder()
                     .compaction_bytes_per_second(value)
+                    .build()
+            },
+        ),
+        (
+            "db.delayed_write_bytes_per_second",
+            limits::MIN_DELAYED_WRITE_BYTES_PER_SECOND,
+            limits::MAX_DELAYED_WRITE_BYTES_PER_SECOND,
+            |value| {
+                DbOptions::builder()
+                    .delayed_write_bytes_per_second(value)
                     .build()
             },
         ),

@@ -44,6 +44,7 @@ pub struct DbOptions {
     block_cache_bytes: u64,
     background_threads: u32,
     compaction_bytes_per_second: u64,
+    delayed_write_bytes_per_second: u64,
     default_keyspace: KeyspaceOptions,
 }
 
@@ -58,6 +59,7 @@ impl Default for DbOptions {
             block_cache_bytes: limits::DEFAULT_BLOCK_CACHE_BYTES,
             background_threads: limits::DEFAULT_BACKGROUND_THREADS,
             compaction_bytes_per_second: 0,
+            delayed_write_bytes_per_second: limits::DEFAULT_DELAYED_WRITE_BYTES_PER_SECOND,
             default_keyspace: KeyspaceOptions::default(),
         }
     }
@@ -139,6 +141,13 @@ impl DbOptions {
     pub const fn compaction_bytes_per_second(&self) -> u64 {
         self.compaction_bytes_per_second
     }
+
+    /// The rate writes go at, in bytes per second, while a keyspace's level 0 is past its
+    /// slowdown trigger: each write waits for its own bytes, a millisecond's worth at once.
+    #[must_use]
+    pub const fn delayed_write_bytes_per_second(&self) -> u64 {
+        self.delayed_write_bytes_per_second
+    }
 }
 
 /// Builds a validated [`DbOptions`].
@@ -197,6 +206,12 @@ impl DbOptionsBuilder {
         self
     }
 
+    /// Sets [`DbOptions::delayed_write_bytes_per_second`].
+    pub const fn delayed_write_bytes_per_second(mut self, value: u64) -> Self {
+        self.options.delayed_write_bytes_per_second = value;
+        self
+    }
+
     /// Sets [`DbOptions::default_keyspace`].
     pub fn default_keyspace(mut self, value: KeyspaceOptions) -> Self {
         self.options.default_keyspace = value;
@@ -228,6 +243,12 @@ impl DbOptionsBuilder {
             u64::from(options.background_threads),
             1,
             u64::from(limits::MAX_BACKGROUND_THREADS),
+        )?;
+        check_range(
+            "db.delayed_write_bytes_per_second",
+            options.delayed_write_bytes_per_second,
+            limits::MIN_DELAYED_WRITE_BYTES_PER_SECOND,
+            limits::MAX_DELAYED_WRITE_BYTES_PER_SECOND,
         )?;
         if options.compaction_bytes_per_second != 0 {
             check_range(
