@@ -234,3 +234,19 @@ fn compaction_owes_level_zero_at_its_trigger_and_every_level_s_excess_with_its_m
         "level 0 owes the base table it touches; L4 is now 50 over"
     );
 }
+
+/// Automatic compactions turned off pick nothing where they would pick a compaction.
+#[test]
+fn automatic_compactions_turned_off_pick_nothing() {
+    let four = levels((1..=4).map(|id| table(id, 0, b"a", b"z", 10)).collect());
+    let on = crate::KeyspaceOptions::default();
+    assert!(
+        super::automatic(&on, &four, SHAPE, &Busy::default()).is_some(),
+        "control"
+    );
+    let off = crate::KeyspaceOptions::builder()
+        .disable_auto_compactions(true)
+        .build()
+        .unwrap();
+    assert!(super::automatic(&off, &four, SHAPE, &Busy::default()).is_none());
+}

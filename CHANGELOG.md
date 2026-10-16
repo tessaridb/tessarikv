@@ -70,6 +70,8 @@ All notable changes to this project are documented here. The format follows
   the open in every recovery mode. Manifests and the options record are encrypted as well, each manifest edit
   bound to its place in the file, and the key is checked before the manifest is read. Keys rotate by id: new
   files take the current one, and an old key is needed only until no file names it.
+- `KeyspaceOptions::disable_auto_compactions`: the engine starts no compaction of the keyspace by itself, for
+  bulk loads; `Db::compact_range` still runs.
 - `DbOptionsBuilder::encryption_cipher`: pins the cipher new files are encrypted with (`Cipher`); files written
   under another cipher still open.
 - `StripedCounters`: counters split over per-thread 128-byte stripes, with wait-free adds, sums exact once adds

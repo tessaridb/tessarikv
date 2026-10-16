@@ -46,6 +46,8 @@ mod write_statistics;
 #[cfg(test)]
 mod approximate_size_tests;
 #[cfg(test)]
+mod auto_compaction_tests;
+#[cfg(test)]
 mod background_error_tests;
 #[cfg(test)]
 mod cache_tests;

@@ -181,7 +181,10 @@ impl Compactions {
             {
                 manual::Next::Run(pick) => (Some(pick), true),
                 manual::Next::Blocked => break,
-                manual::Next::Idle => (automatic(flusher, keyspace, &levels, shape, &busy), false),
+                manual::Next::Idle => {
+                    let options = flusher.keyspace_options(keyspace);
+                    (automatic(options, &levels, shape, &busy), false)
+                }
             };
             let Some(pick) = next else {
                 break;
@@ -253,15 +256,18 @@ impl Compactions {
     }
 }
 
-/// The next automatic compaction for `keyspace`'s style.
+/// The next automatic compaction of a keyspace with `options`; none while they turn automatic
+/// compactions off.
 fn automatic(
-    flusher: &Flusher,
-    keyspace: u32,
+    options: &KeyspaceOptions,
     levels: &[Vec<Arc<TableMeta>>; LEVELS],
     shape: Shape,
     busy: &Busy,
 ) -> Option<Pick> {
-    match flusher.keyspace_options(keyspace).compaction() {
+    if options.disable_auto_compactions() {
+        return None;
+    }
+    match options.compaction() {
         CompactionStyle::Fifo { max_table_bytes } => fifo::pick(levels, max_table_bytes, busy),
         CompactionStyle::Universal {
             size_ratio_percent,

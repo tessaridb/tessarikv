@@ -19,6 +19,7 @@ pub struct KeyspaceOptions {
     pub(super) level0_stop_trigger: u32,
     pub(super) max_compactions: u32,
     pub(super) max_subcompactions: u32,
+    pub(super) disable_auto_compactions: bool,
     pub(super) soft_pending_compaction_bytes: u64,
     pub(super) hard_pending_compaction_bytes: u64,
     pub(super) compaction: CompactionStyle,
@@ -42,6 +43,7 @@ impl Default for KeyspaceOptions {
             level0_stop_trigger: limits::DEFAULT_LEVEL0_STOP_TRIGGER,
             max_compactions: limits::DEFAULT_MAX_COMPACTIONS,
             max_subcompactions: limits::DEFAULT_MAX_SUBCOMPACTIONS,
+            disable_auto_compactions: false,
             soft_pending_compaction_bytes: limits::DEFAULT_SOFT_PENDING_COMPACTION_BYTES,
             hard_pending_compaction_bytes: limits::DEFAULT_HARD_PENDING_COMPACTION_BYTES,
             compaction: CompactionStyle::Leveled,
@@ -162,6 +164,15 @@ impl KeyspaceOptions {
     #[must_use]
     pub const fn max_subcompactions(&self) -> u32 {
         self.max_subcompactions
+    }
+
+    /// Whether the engine never starts a compaction of this keyspace by itself (default
+    /// `false`), for bulk loads: [`crate::Db::compact_range`] still runs, and the level-0
+    /// slowdown and stop triggers still hold writes, so a load that passes them needs a manual
+    /// compaction to go on.
+    #[must_use]
+    pub const fn disable_auto_compactions(&self) -> bool {
+        self.disable_auto_compactions
     }
 
     /// Bytes compaction may owe (estimated after every install) before writes are paced as

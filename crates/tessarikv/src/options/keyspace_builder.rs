@@ -69,6 +69,12 @@ impl KeyspaceOptionsBuilder {
         self
     }
 
+    /// Sets [`KeyspaceOptions::disable_auto_compactions`].
+    pub const fn disable_auto_compactions(mut self, value: bool) -> Self {
+        self.options.disable_auto_compactions = value;
+        self
+    }
+
     /// Sets [`KeyspaceOptions::max_subcompactions`].
     pub const fn max_subcompactions(mut self, value: u32) -> Self {
         self.options.max_subcompactions = value;
