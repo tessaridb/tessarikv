@@ -20,49 +20,25 @@ pub mod block;
 pub mod filter;
 
 mod builder;
+mod codec;
 mod handle;
 mod iter;
 mod reader;
 mod source;
 
 #[cfg(test)]
+mod codec_tests;
+#[cfg(test)]
 mod source_tests;
 #[cfg(test)]
 mod tests;
 
 pub use builder::TableBuilder;
+pub use codec::Compression;
 pub use handle::{BlockHandle, FOOTER_BYTES};
 pub use iter::TableIter;
 pub use reader::Table;
 pub use source::{BlockSource, OpenError, unseal_block};
-
-/// How a block's bytes are stored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
-pub enum Compression {
-    /// As they are.
-    #[default]
-    None,
-    /// Compressed with LZ4, unless that saves less than an eighth.
-    Lz4,
-}
-
-impl Compression {
-    fn byte(self) -> u8 {
-        match self {
-            Self::None => 0,
-            Self::Lz4 => 1,
-        }
-    }
-
-    fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(Self::None),
-            1 => Some(Self::Lz4),
-            _ => None,
-        }
-    }
-}
 
 /// How a table is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

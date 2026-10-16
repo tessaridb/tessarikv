@@ -2,8 +2,7 @@
 //!
 //! Every block is stored as `[payload][compression: u8][crc32c: u32]`, the checksum covering the
 //! payload and the compression byte; it is verified on every read. A compressed payload is
-//! `[uncompressed length: varint][LZ4 block]`, and its length is checked against what LZ4 can
-//! produce from that many bytes before anything is allocated.
+//! `[uncompressed length: varint][codec body]` (see the codec module for how each is decoded).
 //!
 //! The footer is the last [`FOOTER_BYTES`] of the file:
 //!
@@ -14,9 +13,8 @@
 //!
 //! A handle is `[offset: u64][size: u64]`, the size including the block's 5-byte seal.
 
-use super::Compression;
+use super::{Compression, codec};
 use crate::error::{Error, Result};
-use crate::varint;
 
 /// Bytes of the footer.
 pub const FOOTER_BYTES: usize = 64;
@@ -38,9 +36,6 @@ const HANDLE_BYTES: usize = 16;
 
 /// Where the footer's checksum starts.
 const FOOTER_CHECKSUM_AT: usize = 52;
-
-/// The most bytes LZ4 can expand one input byte into.
-const LZ4_MAX_RATIO: usize = 255;
 
 /// Where a block is in a table file: its offset and its size, seal included. A reader that
 /// holds the file reads exactly these bytes and passes them to [`super::unseal_block`].
@@ -182,22 +177,10 @@ pub(super) fn write_block(
     compression: Compression,
 ) -> BlockHandle {
     let offset = base.saturating_add(u64::try_from(out.len()).unwrap_or(u64::MAX));
-    let compressed = match compression {
-        Compression::Lz4 => {
-            let mut sealed = Vec::new();
-            varint::put_u32(
-                &mut sealed,
-                u32::try_from(payload.len()).unwrap_or(u32::MAX),
-            );
-            sealed.extend_from_slice(&lz4_flex::block::compress(payload));
-            let saved = payload.len().saturating_sub(payload.len() / 8);
-            (sealed.len() < saved && u32::try_from(payload.len()).is_ok()).then_some(sealed)
-        }
-        Compression::None => None,
-    };
+    let compressed = codec::compress(compression, payload);
     let (stored, kind) = match &compressed {
-        Some(sealed) => (sealed.as_slice(), Compression::Lz4.byte()),
-        None => (payload, Compression::None.byte()),
+        Some((sealed, byte)) => (sealed.as_slice(), *byte),
+        None => (payload, 0),
     };
     out.extend_from_slice(stored);
     out.push(kind);
@@ -245,16 +228,5 @@ pub(super) fn unseal(sealed: &[u8]) -> Result<Vec<u8>> {
     if crc32c::crc32c_append(crc32c::crc32c(stored), &[kind]) != expected {
         return Err(corrupt("checksum mismatch"));
     }
-    match Compression::from_byte(kind).ok_or(corrupt("unknown compression"))? {
-        Compression::None => Ok(stored.to_vec()),
-        Compression::Lz4 => {
-            let (length, used) = varint::get_u32(stored).ok_or(corrupt("compressed length"))?;
-            let body = stored.get(used..).ok_or(corrupt("compressed length"))?;
-            let length = usize::try_from(length).map_err(|_| corrupt("compressed length"))?;
-            if length > body.len().saturating_mul(LZ4_MAX_RATIO).saturating_add(16) {
-                return Err(corrupt("claims more than its bytes can expand to"));
-            }
-            lz4_flex::block::decompress(body, length).map_err(|_| corrupt("does not decompress"))
-        }
-    }
+    codec::decompress(kind, stored).map_err(corrupt)
 }

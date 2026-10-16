@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use proptest::prelude::*;
 
 use super::block::Block;
+use super::codec_tests::EVERY;
 use super::*;
 use crate::error::{Error, Result};
 
@@ -160,12 +161,12 @@ proptest! {
             prop::collection::vec(any::<u8>(), 0..24),
             0..80,
         ),
-        lz4 in any::<bool>(),
+        codec in 0..EVERY.len(),
         present in prop::collection::btree_set(0_u64..4096, 0..20),
         learn in any::<bool>(),
         moves in prop::collection::vec(a_move(), 1..40),
     ) {
-        let compression = if lz4 { Compression::Lz4 } else { Compression::None };
+        let compression = EVERY[codec];
         let file = build(&model, compression);
         let entries: Vec<_> = model.into_iter().collect();
         let source = Sparse::new(&file, present, learn);

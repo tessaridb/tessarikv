@@ -20,6 +20,9 @@ tessarikv-types.workspace = true
 thiserror.workspace = true
 crc32c.workspace = true
 lz4_flex.workspace = true
+snap.workspace = true
+ruzstd.workspace = true
+miniz_oxide.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

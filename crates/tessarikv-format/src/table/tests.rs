@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 
+use super::codec_tests::EVERY;
 use super::*;
 use crate::error::{Error, Result};
 
@@ -67,9 +68,9 @@ proptest! {
             0..120,
         ),
         targets in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..16), 1..8),
-        lz4 in any::<bool>(),
+        codec in 0..EVERY.len(),
     ) {
-        let compression = if lz4 { Compression::Lz4 } else { Compression::None };
+        let compression = EVERY[codec];
         let table = open(build(&model, compression)).expect("opens");
         let mut iter = table.iter();
         iter.seek_to_first();
@@ -92,22 +93,24 @@ proptest! {
 }
 
 #[test]
-fn compression_shrinks_repetitive_blocks() {
+fn every_codec_shrinks_repetitive_blocks() {
     let model = sample();
     let plain = build(&model, Compression::None);
-    let compressed = build(&model, Compression::Lz4);
-    assert!(
-        compressed.len() < plain.len(),
-        "{} vs {}",
-        compressed.len(),
-        plain.len()
-    );
+    for codec in EVERY.into_iter().skip(1) {
+        let compressed = build(&model, codec);
+        assert!(
+            compressed.len() < plain.len(),
+            "{codec:?}: {} vs {}",
+            compressed.len(),
+            plain.len()
+        );
+    }
 }
 
 #[test]
 fn every_damaged_byte_is_detected() {
     let model: BTreeMap<_, _> = sample().into_iter().take(12).collect();
-    for compression in [Compression::None, Compression::Lz4] {
+    for compression in EVERY {
         let bytes = build(&model, compression);
         for at in 0..bytes.len() {
             let mut damaged = bytes.clone();
@@ -191,11 +194,11 @@ proptest! {
             0..120,
         ),
         targets in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..16), 1..8),
-        lz4 in any::<bool>(),
+        codec in 0..EVERY.len(),
         moves in prop::collection::vec(any::<bool>(), 0..60),
         start in any::<prop::sample::Index>(),
     ) {
-        let compression = if lz4 { Compression::Lz4 } else { Compression::None };
+        let compression = EVERY[codec];
         let table = open(build(&model, compression)).expect("opens");
         let mut iter = table.iter();
         iter.seek_to_last();
@@ -246,9 +249,9 @@ proptest! {
     #[test]
     fn a_table_taken_in_pieces_is_the_table_built_whole(
         takes in proptest::collection::vec(any::<bool>(), 60),
-        lz4 in any::<bool>(),
+        codec in 0..EVERY.len(),
     ) {
-        let compression = if lz4 { Compression::Lz4 } else { Compression::None };
+        let compression = EVERY[codec];
         let model = sample();
         let mut builder = TableBuilder::new(options(compression), bytewise, whole);
         let mut pieces = Vec::new();
