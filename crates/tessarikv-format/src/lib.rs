@@ -19,6 +19,7 @@ mod batch;
 mod error;
 mod log;
 mod manifest;
+mod seal;
 mod table;
 mod varint;
 
@@ -29,6 +30,10 @@ pub use log::{
     frame_bytes, frame_header, payload_checksum,
 };
 pub use manifest::{KeyspaceRecord, ManifestEdit, TableMeta, TableRef};
+pub use seal::{
+    Cipher, FileKind, FileSealer, HEADER_BYTES as SEAL_HEADER_BYTES, ROOT_KEY_BYTES, RootKey,
+    SealHeader, TAG_BYTES as SEAL_TAG_BYTES,
+};
 pub use table::block::{Block, BlockBuilder, BlockIter, Compare};
 pub use table::filter::{BloomBuilder, BloomFilter, hash as key_hash};
 pub use table::{

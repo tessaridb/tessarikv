@@ -23,6 +23,12 @@ lz4_flex.workspace = true
 snap.workspace = true
 ruzstd.workspace = true
 miniz_oxide.workspace = true
+aes-gcm.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

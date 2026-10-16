@@ -59,6 +59,9 @@ All notable changes to this project are documented here. The format follows
 - `multi_get` on `Db`, `Snapshot` and `Transaction`: many keys read at one snapshot, values in the order asked.
 - Every open on storage records the options it runs with in `OPTIONS-<n>` beside the data (the two newest are
   kept), for audits; the engine never reads it back.
+- `FileSealer`: authenticated encryption of the units a file is written in, with AES-256-GCM or
+  ChaCha20-Poly1305, a key per file derived from the caller's root key, and each unit bound to its file,
+  kind and position.
 - `DbOptions::max_open_files`: keeps at most that many table files open (zero, the default, keeps every one);
   a read of a file let go opens it again, and a removed file lets go of its handle.
 - Opening refuses a log whose segments skip a number (a segment removed from outside), in every recovery mode,

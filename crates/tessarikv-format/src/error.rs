@@ -46,6 +46,15 @@ pub enum Error {
         /// The rule it breaks.
         reason: &'static str,
     },
+
+    /// Sealed bytes failed authentication: the key is not the one they were sealed with, or the
+    /// bytes, their place or their file header were changed. One error for every cause, so a
+    /// failure tells nothing about which.
+    #[error("{what} failed authentication: wrong key, or the bytes were changed")]
+    Unauthenticated {
+        /// What was being opened.
+        what: &'static str,
+    },
 }
 
 /// Result of a codec operation.
