@@ -89,6 +89,8 @@ mod multi_get_tests;
 #[cfg(test)]
 mod multi_scan_tests;
 #[cfg(test)]
+mod open_files_tests;
+#[cfg(test)]
 mod open_tests;
 #[cfg(test)]
 mod pressure_tests;

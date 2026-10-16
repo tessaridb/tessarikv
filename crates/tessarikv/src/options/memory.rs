@@ -1,4 +1,4 @@
-//! The database-wide ceiling on in-memory tables.
+//! Database-wide bounds on resources: in-memory tables and open table files.
 
 use tessarikv_constants as limits;
 
@@ -16,12 +16,27 @@ impl DbOptions {
     pub const fn total_memtable_bytes(&self) -> u64 {
         self.total_memtable_bytes
     }
+
+    /// The most table files kept open at once; zero (the default) keeps every table file open
+    /// while it is read. With a bound, a read of a file let go opens it again, and the files
+    /// open at once are at most the bound plus the reads in flight. Each table's index and
+    /// filter stay in memory either way.
+    #[must_use]
+    pub const fn max_open_files(&self) -> u32 {
+        self.max_open_files
+    }
 }
 
 impl DbOptionsBuilder {
     /// Sets [`DbOptions::total_memtable_bytes`].
     pub const fn total_memtable_bytes(mut self, value: u64) -> Self {
         self.options.total_memtable_bytes = value;
+        self
+    }
+
+    /// Sets [`DbOptions::max_open_files`].
+    pub const fn max_open_files(mut self, value: u32) -> Self {
+        self.options.max_open_files = value;
         self
     }
 }

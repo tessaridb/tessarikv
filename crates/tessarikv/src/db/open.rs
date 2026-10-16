@@ -57,10 +57,10 @@ impl Db {
         let keyspace = options.default_keyspace().clone();
         // Kept for the installer: `options` goes to the opening task.
         let named = options.clone();
-        let cache = Arc::new(BlockCache::new(
-            options.block_cache_bytes(),
-            keyspace.block_bytes(),
-        ));
+        let cache = Arc::new(
+            BlockCache::new(options.block_cache_bytes(), keyspace.block_bytes())
+                .with_open_files(options.max_open_files(), Arc::clone(&storage)),
+        );
         let opened = {
             let storage = Arc::clone(&storage);
             let path = path.clone();

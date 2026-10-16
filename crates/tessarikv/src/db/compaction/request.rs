@@ -66,10 +66,12 @@ impl Compactions {
     /// Removes `files`, in `dir`, once no view reads them: a dropped keyspace's tables, or the
     /// outputs of a compaction of one.
     pub(crate) fn retire(&mut self, files: Vec<TableFile>, dir: &Path) {
-        self.obsolete.extend(
-            files
-                .iter()
-                .map(|file| (Arc::downgrade(&file.blocks), table_path(dir, file.meta.id))),
-        );
+        self.obsolete.extend(files.iter().map(|file| {
+            (
+                Arc::downgrade(&file.blocks),
+                file.meta.id,
+                table_path(dir, file.meta.id),
+            )
+        }));
     }
 }

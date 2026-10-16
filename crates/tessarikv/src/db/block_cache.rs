@@ -12,8 +12,14 @@
 //! A block larger than the cache is not kept, and an insert that finds every candidate being
 //! read leaves the block uncached; the read that loaded it still gets it.
 
+use std::path::Path;
+use std::sync::Arc;
+
 use tessarikv_format::Block;
 use tessarikv_sync::ClockCache;
+
+use crate::Result;
+use crate::storage::{ReadableFile, Storage};
 
 #[cfg(test)]
 mod tests;
@@ -25,10 +31,23 @@ pub(crate) struct BlockKey {
     pub(crate) offset: u64,
 }
 
-/// Decoded blocks of table files, bounded in bytes.
+/// Decoded blocks of table files, bounded in bytes, and, when open files are bounded, the
+/// handles of table files.
 #[derive(Debug)]
 pub(crate) struct BlockCache {
     blocks: ClockCache<BlockKey, Block>,
+    files: Option<FileHandles>,
+}
+
+/// Open table files by file id, at most [`crate::DbOptions::max_open_files`] of them: a read
+/// takes a file's handle from here, opening the file again when it was let go. The same CLOCK
+/// cache as the blocks', so a lookup never waits; a handle read since the clock last passed is
+/// spared once. Reads in flight hold their own handle, so the files open at once are at most the
+/// bound plus the reads in flight.
+#[derive(Debug)]
+struct FileHandles {
+    storage: Arc<dyn Storage>,
+    handles: ClockCache<u64, Arc<dyn ReadableFile>>,
 }
 
 impl BlockCache {
@@ -37,7 +56,70 @@ impl BlockCache {
     pub(crate) fn new(capacity: u64, block_bytes: u64) -> Self {
         Self {
             blocks: ClockCache::new(capacity, block_bytes),
+            files: None,
         }
+    }
+
+    /// Keeps at most `max_open_files` table files open, opened through `storage`; zero keeps
+    /// each table file open for as long as the table is read.
+    pub(crate) fn with_open_files(
+        mut self,
+        max_open_files: u32,
+        storage: Arc<dyn Storage>,
+    ) -> Self {
+        self.files = (max_open_files != 0).then(|| FileHandles {
+            storage,
+            handles: ClockCache::new(u64::from(max_open_files), 1),
+        });
+        self
+    }
+
+    /// Whether table files are opened through this cache rather than each kept open.
+    pub(crate) fn bounds_open_files(&self) -> bool {
+        self.files.is_some()
+    }
+
+    /// Keeps `file`, the handle of table file `id`, for the next read of it.
+    pub(crate) fn offer_file(&self, id: u64, file: Arc<dyn ReadableFile>) {
+        if let Some(files) = &self.files {
+            // Whether it was kept changes nothing: a later read opens the file again.
+            let _ = files.handles.insert(id, file, 1);
+        }
+    }
+
+    /// The handle of table file `id`, when one is kept.
+    pub(crate) fn cached_file(&self, id: u64) -> Option<Arc<dyn ReadableFile>> {
+        self.files.as_ref()?.handles.get(&id)
+    }
+
+    /// The handle of table file `id` at `path`: the one kept, or the file opened again and
+    /// kept. Opens, so it runs where blocking is allowed.
+    ///
+    /// # Errors
+    ///
+    /// The storage's error when the file cannot be opened.
+    pub(crate) fn file(&self, id: u64, path: &Path) -> Result<Arc<dyn ReadableFile>> {
+        if let Some(file) = self.cached_file(id) {
+            return Ok(file);
+        }
+        let Some(files) = &self.files else {
+            return Err(crate::Error::Unsupported {
+                what: "a table file without a handle",
+            });
+        };
+        let file = files.storage.open(path)?;
+        let _ = files.handles.insert(id, Arc::clone(&file), 1);
+        Ok(file)
+    }
+
+    /// Lets go of the handle of table file `id`, which is about to be removed; returns whether
+    /// none is kept any more (a handle being read stays until the next call).
+    pub(crate) fn forget_file(&self, id: u64) -> bool {
+        let Some(files) = &self.files else {
+            return true;
+        };
+        files.handles.remove(&id);
+        files.handles.get(&id).is_none()
     }
 
     /// The block at `key`, when the cache holds it.

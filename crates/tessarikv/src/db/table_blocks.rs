@@ -28,7 +28,8 @@ use crate::{Error, Result};
 pub(crate) struct TableBlocks {
     id: u64,
     path: PathBuf,
-    file: Arc<dyn ReadableFile>,
+    /// The open file; none when open files are bounded and the cache keeps the handle.
+    file: Option<Arc<dyn ReadableFile>>,
     len: u64,
     cache: Arc<BlockCache>,
 }
@@ -116,15 +117,27 @@ impl TableBlocks {
     /// Reads and verifies the block at `handle`. Runs on a blocking thread.
     fn read(&self, handle: BlockHandle) -> Result<Block> {
         let mut sealed = self.buffer(handle)?;
-        self.file.read_at(handle.offset(), &mut sealed)?;
+        let file = match &self.file {
+            Some(file) => Arc::clone(file),
+            None => self.cache.file(self.id, &self.path)?,
+        };
+        file.read_at(handle.offset(), &mut sealed)?;
         self.unseal(&sealed)
     }
 
     /// Reads and verifies the block at `handle` if the storage can do it without blocking;
     /// `None` when it cannot.
     fn read_inline(&self, handle: BlockHandle) -> Result<Option<Block>> {
+        // A file let go is opened again only where blocking is allowed.
+        let Some(file) = self
+            .file
+            .clone()
+            .or_else(|| self.cache.cached_file(self.id))
+        else {
+            return Ok(None);
+        };
         let mut sealed = self.buffer(handle)?;
-        if !self.file.try_read_at(handle.offset(), &mut sealed)? {
+        if !file.try_read_at(handle.offset(), &mut sealed)? {
             return Ok(None);
         }
         self.unseal(&sealed).map(Some)
@@ -186,7 +199,12 @@ pub(crate) fn open_table(
     let blocks = Arc::new(TableBlocks {
         id,
         path: path.to_path_buf(),
-        file: Arc::clone(&file),
+        file: if cache.bounds_open_files() {
+            cache.offer_file(id, Arc::clone(&file));
+            None
+        } else {
+            Some(Arc::clone(&file))
+        },
         len,
         cache: Arc::clone(cache),
     });

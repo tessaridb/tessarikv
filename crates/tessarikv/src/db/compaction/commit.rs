@@ -78,6 +78,7 @@ impl Compactions {
                     .map(|file| {
                         (
                             Arc::downgrade(&file.blocks),
+                            file.meta.id,
                             table_path(&flusher.dir, file.meta.id),
                         )
                     }),

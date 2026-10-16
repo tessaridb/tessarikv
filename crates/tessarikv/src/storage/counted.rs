@@ -18,6 +18,8 @@ pub(crate) struct Reads {
     pub(crate) inline: AtomicU64,
     /// Reads made where blocking is allowed.
     pub(crate) blocking: AtomicU64,
+    /// Files opened and not yet dropped.
+    pub(crate) open: AtomicU64,
 }
 
 /// Memory storage whose files count their reads; `inline` decides whether a read promised not
@@ -69,13 +71,23 @@ impl ReadableFile for CountedFile {
     }
 }
 
+impl Drop for CountedFile {
+    fn drop(&mut self) {
+        // Relaxed: see the module documentation.
+        self.reads.open.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl Storage for CountedStorage {
     fn create(&self, path: &Path) -> Result<Box<dyn WritableFile>> {
         self.inner.create(path)
     }
     fn open(&self, path: &Path) -> Result<Arc<dyn ReadableFile>> {
+        let inner = self.inner.open(path)?;
+        // Relaxed: see the module documentation.
+        self.reads.open.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(CountedFile {
-            inner: self.inner.open(path)?,
+            inner,
             inline: self.inline,
             reads: Arc::clone(&self.reads),
         }))

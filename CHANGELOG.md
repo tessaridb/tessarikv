@@ -57,6 +57,8 @@ All notable changes to this project are documented here. The format follows
 - `Db::approximate_size`: the bytes of table files a key range takes, from table metadata and indexes, reading
   nothing from storage; `Table::offset_of` places a key in a table file from its index.
 - `multi_get` on `Db`, `Snapshot` and `Transaction`: many keys read at one snapshot, values in the order asked.
+- `DbOptions::max_open_files`: keeps at most that many table files open (zero, the default, keeps every one);
+  a read of a file let go opens it again, and a removed file lets go of its handle.
 - Opening refuses a log whose segments skip a number (a segment removed from outside), in every recovery mode,
   instead of replaying around the gap.
 - `DbOptions::total_memtable_bytes`: one ceiling over the newest in-memory tables of every keyspace together;

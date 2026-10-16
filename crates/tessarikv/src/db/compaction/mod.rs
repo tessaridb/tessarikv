@@ -60,6 +60,7 @@ pub(super) use self::levels::owed;
 use self::levels::shape_of;
 use self::manual::{Active, Request};
 use self::pick::{Busy, Pick, Shape};
+use super::block_cache::BlockCache;
 use super::installer::Flusher;
 use super::table_blocks::TableBlocks;
 use super::view::TableFile;
@@ -84,7 +85,8 @@ pub(super) struct Compactions {
     /// Finished jobs: number, keyspace, what each took and its outputs, waiting for the
     /// manifest.
     ready: Vec<(u64, u32, Pick, Vec<TableFile>)>,
-    obsolete: Vec<(Weak<TableBlocks>, PathBuf)>,
+    /// Tables to remove once no view reads them: their blocks, file ids and paths.
+    obsolete: Vec<(Weak<TableBlocks>, u64, PathBuf)>,
     /// Range requests waiting, and the one being served.
     queued: VecDeque<Request>,
     active: Option<Active>,
@@ -150,7 +152,8 @@ impl Compactions {
             self.recorded(number);
         }
         self.refuse_unheld(flusher);
-        self.sweep(Arc::clone(&flusher.storage)).await;
+        self.sweep(Arc::clone(&flusher.storage), Arc::clone(&flusher.cache))
+            .await;
         // Keyspace 0, then the named ones in id order: index 0 is the default keyspace.
         let mut index = 0_usize;
         while start
@@ -229,10 +232,10 @@ impl Compactions {
 
     /// Removes the input files no view names any more; a removal that fails is tried again at
     /// the next sweep.
-    async fn sweep(&mut self, storage: Arc<dyn Storage>) {
+    async fn sweep(&mut self, storage: Arc<dyn Storage>, cache: Arc<BlockCache>) {
         let (unread, read): (Vec<_>, Vec<_>) = std::mem::take(&mut self.obsolete)
             .into_iter()
-            .partition(|(blocks, _)| blocks.strong_count() == 0);
+            .partition(|(blocks, _, _)| blocks.strong_count() == 0);
         self.obsolete = read;
         if unread.is_empty() {
             return;
@@ -240,7 +243,8 @@ impl Compactions {
         let failed = tokio::task::spawn_blocking(move || {
             unread
                 .into_iter()
-                .filter(|(_, path)| storage.remove(path).is_err())
+                // A handle still kept would stop the removal where open files cannot be removed.
+                .filter(|(_, id, path)| !cache.forget_file(*id) || storage.remove(path).is_err())
                 .collect::<Vec<_>>()
         })
         .await
