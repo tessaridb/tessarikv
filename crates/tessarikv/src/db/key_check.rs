@@ -3,7 +3,8 @@
 //! An encrypted database holds a key-check file, written when the database is created: a seal
 //! header and one sealed unit. Every open reads it first, so a wrong or missing key is refused
 //! before any other file is read, and a database written without encryption is never mistaken
-//! for an encrypted one, or the other way round.
+//! for an encrypted one, or the other way round. After a key rotation the file is rewritten under
+//! the current key, so a retired key is needed only while some data file names it.
 
 use std::path::Path;
 
@@ -54,6 +55,11 @@ pub(super) fn check_key(
     let sealer = sealing.open_file(&bytes, FileKind::KeyCheck, &path)?;
     let sealed = bytes.get(SEAL_HEADER_BYTES..).unwrap_or_default();
     match sealer.open(position(), sealed) {
+        // A file checked under an older key is written again under the current one, so a
+        // retired key is needed only while a data file still names it.
+        Ok(text) if text == KEY_CHECK_TEXT && key_id != sealing.key_id() => {
+            write_key_check(storage, dir, sealing)
+        }
         Ok(text) if text == KEY_CHECK_TEXT => Ok(()),
         _ => Err(Error::WrongKey { key_id }),
     }

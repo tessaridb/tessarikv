@@ -28,6 +28,11 @@ impl Sealing {
         }
     }
 
+    /// The id of the root key new files are encrypted under.
+    pub(crate) fn key_id(&self) -> u32 {
+        self.encryption.key_id()
+    }
+
     /// The header and key of a new file of `kind`, under the current key id.
     pub(crate) fn new_file(&self, kind: FileKind) -> Result<(SealHeader, Arc<FileSealer>)> {
         let key_id = self.encryption.key_id();

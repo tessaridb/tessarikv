@@ -69,6 +69,8 @@ mod flush_tests;
 #[cfg(test)]
 mod iterator_tests;
 #[cfg(test)]
+mod key_rotation_tests;
+#[cfg(test)]
 mod keyspace_admission_tests;
 #[cfg(test)]
 mod keyspace_compaction_tests;
