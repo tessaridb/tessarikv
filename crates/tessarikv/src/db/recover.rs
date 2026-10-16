@@ -13,12 +13,20 @@
 //! later segment is removed, so the next writes continue a clean log; under
 //! [`WalRecovery::Absolute`] opening fails and nothing is changed. A frame whose checksum holds
 //! but whose payload does not decode is never a torn write, and fails the open in every mode.
+//!
+//! In an encrypted database each segment starts with the seal header of the open that wrote it,
+//! and each batch is sealed under that header's key with its first sequence number, which stays
+//! in the clear, as the nonce. A batch failing authentication under a checksum that holds was
+//! changed, and fails the open in every mode; a segment cut inside its header is a torn write.
 
 use std::path::Path;
 
-use tessarikv_format::{EndKind, FrameReader, LogRead, WriteBatch};
+use tessarikv_format::{
+    EndKind, FileKind, FileSealer, FrameReader, LogEnd, LogRead, SEAL_HEADER_BYTES, WriteBatch,
+};
 use tessarikv_types::SequenceNumber;
 
+use super::sealing::Sealing;
 use crate::log::{FinishedSegment, segment_path};
 use crate::memtable::Memtable;
 use crate::storage::{Storage, read_all};
@@ -45,6 +53,7 @@ pub(super) fn recover(
     tables: &[(u32, Memtable)],
     mode: WalRecovery,
     flushed: u64,
+    sealing: Option<&Sealing>,
 ) -> Result<Recovered> {
     let segments = segments(storage, dir)?;
     // Segments are created and removed in log-number order, so the ones left are consecutive;
@@ -70,13 +79,38 @@ pub(super) fn recover(
     for (index, &log_number) in segments.iter().enumerate() {
         let path = segment_path(dir, log_number);
         let bytes = read_all(storage, &path, "write-ahead log")?;
-        let mut frames = FrameReader::new(&bytes, log_number);
-        let end = loop {
-            match frames.next_frame() {
-                LogRead::Frame(payload) => {
-                    last_sequence = replay(tables, payload, last_sequence, flushed, &path)?;
+        // An encrypted segment starts with its seal header; one cut inside it is a torn write.
+        let (start, sealer) = match sealing {
+            Some(sealing) if bytes.len() >= SEAL_HEADER_BYTES => (
+                SEAL_HEADER_BYTES,
+                Some(sealing.open_file(&bytes, FileKind::Log, &path)?),
+            ),
+            Some(_) if !bytes.is_empty() => (bytes.len(), None),
+            _ => (0, None),
+        };
+        let torn_header = sealing.is_some() && start > 0 && sealer.is_none();
+        let mut frames = FrameReader::new(bytes.get(start..).unwrap_or_default(), log_number);
+        let end = if torn_header {
+            LogEnd {
+                offset: 0,
+                kind: EndKind::Torn,
+            }
+        } else {
+            loop {
+                match frames.next_frame() {
+                    LogRead::Frame(payload) => {
+                        let sealer = sealer.as_deref();
+                        last_sequence =
+                            replay(tables, payload, sealer, last_sequence, flushed, &path)?;
+                    }
+                    LogRead::End(end) => {
+                        let offset = u64::try_from(start)
+                            .ok()
+                            .and_then(|start| end.offset.checked_add(start))
+                            .ok_or_else(|| corruption(&path, end.offset, "offset".to_owned()))?;
+                        break LogEnd { offset, ..end };
+                    }
                 }
-                LogRead::End(end) => break end,
             }
         };
         kept.push(FinishedSegment {
@@ -113,6 +147,7 @@ pub(super) fn recover(
 fn replay(
     tables: &[(u32, Memtable)],
     payload: &[u8],
+    sealer: Option<&FileSealer>,
     previous: u64,
     flushed: u64,
     path: &Path,
@@ -125,7 +160,14 @@ fn replay(
     if first <= previous {
         return Err(bad("log sequence numbers go backwards"));
     }
-    let batch = WriteBatch::from_bytes(encoded.to_vec())
+    // A sealed batch failing authentication under a checksum that held was changed, not torn.
+    let encoded = match sealer {
+        Some(sealer) => sealer
+            .open(first, encoded)
+            .map_err(|_| bad("logged batch fails authentication"))?,
+        None => encoded.to_vec(),
+    };
+    let batch = WriteBatch::from_bytes(encoded)
         .map_err(|error| bad(&format!("logged batch does not decode: {error}")))?;
     let count = u64::from(batch.len());
     let last = count

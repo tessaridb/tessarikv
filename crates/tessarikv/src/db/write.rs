@@ -1,7 +1,9 @@
 //! Applying a batch.
 
 use tessarikv_constants::DIRECT_CHECKSUM_BYTES;
-use tessarikv_format::{FRAME_HEADER_BYTES, WriteBatch, concat_checksum, payload_checksum};
+use tessarikv_format::{
+    FRAME_HEADER_BYTES, FileSealer, SEAL_TAG_BYTES, WriteBatch, concat_checksum, payload_checksum,
+};
 use tessarikv_sync::{Claim, Sequencer};
 use tessarikv_types::{KeyspaceId, SequenceNumber};
 use tokio::sync::Notify;
@@ -84,8 +86,8 @@ impl Db {
             return claim.complete(applied);
         };
         let logged = match options.durability {
-            Durability::Sync => Some((prepare(batch), Wait::Durable)),
-            Durability::Buffered => Some((prepare(batch), Wait::Written)),
+            Durability::Sync => Some((prepare(batch, log.sealer().is_some()), Wait::Durable)),
+            Durability::Buffered => Some((prepare(batch, log.sealer().is_some()), Wait::Written)),
             Durability::NoWal => None,
         };
         // A place in the log's queue is taken before the claim, so nothing between claiming
@@ -112,12 +114,13 @@ impl Db {
         let claim = Completion::new(&self.sequencer, completed, claim);
         let (first, last) = (claim.first(), claim.last());
         let logged = logged.filter(|_| accepted);
-        let (record, built) = match logged.map(|(prepared, wait)| (prepared.finish(first), wait)) {
-            Some((Ok(frame), wait)) => (Record::Frame { frame, wait }, Ok(())),
-            // The range still reaches the log, as a skip, so later frames are not held back.
-            Some((Err(error), _)) => (Record::Skip, Err(error)),
-            None => (Record::Skip, Ok(())),
-        };
+        let (record, built) =
+            match logged.map(|(prepared, wait)| (prepared.finish(first, log.sealer()), wait)) {
+                Some((Ok(frame), wait)) => (Record::Frame { frame, wait }, Ok(())),
+                // The range still reaches the log, as a skip, so later frames are not held back.
+                Some((Err(error), _)) => (Record::Skip, Err(error)),
+                None => (Record::Skip, Ok(())),
+            };
         let wait = slot.send(first, last, record);
         built?;
         if !accepted {
@@ -173,16 +176,19 @@ struct Prepared {
     batch_len: usize,
 }
 
-fn prepare(batch: &WriteBatch) -> Prepared {
+/// The frame of `batch` up to its sequence number; `sealed` when the log is encrypted, whose
+/// frames carry a tag and are checksummed only once sealed.
+fn prepare(batch: &WriteBatch, sealed: bool) -> Prepared {
     let encoded = batch.as_bytes();
     let header = FRAME_HEADER_BYTES.saturating_add(SEQUENCE_BYTES);
-    let mut bytes = Vec::with_capacity(header.saturating_add(encoded.len()));
+    let tag = if sealed { SEAL_TAG_BYTES } else { 0 };
+    let mut bytes = Vec::with_capacity(header.saturating_add(encoded.len()).saturating_add(tag));
     bytes.resize(header, 0);
     bytes.extend_from_slice(encoded);
     Prepared {
         bytes,
         // Only a batch whose checksum is combined later needs it now.
-        batch_checksum: if encoded.len() < DIRECT_CHECKSUM_BYTES {
+        batch_checksum: if sealed || encoded.len() < DIRECT_CHECKSUM_BYTES {
             0
         } else {
             payload_checksum(encoded)
@@ -192,15 +198,29 @@ fn prepare(batch: &WriteBatch) -> Prepared {
 }
 
 impl Prepared {
-    /// The frame of a batch committed at sequence `first`.
-    fn finish(mut self, first: u64) -> Result<Frame> {
+    /// The frame of a batch committed at sequence `first`, its batch sealed with `sealer` as
+    /// the unit at `first` when the log is encrypted.
+    fn finish(mut self, first: u64, sealer: Option<&FileSealer>) -> Result<Frame> {
         let sequence = first.to_le_bytes();
+        let batch_at = FRAME_HEADER_BYTES.saturating_add(SEQUENCE_BYTES);
         self.bytes
-            .get_mut(FRAME_HEADER_BYTES..FRAME_HEADER_BYTES.saturating_add(SEQUENCE_BYTES))
+            .get_mut(FRAME_HEADER_BYTES..batch_at)
             .ok_or(Error::Unsupported {
                 what: "a log frame without room for its sequence number",
             })?
             .copy_from_slice(&sequence);
+        if let Some(sealer) = sealer {
+            let batch = self.bytes.get_mut(batch_at..).unwrap_or_default();
+            let tag = sealer
+                .seal_in_place(first, batch)
+                .map_err(|_| Error::Unsupported {
+                    what: "a logged batch larger than a sealed unit",
+                })?;
+            self.bytes.extend_from_slice(&tag);
+            let checksum =
+                payload_checksum(self.bytes.get(FRAME_HEADER_BYTES..).unwrap_or_default());
+            return Frame::with_checksum(self.bytes, checksum);
+        }
         let checksum = if self.batch_len < DIRECT_CHECKSUM_BYTES {
             payload_checksum(self.bytes.get(FRAME_HEADER_BYTES..).unwrap_or_default())
         } else {

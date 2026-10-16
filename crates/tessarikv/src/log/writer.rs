@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessarikv_constants::LOG_QUEUE_ENTRIES;
+use tessarikv_format::SEAL_HEADER_BYTES;
 use tokio::sync::{Notify, mpsc, watch};
 
 use super::segments::Segments;
@@ -111,6 +112,14 @@ impl Writer {
             )),
             released,
         }
+    }
+
+    /// Starts every segment it creates with `header`, a seal header, when there is one.
+    pub(super) fn with_seal_header(mut self, header: Option<[u8; SEAL_HEADER_BYTES]>) -> Self {
+        if let Some(segments) = self.segments.as_mut() {
+            segments.header = header;
+        }
+        self
     }
 
     /// Serves entries until every sender is gone, then syncs and returns. A failure is

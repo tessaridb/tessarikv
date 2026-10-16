@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tessarikv_format::{FRAME_HEADER_BYTES, frame_header};
+use tessarikv_format::{FRAME_HEADER_BYTES, SEAL_HEADER_BYTES, frame_header};
 
 use super::{FinishedSegment, Frame, segment_path};
 use crate::storage::{Storage, WritableFile};
@@ -26,6 +26,8 @@ pub(super) struct Segments {
     current_last: u64,
     /// The segments rolled away from, oldest first, until they are removed.
     finished: VecDeque<FinishedSegment>,
+    /// The seal header every new segment starts with, when the log is encrypted.
+    pub(super) header: Option<[u8; SEAL_HEADER_BYTES]>,
 }
 
 impl Segments {
@@ -47,6 +49,7 @@ impl Segments {
             buffer: Vec::new(),
             current_last: 0,
             finished: finished.into(),
+            header: None,
         }
     }
 
@@ -66,6 +69,9 @@ impl Segments {
             }
             if self.file.is_none() {
                 self.open()?;
+                if let Some(header) = &self.header {
+                    self.buffer.extend_from_slice(header);
+                }
             }
             let payload_len = bytes.len().saturating_sub(FRAME_HEADER_BYTES);
             let header = frame_header(self.log_number, payload_len, frame.checksum)

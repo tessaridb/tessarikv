@@ -34,7 +34,7 @@ pub(super) async fn append(log: &LogWriter, first: u64, last: u64, record: Recor
 
 pub(super) fn start(storage: &FaultStorage, segment_bytes: u64) -> LogWriter {
     let files: Arc<dyn crate::storage::Storage> = Arc::new(storage.clone());
-    LogWriter::start(files, dir(), 1, 1, segment_bytes, Vec::new()).expect("inside a runtime")
+    LogWriter::start(files, dir(), 1, 1, segment_bytes, Vec::new(), None).expect("inside a runtime")
 }
 
 /// The payloads of one segment and whether it ended cleanly.

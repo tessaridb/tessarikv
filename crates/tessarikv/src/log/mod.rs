@@ -22,6 +22,7 @@
 //! names, [`LogRelease::release_through`] lets the log remove the finished segments that hold
 //! nothing later. The segment being written is never removed.
 
+mod frame;
 mod segments;
 mod writer;
 
@@ -38,13 +39,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tessarikv_constants::LOG_QUEUE_ENTRIES;
-use tessarikv_format::{FRAME_HEADER_BYTES, frame_bytes};
+use tessarikv_format::{FileSealer, SealHeader};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::storage::Storage;
 use crate::{Error, Result};
 
+pub(crate) use frame::Frame;
 pub(crate) use writer::LogRelease;
 use writer::{Progress, Released, Writer};
 
@@ -61,43 +63,6 @@ pub(crate) struct FinishedSegment {
     /// The last sequence number of its last frame; a segment without frames carries the last
     /// sequence of the segments before it.
     pub(crate) last: u64,
-}
-
-/// A frame ready to be logged: header space, then the payload, with the payload's checksum.
-pub(crate) struct Frame {
-    bytes: Vec<u8>,
-    checksum: u32,
-}
-
-impl Frame {
-    /// A frame from `bytes`: [`FRAME_HEADER_BYTES`] of header space, which the log writer
-    /// fills in, followed by the payload, whose
-    /// [`payload_checksum`](tessarikv_format::payload_checksum) is `checksum`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Unsupported`] for a payload larger than a frame carries.
-    pub(crate) fn with_checksum(bytes: Vec<u8>, checksum: u32) -> Result<Self> {
-        let payload_len =
-            bytes
-                .len()
-                .checked_sub(FRAME_HEADER_BYTES)
-                .ok_or(Error::Unsupported {
-                    what: "a log frame without room for its header",
-                })?;
-        frame_bytes(payload_len).map_err(|_| Error::Unsupported {
-            what: "a log frame larger than the frame limit",
-        })?;
-        Ok(Self { bytes, checksum })
-    }
-
-    /// A frame from `bytes`, as [`Frame::with_checksum`], computing the checksum.
-    #[cfg(test)]
-    pub(crate) fn new(bytes: Vec<u8>) -> Result<Self> {
-        let checksum =
-            tessarikv_format::payload_checksum(bytes.get(FRAME_HEADER_BYTES..).unwrap_or_default());
-        Self::with_checksum(bytes, checksum)
-    }
 }
 
 /// What a writer waits for after handing its frame over.
@@ -157,6 +122,8 @@ pub(crate) struct LogWriter {
     progress: watch::Receiver<Progress>,
     released: Arc<Released>,
     task: JoinHandle<Result<()>>,
+    /// The key writers seal their frames with, when the log is encrypted.
+    sealer: Option<Arc<FileSealer>>,
 }
 
 impl LogWriter {
@@ -164,7 +131,8 @@ impl LogWriter {
     /// `log_number` in `dir`, created when the first frame arrives; it expects the first entry
     /// at sequence `next_sequence`, and closes a segment before it grows past `segment_bytes`.
     /// `finished` lists the segments already in `dir`, in log-number order, so they are removed
-    /// once released.
+    /// once released. With `seal`, every segment this writer creates starts with its header, and
+    /// writers seal their frames with its key (see [`LogWriter::sealer`]).
     ///
     /// # Errors
     ///
@@ -176,6 +144,7 @@ impl LogWriter {
         next_sequence: u64,
         segment_bytes: u64,
         finished: Vec<FinishedSegment>,
+        seal: Option<(SealHeader, Arc<FileSealer>)>,
     ) -> Result<Self> {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Unsupported {
             what: "a database outside a tokio runtime",
@@ -191,14 +160,22 @@ impl LogWriter {
             segment_bytes,
             finished,
             Arc::clone(&released),
-        );
+        )
+        .with_seal_header(seal.as_ref().map(|(header, _)| header.encode()));
         let task = runtime.spawn(writer.run(receiver, publisher));
         Ok(Self {
             entries,
             progress,
             released,
             task,
+            sealer: seal.map(|(_, sealer)| sealer),
         })
+    }
+
+    /// The key a writer seals its frame's batch with, when the log is encrypted: the batch
+    /// encoding is sealed as the unit at its first sequence number, which stays in the clear.
+    pub(crate) fn sealer(&self) -> Option<&FileSealer> {
+        self.sealer.as_deref()
     }
 
     /// A place in the queue to the log writer, waited for when the queue is full.

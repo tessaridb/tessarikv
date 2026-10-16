@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tessarikv_constants::{COMMIT_RING_SLOTS, LEVELS};
-use tessarikv_format::{KeyspaceRecord, ManifestEdit};
+use tessarikv_format::{FileKind, KeyspaceRecord, ManifestEdit};
 use tessarikv_sync::Sequencer;
 
 use super::Db;
@@ -74,11 +74,23 @@ impl Db {
                 let lock = prepare(storage.as_ref(), &path, &options)?;
                 let found = ManifestStore::recover(storage.as_ref(), &path)?;
                 check_key(storage.as_ref(), &path, cache.sealing(), found.is_some())?;
+                // One key for every log segment this open writes; a new open, a new salt.
+                let log_seal = cache
+                    .sealing()
+                    .map(|sealing| sealing.new_file(FileKind::Log))
+                    .transpose()?;
                 let (version, number) = found.unwrap_or_else(|| (Version::empty(), 0));
                 let mut files = restore_tables(storage.as_ref(), &path, &version, &cache)?;
                 let (replay, _) = super::keyspaces::tables_for(&options, version.keyspaces());
                 let flushed = version.flushed_sequence();
-                let recovered = recover(storage.as_ref(), &path, &replay, recovery, flushed)?;
+                let recovered = recover(
+                    storage.as_ref(),
+                    &path,
+                    &replay,
+                    recovery,
+                    flushed,
+                    cache.sealing(),
+                )?;
                 let number = number.checked_add(1).ok_or(Error::SequenceExhausted)?;
                 let mut manifest =
                     ManifestStore::create(Arc::clone(&storage), &path, &version, number)?;
@@ -117,6 +129,7 @@ impl Db {
                     manifest,
                     last,
                     replayed,
+                    log_seal,
                 ))
             })
             .await
@@ -124,7 +137,7 @@ impl Db {
                 what: "opening a database after its opening task panicked",
             })??
         };
-        let (lock, view, recovered, manifest, last_sequence, replayed) = opened;
+        let (lock, view, recovered, manifest, last_sequence, replayed, log_seal) = opened;
         let next_sequence = last_sequence
             .checked_add(1)
             .ok_or(Error::SequenceExhausted)?;
@@ -135,6 +148,7 @@ impl Db {
             next_sequence,
             segment_bytes,
             recovered.segments,
+            log_seal,
         )?;
         if replayed {
             // The replayed records are in a table the manifest names: their segments may go.

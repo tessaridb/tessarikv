@@ -237,6 +237,7 @@ async fn recovery_reports_each_segment_with_the_last_sequence_it_holds() {
         &[(0, crate::memtable::Memtable::new())],
         WalRecovery::PointInTime,
         0,
+        None,
     )
     .expect("recovered");
     let found: Vec<(u64, u64)> = recovered

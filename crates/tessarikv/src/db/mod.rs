@@ -57,6 +57,8 @@ mod compression_tests;
 #[cfg(test)]
 mod crash_step_tests;
 #[cfg(test)]
+mod encrypted_log_tests;
+#[cfg(test)]
 mod encryption_tests;
 #[cfg(test)]
 mod fifo_tests;

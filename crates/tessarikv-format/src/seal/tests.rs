@@ -160,3 +160,23 @@ fn the_sealed_format_is_stable() {
 
 const GOLDEN_CHACHA: &str = "ba90d0d237a40f0480efb58ab75f3a1cef31a447b3419fa4d2";
 const GOLDEN_AES: &str = "bfd2e6e3a19ab038e548613616931b936cf8af1e5dfe367df6";
+
+/// Sealing in place writes exactly the unit [`FileSealer::seal`] returns.
+#[test]
+fn sealing_in_place_matches_sealing() {
+    for cipher in CIPHERS {
+        let sealer = sealer(cipher, 1, FileKind::Log);
+        for size in [0, 1, 300] {
+            let plain = vec![9_u8; size];
+            let mut buffer = plain.clone();
+            let tag = sealer.seal_in_place(77, &mut buffer).unwrap();
+            buffer.extend_from_slice(&tag);
+            assert_eq!(
+                buffer,
+                sealer.seal(77, &plain).unwrap(),
+                "{cipher:?} {size}"
+            );
+            assert_eq!(sealer.open(77, &buffer).unwrap(), plain);
+        }
+    }
+}

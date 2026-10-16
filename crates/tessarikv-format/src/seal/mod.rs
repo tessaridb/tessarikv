@@ -20,7 +20,7 @@ mod tests;
 pub use header::SealHeader;
 
 use aes_gcm::Aes256Gcm;
-use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::aead::{Aead, AeadInOut, KeyInit, Payload};
 use chacha20poly1305::ChaCha20Poly1305;
 use hkdf::Hkdf;
 use sha2::Sha256;
@@ -192,11 +192,32 @@ impl FileSealer {
             SealingAead::Aes(aead) => aead.encrypt((&nonce).into(), payload),
             SealingAead::ChaCha(aead) => aead.encrypt((&nonce).into(), payload),
         }
-        .map_err(|_| Error::TooLarge {
-            what: "sealed unit",
-            size: u64::try_from(plaintext.len()).unwrap_or(u64::MAX),
-            limit: MAX_UNIT_BYTES,
-        })
+        .map_err(|_| too_large(plaintext.len()))
+    }
+
+    /// `buffer` sealed in place as the unit at `position`, exactly as [`FileSealer::seal`]
+    /// seals it, without a copy: `buffer` then holds the ciphertext, and the returned tag
+    /// follows it in the sealed unit.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TooLarge`] as for [`FileSealer::seal`].
+    pub fn seal_in_place(&self, position: u64, buffer: &mut [u8]) -> Result<[u8; TAG_BYTES]> {
+        let aad = self.aad(position);
+        let nonce = nonce(position);
+        let len = buffer.len();
+        let tag = match &self.aead {
+            SealingAead::Aes(aead) => {
+                aead.encrypt_inout_detached((&nonce).into(), &aad, buffer.into())
+            }
+            SealingAead::ChaCha(aead) => {
+                aead.encrypt_inout_detached((&nonce).into(), &aad, buffer.into())
+            }
+        }
+        .map_err(|_| too_large(len))?;
+        let mut bytes = [0; TAG_BYTES];
+        bytes.copy_from_slice(&tag);
+        Ok(bytes)
     }
 
     /// The plaintext of the unit sealed at `position`.
@@ -232,6 +253,14 @@ impl FileSealer {
 impl std::fmt::Debug for FileSealer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("FileSealer(..)")
+    }
+}
+
+fn too_large(len: usize) -> Error {
+    Error::TooLarge {
+        what: "sealed unit",
+        size: u64::try_from(len).unwrap_or(u64::MAX),
+        limit: MAX_UNIT_BYTES,
     }
 }
 

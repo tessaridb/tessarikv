@@ -66,6 +66,8 @@ All notable changes to this project are documented here. The format follows
 - `DbOptions::encryption`: table files written by flushes and compactions are encrypted under a key of their own,
   derived from a root key a caller's `KeyProvider` hands out by id; a key-check file makes an open refuse a wrong
   key (`Error::WrongKey`), a missing one (`Error::KeyNotFound`), or a key for a database written without one.
+  The write-ahead log is encrypted too: each writer seals its own batch, and a batch changed on storage fails
+  the open in every recovery mode.
 - `DbOptions::max_open_files`: keeps at most that many table files open (zero, the default, keeps every one);
   a read of a file let go opens it again, and a removed file lets go of its handle.
 - Opening refuses a log whose segments skip a number (a segment removed from outside), in every recovery mode,
