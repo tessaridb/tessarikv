@@ -19,6 +19,7 @@ mod checkpoint;
 mod commits;
 mod compact_range;
 mod compaction;
+mod destroy;
 mod flush_job;
 mod flush_signals;
 mod flushes;
@@ -63,6 +64,8 @@ mod compaction_tests;
 mod compression_tests;
 #[cfg(test)]
 mod crash_step_tests;
+#[cfg(test)]
+mod destroy_tests;
 #[cfg(test)]
 mod encrypted_files_tests;
 #[cfg(test)]

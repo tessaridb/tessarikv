@@ -36,7 +36,7 @@ use crate::{DbOptions, Error, Result};
 pub(super) const IDENTITY: &str = "IDENTITY";
 
 /// The file whose lock keeps a second process from opening the same database.
-const LOCK: &str = "LOCK";
+pub(super) const LOCK: &str = "LOCK";
 
 /// How far ahead of their rate compactions may write: a second's worth.
 const COMPACTION_BURST: std::time::Duration = std::time::Duration::from_secs(1);

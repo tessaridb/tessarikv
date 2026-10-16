@@ -17,7 +17,7 @@ use crate::{Error, Result};
 /// The key-check file's name.
 pub(super) const KEY_CHECK: &str = "KEYCHECK";
 /// The key-check file's name while it is being written.
-const KEY_CHECK_WRITING: &str = "KEYCHECK.writing";
+pub(super) const KEY_CHECK_WRITING: &str = "KEYCHECK.writing";
 /// What the key-check file seals.
 const KEY_CHECK_TEXT: &[u8] = b"tessarikv key check";
 

@@ -72,6 +72,8 @@ All notable changes to this project are documented here. The format follows
   files take the current one, and an old key is needed only until no file names it.
 - `KeyspaceOptions::disable_auto_compactions`: the engine starts no compaction of the keyspace by itself, for
   bulk loads; `Db::compact_range` still runs.
+- `Db::destroy` / `Db::destroy_with_storage`: removes every file the engine wrote, log first and identity last, so
+  a crash part way never leaves a database holding part of the old data; refused while the database is open.
 - `Db::checkpoint`: writes a consistent copy of a live database into another directory (flushed first, table files
   kept from removal while copied, a manifest of that moment); the copy opens as a database of its own.
 - `Db::verify_checksums`: re-reads every table file from storage, bypassing the block cache, and verifies its

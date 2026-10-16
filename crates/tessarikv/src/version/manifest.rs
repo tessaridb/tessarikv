@@ -33,7 +33,7 @@ use crate::{Error, Result};
 pub(crate) const CURRENT: &str = "CURRENT";
 
 /// `CURRENT` while it is being replaced.
-const CURRENT_TEMPORARY: &str = "CURRENT.tmp";
+pub(crate) const CURRENT_TEMPORARY: &str = "CURRENT.tmp";
 
 /// The prefix of a manifest's file name; twenty decimal digits follow.
 const MANIFEST_PREFIX: &str = "MANIFEST-";

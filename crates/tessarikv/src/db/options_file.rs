@@ -17,7 +17,7 @@ use crate::storage::Storage;
 use crate::{DbOptions, Result};
 
 /// The start of every options file's name.
-const PREFIX: &str = "OPTIONS-";
+pub(super) const PREFIX: &str = "OPTIONS-";
 /// The end of an options file's name while it is being written.
 const WRITING: &str = ".writing";
 /// How many options files are kept.
