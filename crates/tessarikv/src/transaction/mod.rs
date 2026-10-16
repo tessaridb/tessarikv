@@ -31,6 +31,8 @@ mod write_set;
 #[cfg(test)]
 mod conflict_tests;
 #[cfg(test)]
+mod history_tests;
+#[cfg(test)]
 mod serializable_tests;
 #[cfg(test)]
 mod tests;
