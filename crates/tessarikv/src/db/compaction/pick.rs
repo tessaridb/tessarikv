@@ -36,18 +36,20 @@ pub(crate) struct Shape {
     pub(crate) multiplier: u32,
 }
 
-/// One compaction: the tables of one level it takes, and those of `output_level` they touch.
+/// One compaction: the tables of one level it takes, and those of `output_level` they touch;
+/// or, when `drop` is set, tables removed with nothing written in their place.
 #[derive(Debug, Clone)]
 pub(crate) struct Pick {
     pub(crate) output_level: usize,
     pub(crate) inputs: Vec<Arc<TableMeta>>,
     pub(crate) overlaps: Vec<Arc<TableMeta>>,
+    pub(crate) drop: bool,
 }
 
 impl Pick {
     /// Whether the compaction only moves one table down: nothing in the output level touches it.
     pub(crate) fn is_move(&self) -> bool {
-        self.overlaps.is_empty() && self.inputs.len() == 1
+        !self.drop && self.overlaps.is_empty() && self.inputs.len() == 1
     }
 }
 
@@ -157,6 +159,7 @@ fn level_zero_pick(
         output_level: base,
         inputs,
         overlaps,
+        drop: false,
     })
     .filter(|pick| busy.allows(pick))
 }
@@ -176,6 +179,7 @@ fn level_pick(levels: &[Vec<Arc<TableMeta>>; LEVELS], level: usize, busy: &Busy)
                     output_level,
                     inputs: vec![Arc::clone(table)],
                     overlaps,
+                    drop: false,
                 },
             )
         })
@@ -214,7 +218,7 @@ impl Pick {
 impl Busy {
     /// Whether `pick` reads no busy table and writes outside every range another compaction
     /// writes in the same level.
-    fn allows(&self, pick: &Pick) -> bool {
+    pub(super) fn allows(&self, pick: &Pick) -> bool {
         let free = pick
             .inputs
             .iter()
@@ -269,7 +273,7 @@ fn score(numerator: u128, denominator: u128) -> u128 {
 }
 
 /// The bytes of `tables`.
-fn bytes_of(tables: &[Arc<TableMeta>]) -> u64 {
+pub(super) fn bytes_of(tables: &[Arc<TableMeta>]) -> u64 {
     tables
         .iter()
         .fold(0, |sum, table| sum.saturating_add(table.size))

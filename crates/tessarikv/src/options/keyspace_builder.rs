@@ -1,5 +1,6 @@
 //! The builder of [`KeyspaceOptions`]: every field settable, checked once by `build()`.
 
+use super::compaction::CompactionStyle;
 use super::keyspace::KeyspaceOptions;
 use super::keyspace_bounds::validate;
 use crate::Result;
@@ -75,6 +76,12 @@ impl KeyspaceOptionsBuilder {
     /// Sets [`KeyspaceOptions::soft_pending_compaction_bytes`].
     pub const fn soft_pending_compaction_bytes(mut self, value: u64) -> Self {
         self.options.soft_pending_compaction_bytes = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::compaction`].
+    pub const fn compaction(mut self, value: CompactionStyle) -> Self {
+        self.options.compaction = value;
         self
     }
 

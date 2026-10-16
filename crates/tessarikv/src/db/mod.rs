@@ -39,6 +39,8 @@ mod compaction_tests;
 #[cfg(test)]
 mod crash_step_tests;
 #[cfg(test)]
+mod fifo_tests;
+#[cfg(test)]
 mod flush_tests;
 #[cfg(test)]
 mod iterator_tests;

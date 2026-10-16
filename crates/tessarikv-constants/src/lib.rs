@@ -83,6 +83,15 @@ pub const DEFAULT_MAX_COMPACTIONS: u32 = 4;
 /// Largest number of compactions a keyspace runs at once.
 pub const MAX_COMPACTIONS: u32 = 64;
 
+/// Default bytes a keyspace compacted first in, first out keeps before dropping its oldest tables.
+pub const DEFAULT_FIFO_MAX_TABLE_BYTES: u64 = 1 << 30;
+
+/// Smallest bytes a first-in-first-out keyspace keeps.
+pub const MIN_FIFO_MAX_TABLE_BYTES: u64 = 1 << 20;
+
+/// Largest bytes a first-in-first-out keyspace keeps.
+pub const MAX_FIFO_MAX_TABLE_BYTES: u64 = 1 << 50;
+
 /// Default bytes compaction may owe before writes slow down.
 pub const DEFAULT_SOFT_PENDING_COMPACTION_BYTES: u64 = 64 << 30;
 

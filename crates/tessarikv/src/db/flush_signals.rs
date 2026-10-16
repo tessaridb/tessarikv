@@ -20,7 +20,7 @@ use tokio::sync::futures::Notified;
 use super::rate_limiter::RateLimiter;
 use super::view::View;
 use crate::memtable::Memtable;
-use crate::{Error, KeyspaceOptions, Result};
+use crate::{CompactionStyle, Error, KeyspaceOptions, Result};
 
 /// Requests, wake-ups and the failure flag shared by writers and the installer.
 pub(super) struct FlushSignals {
@@ -61,6 +61,15 @@ const FAILED_NONE: u8 = 0;
 const FAILED_FLUSH: u8 = 1;
 const FAILED_COMPACTION: u8 = 2;
 
+/// A level-0 stall trigger as a table count; none applies to a first-in-first-out keyspace,
+/// whose level 0 holds every table and is never compacted.
+fn level0_trigger(keyspace: &KeyspaceOptions, trigger: u32) -> usize {
+    match keyspace.compaction() {
+        CompactionStyle::Fifo { .. } => usize::MAX,
+        _ => usize::try_from(trigger).unwrap_or(usize::MAX),
+    }
+}
+
 impl FlushSignals {
     /// Signals for a keyspace, slowing writes to `delayed_writes` bytes a second.
     pub(super) fn new(keyspace: &KeyspaceOptions, delayed_writes: u64) -> Self {
@@ -72,9 +81,8 @@ impl FlushSignals {
             failed: AtomicU8::new(FAILED_NONE),
             memtable_bytes: keyspace.memtable_bytes(),
             max_frozen: usize::try_from(keyspace.max_immutable_memtables()).unwrap_or(usize::MAX),
-            level0_slowdown: usize::try_from(keyspace.level0_slowdown_trigger())
-                .unwrap_or(usize::MAX),
-            level0_stop: usize::try_from(keyspace.level0_stop_trigger()).unwrap_or(usize::MAX),
+            level0_slowdown: level0_trigger(keyspace, keyspace.level0_slowdown_trigger()),
+            level0_stop: level0_trigger(keyspace, keyspace.level0_stop_trigger()),
             delay: RateLimiter::new(delayed_writes, SLOWDOWN_BURST),
             owed: AtomicU64::new(0),
             soft_owed: keyspace.soft_pending_compaction_bytes(),

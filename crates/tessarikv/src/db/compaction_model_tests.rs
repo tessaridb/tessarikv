@@ -18,7 +18,7 @@ type Model = BTreeMap<u32, Vec<u8>>;
 
 /// A kilobyte that does not compress, different for every index: the levels grow with the
 /// writes, so tables come to lie in more than one level.
-fn value(index: u32) -> Vec<u8> {
+pub(super) fn value(index: u32) -> Vec<u8> {
     let mut state = u64::from(index).wrapping_mul(0x2545_F491_4F6C_DD1D) | 1;
     (0..1024)
         .map(|_| {

@@ -6,6 +6,7 @@
 //! [`WriteOptions`]) have no invalid combinations and are plain structs.
 
 mod bounds;
+mod compaction;
 mod db;
 mod keyspace;
 mod keyspace_bounds;
@@ -18,6 +19,7 @@ mod keyspace_tests;
 #[cfg(test)]
 mod tests;
 
+pub use compaction::CompactionStyle;
 pub use db::{DbOptions, DbOptionsBuilder, StorageMode, WalRecovery};
 pub use keyspace::KeyspaceOptions;
 pub use keyspace_builder::KeyspaceOptionsBuilder;

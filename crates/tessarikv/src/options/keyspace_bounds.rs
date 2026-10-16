@@ -1,5 +1,6 @@
 //! The bounds every keyspace option is checked against, and how the level-0 triggers relate.
 
+use super::compaction::CompactionStyle;
 use tessarikv_constants as limits;
 
 use super::KeyspaceOptions;
@@ -72,6 +73,14 @@ pub(super) fn validate(options: &KeyspaceOptions) -> Result<()> {
         1,
         u64::from(limits::MAX_SUBCOMPACTIONS),
     )?;
+    if let CompactionStyle::Fifo { max_table_bytes } = options.compaction() {
+        check_range(
+            "keyspace.compaction.max_table_bytes",
+            max_table_bytes,
+            limits::MIN_FIFO_MAX_TABLE_BYTES,
+            limits::MAX_FIFO_MAX_TABLE_BYTES,
+        )?;
+    }
     check_range(
         "keyspace.hard_pending_compaction_bytes",
         options.hard_pending_compaction_bytes(),

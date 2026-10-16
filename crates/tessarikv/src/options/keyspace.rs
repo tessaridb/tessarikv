@@ -2,6 +2,7 @@
 
 use tessarikv_constants as limits;
 
+use super::compaction::CompactionStyle;
 use super::keyspace_builder::KeyspaceOptionsBuilder;
 
 /// Validated options of one keyspace. Built through [`KeyspaceOptions::builder`] or a preset.
@@ -19,6 +20,7 @@ pub struct KeyspaceOptions {
     pub(super) max_subcompactions: u32,
     pub(super) soft_pending_compaction_bytes: u64,
     pub(super) hard_pending_compaction_bytes: u64,
+    pub(super) compaction: CompactionStyle,
     pub(super) level_base_bytes: u64,
     pub(super) level_size_multiplier: u32,
     pub(super) target_file_bytes: u64,
@@ -39,6 +41,7 @@ impl Default for KeyspaceOptions {
             max_subcompactions: limits::DEFAULT_MAX_SUBCOMPACTIONS,
             soft_pending_compaction_bytes: limits::DEFAULT_SOFT_PENDING_COMPACTION_BYTES,
             hard_pending_compaction_bytes: limits::DEFAULT_HARD_PENDING_COMPACTION_BYTES,
+            compaction: CompactionStyle::Leveled,
             level_base_bytes: limits::DEFAULT_LEVEL_BASE_BYTES,
             level_size_multiplier: limits::DEFAULT_LEVEL_SIZE_MULTIPLIER,
             target_file_bytes: limits::DEFAULT_TARGET_FILE_BYTES,
@@ -168,6 +171,13 @@ impl KeyspaceOptions {
     #[must_use]
     pub const fn hard_pending_compaction_bytes(&self) -> u64 {
         self.hard_pending_compaction_bytes
+    }
+
+    /// How the keyspace's table files are compacted; the level and stall options above apply
+    /// to [`CompactionStyle::Leveled`].
+    #[must_use]
+    pub const fn compaction(&self) -> CompactionStyle {
+        self.compaction
     }
 
     /// Target size of the first level below level 0 that holds data, in bytes. Targets are

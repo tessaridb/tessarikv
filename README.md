@@ -15,7 +15,8 @@ table files and replays only the log above them. A table file keeps only its ind
 properties in memory; data blocks are read on demand through a lock-free CLOCK block cache of
 `DbOptions::block_cache_bytes`, on a blocking thread when a block is not cached. Table files are compacted in the
 background into sorted levels sized from the bottom up; versions no snapshot can read are dropped, and a point read
-consults the level-0 tables holding its key and one table per deeper level. Writes wait while the in-memory tables
+consults the level-0 tables holding its key and one table per deeper level. A keyspace compacted first in, first out
+instead keeps its tables in level 0 and drops the oldest past a byte limit. Writes wait while the in-memory tables
 awaiting flushes reach the keyspace's limit, slow down while level 0 is past its slowdown trigger or compaction owes
 more than its soft limit of bytes, and wait while level 0 holds its stop trigger's worth of tables or compaction owes
 its hard limit. Underneath it:

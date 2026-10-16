@@ -72,6 +72,9 @@ All notable changes to this project are documented here. The format follows
   `KeyspaceOptions::max_subcompactions` (4) key ranges merged on their own threads.
   `DbOptions::compaction_bytes_per_second` paces compaction writes (a second's worth at once);
   flushes are not paced.
+- First-in-first-out compaction: `KeyspaceOptions::compaction(CompactionStyle::Fifo { max_table_bytes })` keeps tables
+  in level 0, never merges them, and drops the oldest once they hold more than `max_table_bytes` (1 GiB by default);
+  a key reads its newest kept value or nothing. Level-0 stalls do not apply to it.
 - Level-0 stalls: `KeyspaceOptions::level0_slowdown_trigger` (20) paces writes to
   `DbOptions::delayed_write_bytes_per_second` (16 MiB/s) and
   `level0_stop_trigger` (36) holds writes until a compaction takes level 0 under it; `no_slowdown` writes are refused

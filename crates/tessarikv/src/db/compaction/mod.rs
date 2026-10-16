@@ -19,12 +19,15 @@
 //! an older view may still read it. The installer checks after each install, every
 //! [`SWEEP_INTERVAL`] while a file waits, and when it stops.
 
+mod fifo;
 mod job;
 mod output;
 mod pick;
 mod retain;
 mod split;
 
+#[cfg(test)]
+mod fifo_tests;
 #[cfg(test)]
 mod job_tests;
 #[cfg(test)]
@@ -49,8 +52,8 @@ use super::flush_job::table_path;
 use super::installer::Flusher;
 use super::table_blocks::TableBlocks;
 use super::view::TableFile;
-use crate::KeyspaceOptions;
 use crate::storage::Storage;
+use crate::{CompactionStyle, KeyspaceOptions};
 use crate::{Error, Result};
 
 /// The keyspace compactions run in; there is one so far.
@@ -127,10 +130,17 @@ impl Compactions {
             let Some((levels, shape)) = shape_of(flusher) else {
                 return Ok(published);
             };
-            let Some(pick) = pick::pick_with(&levels, shape, &self.busy()) else {
+            let busy = self.busy();
+            let next = match flusher.keyspace.compaction() {
+                CompactionStyle::Fifo { max_table_bytes } => {
+                    fifo::pick(&levels, max_table_bytes, &busy)
+                }
+                _ => pick::pick_with(&levels, shape, &busy),
+            };
+            let Some(pick) = next else {
                 return Ok(published);
             };
-            if pick.is_move() {
+            if pick.is_move() || pick.drop {
                 self.commit(flusher, &pick, Vec::new()).await?;
                 published = true;
                 continue;
@@ -279,7 +289,10 @@ fn shape_of(flusher: &Flusher) -> Option<([Vec<Arc<TableMeta>>; LEVELS], Shape)>
 }
 
 /// The bytes compaction owes now (see [`pick::pending_bytes`]); none while the manifest is lent
-/// to a flush.
+/// to a flush. A first-in-first-out keyspace owes nothing: it never merges.
 pub(super) fn pending_bytes(flusher: &Flusher) -> Option<u64> {
+    if !matches!(flusher.keyspace.compaction(), CompactionStyle::Leveled) {
+        return Some(0);
+    }
     shape_of(flusher).map(|(levels, shape)| pick::pending_bytes(&levels, shape))
 }
