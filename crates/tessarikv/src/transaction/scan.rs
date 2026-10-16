@@ -7,7 +7,7 @@ use tessarikv_types::KeyspaceId;
 
 use super::Transaction;
 use super::write_set::Own;
-use crate::{ReadOptions, Result, ScanPage};
+use crate::{ReadOptions, Result, ScanPage, ScanRange};
 
 impl Transaction<'_> {
     /// Up to `limit` live entries of `keyspace` with keys in `[start, end)` (unbounded above
@@ -35,6 +35,27 @@ impl Transaction<'_> {
             reads.range(keyspace, start, page.next.as_deref().or(end));
         }
         Ok(page)
+    }
+
+    /// One page for each of `ranges` in `keyspace`, in the order given, as [`Transaction::scan`]
+    /// returns each: at the transaction's snapshot, with its own writes, every range read
+    /// recorded for a serializable transaction.
+    ///
+    /// # Errors
+    ///
+    /// As [`Transaction::scan`].
+    pub async fn multi_scan<'a>(
+        &mut self,
+        keyspace: KeyspaceId,
+        ranges: impl IntoIterator<Item = ScanRange<'a>>,
+        options: &ReadOptions,
+    ) -> Result<Vec<ScanPage>> {
+        let ranges = ranges.into_iter();
+        let mut pages = Vec::with_capacity(ranges.size_hint().0);
+        for ScanRange { start, end, limit } in ranges {
+            pages.push(self.scan(keyspace, start, end, limit, options).await?);
+        }
+        Ok(pages)
     }
 
     /// The page [`Transaction::scan`] returns.

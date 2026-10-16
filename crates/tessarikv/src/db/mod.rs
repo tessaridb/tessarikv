@@ -26,6 +26,7 @@ mod iterator;
 mod keyspaces;
 mod merge;
 mod multi_get;
+mod multi_scan;
 mod open;
 mod prefixes;
 mod pressure;
@@ -80,6 +81,8 @@ mod manual_compaction_tests;
 #[cfg(test)]
 mod multi_get_tests;
 #[cfg(test)]
+mod multi_scan_tests;
+#[cfg(test)]
 mod open_tests;
 #[cfg(test)]
 mod pressure_tests;
@@ -118,7 +121,7 @@ use view::View;
 
 pub(crate) use commits::{Check, Reads};
 pub use iterator::DbIterator;
-pub use read::ScanPage;
+pub use read::{ScanPage, ScanRange};
 pub use snapshot::Snapshot;
 
 /// An open database.
@@ -272,24 +275,6 @@ impl Db {
     /// The snapshot a read takes: the highest sequence covering only completed batches.
     fn visible_sequence(&self) -> Result<SequenceNumber> {
         SequenceNumber::new(self.sequencer.visible()).map_err(|_| Error::SequenceExhausted)
-    }
-
-    /// Writes every batch committed before the call to table files, and returns once they are
-    /// there: the in-memory table holding them is frozen even if not full, then flushed like a
-    /// full one. Later writes go on meanwhile. In memory there are no table files and it returns
-    /// at once.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work stopped.
-    pub async fn flush(&self) -> Result<()> {
-        let Some(installer) = &self.installer else {
-            return Ok(());
-        };
-        installer
-            .signals
-            .flush_through(self.sequencer.visible())
-            .await
     }
 
     /// Whether serializable transactions can run on this database.

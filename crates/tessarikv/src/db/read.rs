@@ -134,12 +134,15 @@ pub(super) async fn get_in(
 }
 
 /// Which keys a scan page lists: up to `limit` of those in `[start, end)`, unbounded above when
-/// `end` is `None`.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ScanRange<'a> {
-    pub(super) start: &'a [u8],
-    pub(super) end: Option<&'a [u8]>,
-    pub(super) limit: usize,
+/// `end` is `None` (see [`Db::multi_scan`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanRange<'a> {
+    /// The first key the page may list.
+    pub start: &'a [u8],
+    /// The first key past the page's range; `None` reaches the end of the keyspace.
+    pub end: Option<&'a [u8]>,
+    /// The most entries the page lists.
+    pub limit: usize,
 }
 
 /// A page of `keyspace` of `view` at `snapshot`, as [`Db::scan`] returns one, keeping the blocks

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
+use super::Db;
 use super::flush_job::{Job, table_options};
 use super::flush_signals::FlushSignals;
 use super::installer::Flusher;
@@ -117,5 +118,25 @@ impl Flusher {
             .store(Arc::new(current.after_flush(oldest.epoch, files)?));
         self.log.release_through(oldest.flushed);
         Ok(oldest.flushed)
+    }
+}
+
+impl Db {
+    /// Writes every batch committed before the call to table files, and returns once they are
+    /// there: the in-memory table holding them is frozen even if not full, then flushed like a
+    /// full one. Later writes go on meanwhile. In memory there are no table files and it returns
+    /// at once.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work stopped.
+    pub async fn flush(&self) -> Result<()> {
+        let Some(installer) = &self.installer else {
+            return Ok(());
+        };
+        installer
+            .signals
+            .flush_through(self.sequencer.visible())
+            .await
     }
 }

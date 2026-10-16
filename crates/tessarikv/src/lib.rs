@@ -22,7 +22,7 @@ mod tombstones;
 mod transaction;
 mod version;
 
-pub use db::{Db, DbIterator, ScanPage, Snapshot};
+pub use db::{Db, DbIterator, ScanPage, ScanRange, Snapshot};
 pub use error::{Error, ErrorCategory, Result};
 pub use options::{
     CompactionStyle, DbOptions, DbOptionsBuilder, Durability, Isolation, KeyspaceOptions,

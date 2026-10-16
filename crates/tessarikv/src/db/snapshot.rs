@@ -3,7 +3,7 @@
 use tessarikv_sync::Registration;
 use tessarikv_types::{KeyspaceId, SequenceNumber};
 
-use super::{Db, DbIterator, ScanPage};
+use super::{Db, DbIterator, ScanPage, ScanRange};
 use crate::{Error, ReadOptions, Result};
 
 /// A point in the database's history. Reads through it see the database as it was when the
@@ -92,6 +92,23 @@ impl Snapshot<'_> {
     ) -> Result<Vec<Option<Vec<u8>>>> {
         self.db
             .multi_get_at(keyspace, keys, self.sequence, options)
+            .await
+    }
+
+    /// One page for each of `ranges` in `keyspace` at this snapshot, as [`Db::multi_scan`]
+    /// returns them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::scan`].
+    pub async fn multi_scan<'a>(
+        &self,
+        keyspace: KeyspaceId,
+        ranges: impl IntoIterator<Item = ScanRange<'a>>,
+        options: &ReadOptions,
+    ) -> Result<Vec<ScanPage>> {
+        self.db
+            .multi_scan_at(keyspace, ranges, self.sequence, options)
             .await
     }
 
