@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tessarikv_types::KeyspaceId;
 
 use super::Db;
+use super::installer::Flusher;
 use super::view::Names;
 use crate::memtable::Memtable;
 use crate::{DbOptions, Error, KeyspaceOptions, Result};
@@ -77,4 +78,17 @@ pub(super) fn options_of<'a>(
         .iter()
         .find(|(held, _)| *held == id)
         .map_or(default, |(_, options)| options)
+}
+
+impl Flusher {
+    /// The options of `keyspace`; the default keyspace's for 0.
+    pub(super) fn keyspace_options(&self, keyspace: u32) -> &KeyspaceOptions {
+        options_of(&self.keyspaces, &self.keyspace, keyspace)
+    }
+
+    /// Every keyspace held, the default one first, with its options.
+    pub(super) fn all_keyspaces(&self) -> impl Iterator<Item = (u32, &KeyspaceOptions)> {
+        std::iter::once((0, &self.keyspace))
+            .chain(self.keyspaces.iter().map(|(id, options)| (*id, options)))
+    }
 }

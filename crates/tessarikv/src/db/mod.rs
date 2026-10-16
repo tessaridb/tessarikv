@@ -26,6 +26,7 @@ mod merge;
 mod multi_get;
 mod open;
 mod prefixes;
+mod pressure;
 mod rate_limiter;
 mod read;
 mod recover;
@@ -55,6 +56,8 @@ mod flush_tests;
 #[cfg(test)]
 mod iterator_tests;
 #[cfg(test)]
+mod keyspace_admission_tests;
+#[cfg(test)]
 mod keyspace_compaction_tests;
 #[cfg(test)]
 mod keyspace_open_tests;
@@ -72,6 +75,8 @@ mod manual_compaction_tests;
 mod multi_get_tests;
 #[cfg(test)]
 mod open_tests;
+#[cfg(test)]
+mod pressure_tests;
 #[cfg(test)]
 mod range_delete_tests;
 #[cfg(test)]

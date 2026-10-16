@@ -1,5 +1,6 @@
 //! Writes slow down and then stop while level 0 holds more tables than compaction keeps up
-//! with, and go on once an install takes it back under the limit.
+//! with, and go on once an install takes it back under the limit: the installer weighs the
+//! levels and publishes the pressure, as these tests do by hand.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +10,7 @@ use tessarikv_types::{SequenceNumber, ValueKind};
 
 use super::block_cache::BlockCache;
 use super::flush_signals::FlushSignals;
+use super::pressure::{self, Load, Pressure};
 use super::read_tests::{file, user_key};
 use super::view::View;
 use crate::memtable::Memtable;
@@ -47,6 +49,20 @@ fn view_with(tables: u64) -> View {
     View::recovered(vec![(0, Memtable::new())], std::sync::Arc::new([]), files)
 }
 
+fn signals() -> FlushSignals {
+    FlushSignals::new(keyspace().max_immutable_memtables(), RATE)
+}
+
+/// Publishes what `view` asks of writers, as the installer does after an install.
+fn weigh(signals: &FlushSignals, view: &View) {
+    signals.set_load(pressure::of(view, [(0, &keyspace())]));
+}
+
+/// Publishes `pressure` with nothing owed.
+fn press(signals: &FlushSignals, pressure: Pressure) {
+    signals.set_load(Load { pressure, owed: 0 });
+}
+
 fn refusal(result: crate::Result<()>) -> &'static str {
     match result {
         Err(Error::WriteStalled { reason }) => reason,
@@ -56,13 +72,15 @@ fn refusal(result: crate::Result<()>) -> &'static str {
 
 #[tokio::test]
 async fn level_zero_past_its_slowdown_trigger_refuses_a_write_that_must_not_wait() {
-    let signals = FlushSignals::new(&keyspace(), RATE);
+    let signals = signals();
     let below = ArcSwap::from_pointee(view_with(2));
+    weigh(&signals, &below.load());
     signals
         .admit(&below, true, 1)
         .await
         .expect("under the slowdown trigger");
     let slowed = ArcSwap::from_pointee(view_with(3));
+    weigh(&signals, &slowed.load());
     let reason = refusal(signals.admit(&slowed, true, 1).await);
     assert!(reason.contains("slowdown"), "{reason}");
     signals
@@ -73,8 +91,9 @@ async fn level_zero_past_its_slowdown_trigger_refuses_a_write_that_must_not_wait
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn level_zero_at_its_stop_trigger_holds_writes_until_an_install_takes_it_under() {
-    let signals = Arc::new(FlushSignals::new(&keyspace(), RATE));
+    let signals = Arc::new(signals());
     let view = Arc::new(ArcSwap::from_pointee(view_with(4)));
+    weigh(&signals, &view.load());
     let reason = refusal(signals.admit(&view, true, 1).await);
     assert!(reason.contains("stop"), "{reason}");
     let waiting = {
@@ -97,7 +116,7 @@ async fn level_zero_at_its_stop_trigger_holds_writes_until_an_install_takes_it_u
         "an install that left level 0 full released a write"
     );
     view.store(Arc::new(view_with(2)));
-    signals.installed();
+    weigh(&signals, &view.load());
     tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
         .await
         .expect("released")
@@ -107,7 +126,7 @@ async fn level_zero_at_its_stop_trigger_holds_writes_until_an_install_takes_it_u
 
 #[test]
 fn a_failed_compaction_is_reported_as_one() {
-    let signals = FlushSignals::new(&keyspace(), RATE);
+    let signals = signals();
     signals.fail(&Error::CompactionFailed);
     let refused = futures_lite_block(signals.admit(&ArcSwap::from_pointee(view_with(0)), true, 1));
     assert!(
@@ -173,8 +192,9 @@ async fn writes_stopped_by_level_zero_go_on_once_compactions_take_it_under() {
 
 #[tokio::test(start_paused = true)]
 async fn a_write_past_the_slowdown_trigger_waits_for_its_bytes_at_the_delayed_rate() {
-    let signals = FlushSignals::new(&keyspace(), RATE);
+    let signals = signals();
     let slowed = ArcSwap::from_pointee(view_with(3));
+    weigh(&signals, &slowed.load());
     let start = tokio::time::Instant::now();
     signals.admit(&slowed, false, 512).await.expect("admitted");
     assert_eq!(
@@ -191,6 +211,7 @@ async fn a_write_past_the_slowdown_trigger_waits_for_its_bytes_at_the_delayed_ra
     );
     let start = tokio::time::Instant::now();
     let below = ArcSwap::from_pointee(view_with(2));
+    weigh(&signals, &below.load());
     signals.admit(&below, false, RATE).await.expect("admitted");
     assert_eq!(
         start.elapsed(),
@@ -219,19 +240,14 @@ async fn the_delayed_write_rate_reaches_the_installer() {
 
 #[tokio::test(start_paused = true)]
 async fn writes_slow_past_the_soft_pending_limit_and_stop_past_the_hard_one() {
-    let options = KeyspaceOptions::builder()
-        .soft_pending_compaction_bytes(1 << 20)
-        .hard_pending_compaction_bytes(4 << 20)
-        .build()
-        .expect("valid");
-    let signals = Arc::new(FlushSignals::new(&options, RATE));
+    let signals = Arc::new(signals());
     let view = Arc::new(ArcSwap::from_pointee(view_with(0)));
-    signals.set_owed((1 << 20) - 1);
+    press(&signals, Pressure::None);
     signals
         .admit(&view, true, 1)
         .await
         .expect("under the soft limit");
-    signals.set_owed(1 << 20);
+    press(&signals, Pressure::SlowOwed);
     let reason = refusal(signals.admit(&view, true, 1).await);
     assert!(reason.contains("soft"), "{reason}");
     let start = tokio::time::Instant::now();
@@ -243,7 +259,7 @@ async fn writes_slow_past_the_soft_pending_limit_and_stop_past_the_hard_one() {
         start.elapsed() >= Duration::from_millis(990),
         "paced like a slowdown"
     );
-    signals.set_owed(4 << 20);
+    press(&signals, Pressure::StopOwed);
     let reason = refusal(signals.admit(&view, true, 1).await);
     assert!(reason.contains("hard"), "{reason}");
     let held = {
@@ -253,7 +269,7 @@ async fn writes_slow_past_the_soft_pending_limit_and_stop_past_the_hard_one() {
     // Paused time moves on only once the held write has run and is waiting.
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert!(!held.is_finished(), "a write waits past the hard limit");
-    signals.set_owed(0);
+    press(&signals, Pressure::None);
     while !held.is_finished() {
         signals.installed();
         tokio::task::yield_now().await;

@@ -23,6 +23,7 @@
 mod commit;
 mod fifo;
 mod job;
+mod levels;
 pub(super) mod manual;
 mod output;
 mod pick;
@@ -54,6 +55,8 @@ use tessarikv_format::TableMeta;
 use tokio::task::JoinSet;
 
 use self::job::Job;
+pub(super) use self::levels::owed;
+use self::levels::shape_of;
 use self::manual::{Active, Request};
 use self::pick::{Busy, Pick, Shape};
 use super::installer::Flusher;
@@ -265,29 +268,4 @@ fn automatic(
         ),
         _ => pick::pick_with(levels, shape, busy),
     }
-}
-
-/// The levels of `keyspace` the manifest holds and the shape its options give them; none
-/// while the manifest is lent to a flush.
-fn shape_of(flusher: &Flusher, keyspace: u32) -> Option<([Vec<Arc<TableMeta>>; LEVELS], Shape)> {
-    let version = flusher.manifest.as_ref()?.version();
-    let options = flusher.keyspace_options(keyspace);
-    Some((
-        std::array::from_fn(|level| version.tables(keyspace, level).to_vec()),
-        Shape {
-            level0_trigger: options.level0_compaction_trigger(),
-            base_bytes: options.level_base_bytes(),
-            multiplier: options.level_size_multiplier(),
-        },
-    ))
-}
-
-/// The bytes compaction owes in the default keyspace now (see [`pick::pending_bytes`]); none
-/// while the manifest is lent to a flush. A first-in-first-out keyspace owes nothing: it never
-/// merges.
-pub(super) fn pending_bytes(flusher: &Flusher) -> Option<u64> {
-    if !matches!(flusher.keyspace.compaction(), CompactionStyle::Leveled) {
-        return Some(0);
-    }
-    shape_of(flusher, 0).map(|(levels, shape)| pick::pending_bytes(&levels, shape))
 }

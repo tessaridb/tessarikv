@@ -37,7 +37,6 @@ use super::compaction::manual::{QUEUE, Request};
 use super::compaction::{self, Compactions};
 use super::flush_job::{FileNumbers, Job, table_options};
 use super::flush_signals::FlushSignals;
-use super::keyspaces::options_of;
 use super::rate_limiter::RateLimiter;
 use super::view::{TableFile, View};
 use crate::log::LogRelease;
@@ -95,7 +94,12 @@ pub(super) struct Installer {
 impl Installer {
     /// Starts the installer task on the current tokio runtime.
     pub(super) fn start(flusher: Flusher) -> Self {
-        let signals = Arc::new(FlushSignals::new(&flusher.keyspace, flusher.delayed_writes));
+        let max_frozen = flusher
+            .all_keyspaces()
+            .map(|(_, options)| options.max_immutable_memtables())
+            .min()
+            .unwrap_or(1);
+        let signals = Arc::new(FlushSignals::new(max_frozen, flusher.delayed_writes));
         // Everything at or below the last switch is on table files when the database opens.
         signals.set_flushed(flusher.switched);
         let (shutdown, stop) = watch::channel(false);
@@ -134,6 +138,13 @@ async fn run(
     let mut running: Option<JoinHandle<Result<Flushed>>> = None;
     let mut compactions = Compactions::default();
     let mut stopping = false;
+    // Levels recovered past a trigger compact now: no write may come to wake the installer
+    // while the levels hold writes.
+    if let Err(error) = compactions.step(&mut flusher, true).await {
+        signals.fail(&error);
+        return Err(error);
+    }
+    signals.set_load(flusher.load());
     loop {
         tokio::select! {
             // Shutdown first: no new flush starts after it, the running one finishes.
@@ -161,11 +172,9 @@ async fn run(
         }
         // Finished work is recorded even while stopping; no new job starts then.
         match compactions.step(&mut flusher, !stopping).await {
-            // Writers held by level 0 look again.
+            // Writers held by the levels look again.
             Ok(published) => {
-                if let Some(owed) = compaction::pending_bytes(&flusher) {
-                    signals.set_owed(owed);
-                }
+                signals.set_load(flusher.load());
                 if published {
                     signals.installed();
                 }
@@ -201,11 +210,6 @@ async fn wait(running: &mut Option<JoinHandle<Result<Flushed>>>) -> Result<Flush
 }
 
 impl Flusher {
-    /// The options of `keyspace`; the default keyspace's for 0.
-    pub(super) fn keyspace_options(&self, keyspace: u32) -> &KeyspaceOptions {
-        options_of(&self.keyspaces, &self.keyspace, keyspace)
-    }
-
     /// Freezes the newest tables when one is full and another epoch may be frozen.
     fn switch_if_full(&mut self, signals: &FlushSignals, frozen: &mut VecDeque<Frozen>) {
         let current = self.view.load_full();

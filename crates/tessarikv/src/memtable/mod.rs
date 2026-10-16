@@ -67,6 +67,8 @@ pub(crate) struct Memtable {
     range_deletes: SkipList<InternalKeyComparator>,
     /// The user keys of the point entries, values and deletes alike.
     keys: ConcurrentBloom,
+    /// The bytes it holds before it is frozen: its keyspace's in-memory table size.
+    budget: u64,
 }
 
 /// Table bytes per filter bit: about 1.5 % of the table, some 19 bits per 150-byte entry.
@@ -79,23 +81,29 @@ impl Memtable {
         Self::sized(64 * 1024)
     }
 
-    /// An empty table whose key filter suits a table of `table_bytes`.
+    /// An empty table frozen once it holds `table_bytes`, with a key filter to suit.
     pub(crate) fn sized(table_bytes: u64) -> Self {
         let bits = usize::try_from(table_bytes / BYTES_PER_FILTER_BIT).unwrap_or(usize::MAX);
-        Self::with_filter_bits(bits)
+        Self::with(bits, table_bytes)
     }
 
-    /// An empty table with a key filter the size of this one's, to take its place.
+    /// An empty table of this one's size and filter, to take its place.
     pub(crate) fn successor(&self) -> Self {
-        Self::with_filter_bits(self.keys.bits())
+        Self::with(self.keys.bits(), self.budget)
     }
 
-    fn with_filter_bits(bits: usize) -> Self {
+    fn with(bits: usize, budget: u64) -> Self {
         Self {
             entries: SkipList::new(InternalKeyComparator),
             range_deletes: SkipList::new(InternalKeyComparator),
             keys: ConcurrentBloom::new(bits),
+            budget,
         }
+    }
+
+    /// Whether it holds its size's worth of bytes and should be frozen.
+    pub(crate) fn is_full(&self) -> bool {
+        self.approximate_bytes() >= self.budget
     }
 
     /// Adds version `sequence` of `key`: a value, a delete (whose `value` is ignored), or a

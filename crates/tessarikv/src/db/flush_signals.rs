@@ -1,13 +1,12 @@
 //! What writers and the flush installer tell each other.
 //!
-//! A writer whose batch fills the newest in-memory table asks for a switch; the installer clears
-//! the request when it looks, so requests made while it is busy fold into one. A writer is
-//! admitted while the newest table has room or another table may still be frozen; otherwise it
-//! waits for the next install, or is refused when it asked not to wait. Level 0 holding its
-//! slowdown trigger's worth of tables paces writes to the delayed-write rate, each waiting for
-//! its own bytes, so compaction catches up; holding its stop trigger's worth stops writes until
-//! an install takes it back under. The bytes compaction owes, estimated after every install,
-//! slow writes the same way past the soft pending limit and stop them past the hard one. A
+//! A writer whose batch fills a newest in-memory table (each holds its keyspace's size) asks for a
+//! switch; the installer clears the request when it looks, so requests made while it is busy fold
+//! into one. A writer is admitted while the newest tables have room or another epoch may still be
+//! frozen; otherwise it waits for the next install, or is refused when it asked not to wait. The
+//! installer publishes what the levels ask of writers after every change to them (see
+//! [`super::pressure`]): pacing writes to the delayed-write rate, each waiting for its own bytes,
+//! so compaction catches up, or holding them until an install relieves the keyspace concerned. A
 //! failed flush or compaction is published once and refuses every later write.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -17,10 +16,11 @@ use arc_swap::ArcSwap;
 use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 
+use super::pressure::{Load, Pressure};
 use super::rate_limiter::RateLimiter;
 use super::view::View;
 use crate::memtable::Memtable;
-use crate::{CompactionStyle, Error, KeyspaceOptions, Result};
+use crate::{Error, Result};
 
 /// Requests, wake-ups and the failure flag shared by writers and the installer.
 pub(super) struct FlushSignals {
@@ -38,20 +38,12 @@ pub(super) struct FlushSignals {
     flushed: AtomicU64,
     /// What failed, as one of the `FAILED_` codes: writes are refused until the database is reopened.
     failed: AtomicU8,
-    /// Bytes the newest in-memory table holds before it is frozen.
-    memtable_bytes: u64,
-    /// Frozen tables allowed to wait for flushes.
+    /// Frozen epochs allowed to wait for flushes.
     max_frozen: usize,
-    /// Level-0 tables at which writes slow down, and at which they stop.
-    level0_slowdown: usize,
-    level0_stop: usize,
-    /// Paces writes while level 0 is past its slowdown trigger; none paces nothing.
+    /// Paces writes while the levels ask for it; none paces nothing.
     delay: Option<RateLimiter>,
-    /// The bytes compaction owed at the last install, and the owed bytes at which writes slow
-    /// down and stop.
-    owed: AtomicU64,
-    soft_owed: u64,
-    hard_owed: u64,
+    /// What the levels ask of writers, as a [`Pressure`] code, published by the installer.
+    pressure: AtomicU8,
     /// The most compaction has owed, for tests to read.
     #[cfg(test)]
     peak_owed: AtomicU64,
@@ -65,18 +57,10 @@ const FAILED_NONE: u8 = 0;
 const FAILED_FLUSH: u8 = 1;
 const FAILED_COMPACTION: u8 = 2;
 
-/// A level-0 stall trigger as a table count; none applies to a first-in-first-out keyspace,
-/// whose level 0 holds every table and is never compacted.
-fn level0_trigger(keyspace: &KeyspaceOptions, trigger: u32) -> usize {
-    match keyspace.compaction() {
-        CompactionStyle::Fifo { .. } => usize::MAX,
-        _ => usize::try_from(trigger).unwrap_or(usize::MAX),
-    }
-}
-
 impl FlushSignals {
-    /// Signals for a keyspace, slowing writes to `delayed_writes` bytes a second.
-    pub(super) fn new(keyspace: &KeyspaceOptions, delayed_writes: u64) -> Self {
+    /// Signals letting `max_frozen` epochs wait for flushes and pacing writes to
+    /// `delayed_writes` bytes a second.
+    pub(super) fn new(max_frozen: u32, delayed_writes: u64) -> Self {
         Self {
             pending: AtomicBool::new(false),
             wake: Notify::new(),
@@ -85,14 +69,9 @@ impl FlushSignals {
             forced: AtomicU64::new(0),
             flushed: AtomicU64::new(0),
             failed: AtomicU8::new(FAILED_NONE),
-            memtable_bytes: keyspace.memtable_bytes(),
-            max_frozen: usize::try_from(keyspace.max_immutable_memtables()).unwrap_or(usize::MAX),
-            level0_slowdown: level0_trigger(keyspace, keyspace.level0_slowdown_trigger()),
-            level0_stop: level0_trigger(keyspace, keyspace.level0_stop_trigger()),
+            max_frozen: usize::try_from(max_frozen).unwrap_or(usize::MAX),
             delay: RateLimiter::new(delayed_writes, SLOWDOWN_BURST),
-            owed: AtomicU64::new(0),
-            soft_owed: keyspace.soft_pending_compaction_bytes(),
-            hard_owed: keyspace.hard_pending_compaction_bytes(),
+            pressure: AtomicU8::new(Pressure::None.code()),
             #[cfg(test)]
             peak_owed: AtomicU64::new(0),
         }
@@ -157,9 +136,9 @@ impl FlushSignals {
         }
     }
 
-    /// Returns once a write of `bytes` may go ahead: the newest table has room or another table
-    /// may be frozen, and level 0 is under its stop trigger; past its slowdown trigger the write
-    /// first waits for its bytes at the delayed-write rate.
+    /// Returns once a write of `bytes` may go ahead: the newest tables have room or another epoch
+    /// may be frozen, and the levels do not hold writes; when they ask for pacing the write first
+    /// waits for its bytes at the delayed-write rate.
     ///
     /// # Errors
     ///
@@ -177,26 +156,19 @@ impl FlushSignals {
             if let Some(failure) = self.failure() {
                 return Err(failure);
             }
-            let (stalled, level0) = {
-                let current = view.load();
-                (self.stalls(&current), current.level0_files(0))
-            };
-            // Relaxed: a figure read on its own; a held writer reads it again after each install.
-            let owed = self.owed.load(Ordering::Relaxed);
+            let stalled = self.stalls(&view.load());
+            // Relaxed: read after `installed` is created. A store the installer made before
+            // waking waiters is ordered before this read by the wake-up's read-modify-write
+            // whenever this waiter missed that wake-up; otherwise the wake-up reaches it.
+            let pressure = Pressure::from_code(self.pressure.load(Ordering::Relaxed));
             let reason = if stalled {
                 "the in-memory table is full and the frozen ones wait for flushes"
-            } else if level0 >= self.level0_stop {
-                "level 0 holds its stop trigger's worth of tables, waiting for a compaction"
-            } else if owed >= self.hard_owed {
-                "compaction owes its hard limit's worth of bytes, waiting for a compaction"
-            } else if level0 >= self.level0_slowdown || owed >= self.soft_owed {
+            } else if pressure >= Pressure::StopOwed {
+                pressure.reason()
+            } else if pressure > Pressure::None {
                 if no_slowdown {
                     return Err(Error::WriteStalled {
-                        reason: if level0 >= self.level0_slowdown {
-                            "level 0 is past its slowdown trigger"
-                        } else {
-                            "compaction owes its soft limit's worth of bytes"
-                        },
+                        reason: pressure.reason(),
                     });
                 }
                 let wait = self
@@ -217,13 +189,16 @@ impl FlushSignals {
         }
     }
 
-    /// Records the bytes compaction owes after an install; writers held by it look again at the
-    /// next [`FlushSignals::installed`].
-    pub(super) fn set_owed(&self, owed: u64) {
+    /// Publishes what the levels ask of writers; when that changed, held writers look again.
+    pub(super) fn set_load(&self, load: Load) {
         // Relaxed: see `admit`.
-        self.owed.store(owed, Ordering::Relaxed);
+        let code = load.pressure.code();
+        let before = self.pressure.swap(code, Ordering::Relaxed);
+        if before != code {
+            self.installed.notify_waiters();
+        }
         #[cfg(test)]
-        self.peak_owed.fetch_max(owed, Ordering::Relaxed);
+        self.peak_owed.fetch_max(load.owed, Ordering::Relaxed);
     }
 
     /// The most compaction has owed, for tests to read.
@@ -285,10 +260,6 @@ impl FlushSignals {
     }
 
     fn newest_is_full(&self, view: &View) -> bool {
-        view.newest_tables().any(|newest| self.is_full(newest))
-    }
-
-    fn is_full(&self, table: &Memtable) -> bool {
-        table.approximate_bytes() >= self.memtable_bytes
+        view.newest_tables().any(Memtable::is_full)
     }
 }
