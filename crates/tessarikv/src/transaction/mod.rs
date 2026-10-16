@@ -1,0 +1,173 @@
+//! Transactions: reads at one snapshot, writes kept private until they commit together.
+//!
+//! A [`Transaction`] begins at the database's latest visible sequence and reads every key as
+//! it was there, except the keys it wrote itself, which it reads as it wrote them. Its puts,
+//! deletes and range deletes stay inside it until [`Transaction::commit`] writes them as one
+//! atomic batch; dropping it without committing writes nothing. A savepoint marks a point the
+//! transaction can return to, forgetting what it wrote since.
+//!
+//! The commit does not yet check for writes other transactions committed after this one began:
+//! two transactions that update the same key both commit, the later one winning.
+
+mod write_set;
+
+#[cfg(test)]
+mod tests;
+
+use tessarikv_constants::{MAX_KEY_BYTES, MAX_VALUE_BYTES};
+use tessarikv_types::{KeyspaceId, SequenceNumber};
+
+use crate::{Db, Error, ReadOptions, Result, Snapshot, WriteOptions};
+use write_set::{Own, WriteSet};
+
+/// A point a transaction can roll back to: the writes made before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Savepoint(usize);
+
+/// See the module documentation.
+///
+/// # Example
+///
+/// ```
+/// use tessarikv::{Db, DbOptions, KeyspaceId, ReadOptions, WriteOptions};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let db = Db::open("example", DbOptions::in_memory()).await?;
+/// let mut txn = db.begin()?;
+/// txn.put(KeyspaceId::DEFAULT, b"apple", b"red")?;
+/// let own = txn.get(KeyspaceId::DEFAULT, b"apple", &ReadOptions::default()).await?;
+/// assert_eq!(own.as_deref(), Some(&b"red"[..]));
+/// txn.commit(&WriteOptions::default()).await?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct Transaction<'db> {
+    db: &'db Db,
+    snapshot: Snapshot<'db>,
+    writes: WriteSet,
+}
+
+impl Db {
+    /// Begins a transaction at the latest visible sequence.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::snapshot`].
+    pub fn begin(&self) -> Result<Transaction<'_>> {
+        Ok(Transaction {
+            db: self,
+            snapshot: self.snapshot()?,
+            writes: WriteSet::default(),
+        })
+    }
+}
+
+impl Transaction<'_> {
+    /// The sequence number the transaction reads at.
+    pub fn sequence(&self) -> SequenceNumber {
+        self.snapshot.sequence()
+    }
+
+    /// The value of `key` in `keyspace`: as this transaction wrote it, or else as it was when
+    /// the transaction began.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::get`].
+    pub async fn get(
+        &self,
+        keyspace: KeyspaceId,
+        key: &[u8],
+        options: &ReadOptions,
+    ) -> Result<Option<Vec<u8>>> {
+        Db::check_keyspace(keyspace)?;
+        match self.writes.lookup(keyspace, key) {
+            Own::Value(value) => Ok(Some(value.to_vec())),
+            Own::Deleted => Ok(None),
+            Own::Untouched => self.snapshot.get(keyspace, key, options).await,
+        }
+    }
+
+    /// Sets `key` in `keyspace` to `value` when the transaction commits.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownKeyspace`] for a keyspace the database does not hold and
+    /// [`Error::TooLarge`] for a key or value longer than a batch entry may be, as
+    /// [`crate::WriteBatch::put`] refuses them.
+    pub fn put(&mut self, keyspace: KeyspaceId, key: &[u8], value: &[u8]) -> Result<()> {
+        Db::check_keyspace(keyspace)?;
+        check_size("key", key.len(), MAX_KEY_BYTES)?;
+        check_size("value", value.len(), MAX_VALUE_BYTES)?;
+        self.writes.put(keyspace, key, value);
+        Ok(())
+    }
+
+    /// Deletes `key` in `keyspace` when the transaction commits.
+    ///
+    /// # Errors
+    ///
+    /// As [`Transaction::put`].
+    pub fn delete(&mut self, keyspace: KeyspaceId, key: &[u8]) -> Result<()> {
+        Db::check_keyspace(keyspace)?;
+        check_size("key", key.len(), MAX_KEY_BYTES)?;
+        self.writes.delete(keyspace, key);
+        Ok(())
+    }
+
+    /// Deletes every key in `[start, end)` of `keyspace` when the transaction commits, including
+    /// keys written before it and not ones this transaction writes after it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] when `start` is not below `end`, and as [`Transaction::put`]
+    /// for the keyspace and the two keys.
+    pub fn delete_range(&mut self, keyspace: KeyspaceId, start: &[u8], end: &[u8]) -> Result<()> {
+        Db::check_keyspace(keyspace)?;
+        if start >= end {
+            return Err(Error::InvalidArgument {
+                what: "range delete",
+                reason: "the start is not below the end",
+            });
+        }
+        check_size("range start", start.len(), MAX_KEY_BYTES)?;
+        check_size("range end", end.len(), MAX_KEY_BYTES)?;
+        self.writes.delete_range(keyspace, start, end);
+        Ok(())
+    }
+
+    /// A point to roll back to.
+    pub fn savepoint(&self) -> Savepoint {
+        Savepoint(self.writes.len())
+    }
+
+    /// Forgets every write made after `savepoint`; a savepoint taken later than one already
+    /// rolled back to changes nothing.
+    pub fn rollback_to(&mut self, savepoint: Savepoint) {
+        self.writes.truncate(savepoint.0);
+    }
+
+    /// Writes everything the transaction wrote as one atomic batch, under `options`. Returns
+    /// the sequence number of its last entry.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::write`].
+    pub async fn commit(self, options: &WriteOptions) -> Result<SequenceNumber> {
+        let batch = self.writes.batch()?;
+        self.db.write(&batch, options).await
+    }
+}
+
+/// Refuses a `size` above `limit`, as a batch entry would.
+fn check_size(what: &'static str, size: usize, limit: usize) -> Result<()> {
+    if size > limit {
+        return Err(Error::TooLarge {
+            what,
+            size: u64::try_from(size).unwrap_or(u64::MAX),
+            limit: u64::try_from(limit).unwrap_or(u64::MAX),
+        });
+    }
+    Ok(())
+}

@@ -19,6 +19,7 @@ mod memtable;
 mod options;
 mod storage;
 mod tombstones;
+mod transaction;
 mod version;
 
 pub use db::{Db, DbIterator, ScanPage, Snapshot};
@@ -30,3 +31,4 @@ pub use options::{
 pub use storage::{MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile};
 pub use tessarikv_format::{BatchEntry, Compression, WriteBatch};
 pub use tessarikv_types::{KeyspaceId, SequenceNumber};
+pub use transaction::{Savepoint, Transaction};

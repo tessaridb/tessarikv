@@ -203,7 +203,7 @@ impl Db {
     }
 
     /// Refuses a keyspace this database does not hold.
-    fn check_keyspace(keyspace: KeyspaceId) -> Result<()> {
+    pub(crate) fn check_keyspace(keyspace: KeyspaceId) -> Result<()> {
         if keyspace == KeyspaceId::DEFAULT {
             Ok(())
         } else {

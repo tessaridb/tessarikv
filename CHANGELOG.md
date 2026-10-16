@@ -47,6 +47,9 @@ All notable changes to this project are documented here. The format follows
 - `ManifestEdit`: a versioned record of tables added and removed, the flushed sequence and the next file
   number; unknown versions and fields, repeated fields and lengths past the record are refused.
 - `Db::snapshot`: a `Snapshot` reads `get` and `scan` at a fixed point in history until it is dropped.
+- `Db::begin`: a `Transaction` reads at the snapshot it began at and sees its own puts, deletes and range deletes,
+  rolls back to a `Savepoint`, and commits everything as one atomic batch; dropping it writes nothing. Conflicting
+  commits are not detected yet. New errors `Error::TooLarge` and `Error::InvalidArgument`.
 - Flush: on storage, an in-memory table that reaches `KeyspaceOptions::memtable_bytes` is written in the background
   to a table file, named in the manifest, and replaces the in-memory table for reads; the log segments it covers
   are removed. Opening reads the tables the manifest names, removes unnamed ones, and replays the log above them.

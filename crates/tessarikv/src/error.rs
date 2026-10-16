@@ -153,6 +153,24 @@ pub enum Error {
     /// The database was closed.
     #[error("the database is closed")]
     Closed,
+    /// An argument the operation cannot accept.
+    #[error("invalid {what}: {reason}")]
+    InvalidArgument {
+        /// What was refused.
+        what: &'static str,
+        /// Why.
+        reason: &'static str,
+    },
+    /// A key or value is larger than a batch entry can describe.
+    #[error("{what} of {size} bytes exceeds the limit of {limit} bytes")]
+    TooLarge {
+        /// What was too large.
+        what: &'static str,
+        /// Its size in bytes.
+        size: u64,
+        /// The largest size accepted.
+        limit: u64,
+    },
 }
 
 /// Result of an engine operation.
@@ -176,6 +194,7 @@ impl Error {
             Self::WriteStalled { .. } => ErrorCategory::Unavailable,
             Self::AlreadyExists { .. } => ErrorCategory::Conflict,
             Self::Closed => ErrorCategory::ShutDown,
+            Self::TooLarge { .. } | Self::InvalidArgument { .. } => ErrorCategory::Validation,
         }
     }
 
@@ -200,6 +219,8 @@ impl Error {
             Self::WriteStalled { .. } => "write_stalled",
             Self::AlreadyExists { .. } => "already_exists",
             Self::Closed => "closed",
+            Self::TooLarge { .. } => "too_large",
+            Self::InvalidArgument { .. } => "invalid_argument",
         }
     }
 
@@ -225,7 +246,9 @@ impl Error {
             | Self::CompactionFailed
             | Self::ReadFailed
             | Self::AlreadyExists { .. }
-            | Self::Closed => false,
+            | Self::Closed
+            | Self::TooLarge { .. }
+            | Self::InvalidArgument { .. } => false,
         }
     }
 

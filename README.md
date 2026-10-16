@@ -24,6 +24,7 @@ Early development. Nothing is published to crates.io yet, and the on-disk format
 |---|---|
 | Writes | atomic batches of puts, deletes and range deletes through a write-ahead log; each write chooses its durability: synced, handed to the OS, or not logged |
 | Reads | point reads, paged scans and bounded iterators at a consistent snapshot; snapshots held on demand |
+| Transactions | reads at one snapshot plus the transaction's own writes, savepoints, an atomic commit (conflict detection not yet) |
 | In-memory table | lock-free skiplist with a whole-key filter that lets reads of absent keys skip it; a database can also live entirely in memory |
 | Tables | sorted blocks with prefix compression, an index, a bloom filter and a checksum on every block; LZ4 (default), Snappy, Zstandard or Deflate per keyspace, with a separate codec for the bottom level |
 | Block cache | lock-free CLOCK cache, sized by `DbOptions::block_cache_bytes` |
