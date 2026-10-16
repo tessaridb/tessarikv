@@ -16,7 +16,7 @@ use crate::db::block_cache::BlockCache;
 use crate::db::flush_job::{FileNumbers, table_path};
 use crate::db::rate_limiter::RateLimiter;
 use crate::db::table_blocks::open_table;
-use crate::db::tables::{finish, format_error, hand_off, user_key};
+use crate::db::tables::{finish, format_error, hand_off, table_builder, user_key};
 use crate::db::view::TableFile;
 use crate::storage::{Storage, WritableFile};
 use crate::tombstones::RangeTombstone;
@@ -128,7 +128,7 @@ impl<'a> Outputs<'a> {
             let path = table_path(&self.to.dir, id);
             let file = self.to.storage.create(&path)?;
             self.open = Some(Open {
-                builder: TableBuilder::new(self.to.options, compare_internal, user_key),
+                builder: table_builder(self.to.options, self.to.cache.sealing())?,
                 id,
                 path,
                 file,

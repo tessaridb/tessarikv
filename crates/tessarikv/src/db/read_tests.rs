@@ -116,7 +116,7 @@ pub(super) fn built(
     options: tessarikv_format::TableOptions,
 ) -> (super::tables::BuiltTable, Vec<u8>) {
     let mut bytes = Vec::new();
-    let built = build(table, options, &mut |piece| {
+    let built = build(table, options, None, &mut |piece| {
         bytes.extend_from_slice(piece);
         Ok(())
     })

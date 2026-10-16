@@ -18,6 +18,7 @@ use std::sync::Arc;
 use tessarikv_format::Block;
 use tessarikv_sync::ClockCache;
 
+use super::sealing::Sealing;
 use crate::Result;
 use crate::storage::{ReadableFile, Storage};
 
@@ -37,6 +38,8 @@ pub(crate) struct BlockKey {
 pub(crate) struct BlockCache {
     blocks: ClockCache<BlockKey, Block>,
     files: Option<FileHandles>,
+    /// How table files are encrypted, when they are.
+    sealing: Option<Arc<Sealing>>,
 }
 
 /// Open table files by file id, at most [`crate::DbOptions::max_open_files`] of them: a read
@@ -57,6 +60,7 @@ impl BlockCache {
         Self {
             blocks: ClockCache::new(capacity, block_bytes),
             files: None,
+            sealing: None,
         }
     }
 
@@ -72,6 +76,17 @@ impl BlockCache {
             handles: ClockCache::new(u64::from(max_open_files), 1),
         });
         self
+    }
+
+    /// Encrypts the table files written and opens the ones read with `sealing`.
+    pub(crate) fn with_sealing(mut self, sealing: Option<Arc<Sealing>>) -> Self {
+        self.sealing = sealing;
+        self
+    }
+
+    /// How table files are encrypted; `None` when they are not.
+    pub(crate) fn sealing(&self) -> Option<&Sealing> {
+        self.sealing.as_deref()
     }
 
     /// Whether table files are opened through this cache rather than each kept open.

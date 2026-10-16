@@ -63,6 +63,9 @@ All notable changes to this project are documented here. The format follows
   ChaCha20-Poly1305, a key per file derived from the caller's root key, and each unit bound to its file,
   kind and position. `TableBuilder::sealed` and `Table::open_sealed` write and read tables whose blocks and
   footer are sealed, so a table opens only with its key and only whole.
+- `DbOptions::encryption`: table files written by flushes and compactions are encrypted under a key of their own,
+  derived from a root key a caller's `KeyProvider` hands out by id; a key-check file makes an open refuse a wrong
+  key (`Error::WrongKey`), a missing one (`Error::KeyNotFound`), or a key for a database written without one.
 - `DbOptions::max_open_files`: keeps at most that many table files open (zero, the default, keeps every one);
   a read of a file let go opens it again, and a removed file lets go of its handle.
 - Opening refuses a log whose segments skip a number (a segment removed from outside), in every recovery mode,

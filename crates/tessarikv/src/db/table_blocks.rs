@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tessarikv_format::{
-    Block, BlockHandle, BlockSource, OpenError, Table, TableIter, unseal_block,
+    Block, BlockHandle, BlockSource, FileKind, FileSealer, OpenError, SEAL_HEADER_BYTES, Table,
+    TableIter, unseal_block,
 };
 use tessarikv_types::compare_internal;
 
@@ -32,6 +33,8 @@ pub(crate) struct TableBlocks {
     file: Option<Arc<dyn ReadableFile>>,
     len: u64,
     cache: Arc<BlockCache>,
+    /// The file's key, when it is encrypted.
+    sealer: Option<Arc<FileSealer>>,
 }
 
 impl fmt::Debug for TableBlocks {
@@ -161,8 +164,13 @@ impl TableBlocks {
     }
 
     fn unseal(&self, handle: BlockHandle, sealed: &[u8]) -> Result<Block> {
-        unseal_block(sealed, handle.offset(), None, compare_internal)
-            .map_err(|error| format_error(&error, Some(&self.path)))
+        unseal_block(
+            sealed,
+            handle.offset(),
+            self.sealer.as_deref(),
+            compare_internal,
+        )
+        .map_err(|error| format_error(&error, Some(&self.path)))
     }
 
     fn key(&self, handle: BlockHandle) -> BlockKey {
@@ -196,6 +204,14 @@ pub(crate) fn open_table(
 ) -> Result<(Table, Arc<TableBlocks>)> {
     let file = storage.open(path)?;
     let len = file.len()?;
+    let sealer = match cache.sealing() {
+        Some(sealing) => {
+            let mut header = [0; SEAL_HEADER_BYTES];
+            file.read_at(0, &mut header)?;
+            Some(sealing.open_file(&header, FileKind::Table, path)?)
+        }
+        None => None,
+    };
     let blocks = Arc::new(TableBlocks {
         id,
         path: path.to_path_buf(),
@@ -207,6 +223,7 @@ pub(crate) fn open_table(
         },
         len,
         cache: Arc::clone(cache),
+        sealer,
     });
     // The bytes just written from `base` on answer what they cover; the file answers the rest.
     let read = |offset: u64, buf: &mut [u8]| {
@@ -223,12 +240,17 @@ pub(crate) fn open_table(
         }
     };
     let source: Arc<dyn BlockSource> = Arc::<TableBlocks>::clone(&blocks);
-    let table =
-        Table::open_with(len, read, source, None, compare_internal, user_key).map_err(|error| {
-            match error {
-                OpenError::Format(error) => format_error(&error, Some(path)),
-                OpenError::Read(error) => error,
-            }
-        })?;
+    let table = Table::open_with(
+        len,
+        read,
+        source,
+        blocks.sealer.as_deref(),
+        compare_internal,
+        user_key,
+    )
+    .map_err(|error| match error {
+        OpenError::Format(error) => format_error(&error, Some(path)),
+        OpenError::Read(error) => error,
+    })?;
     Ok((table, blocks))
 }

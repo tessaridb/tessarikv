@@ -80,7 +80,7 @@ fn a_table_larger_than_a_write_chunk_is_written_in_pieces_and_reads_back_whole()
     }
     let mut pieces = 0;
     let mut bytes = Vec::new();
-    let built = super::tables::build(&memtable, options(Compression::None), &mut |piece| {
+    let built = super::tables::build(&memtable, options(Compression::None), None, &mut |piece| {
         pieces += 1;
         bytes.extend_from_slice(piece);
         Ok(())

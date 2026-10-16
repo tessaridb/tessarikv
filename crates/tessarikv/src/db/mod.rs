@@ -34,6 +34,7 @@ mod pressure;
 mod rate_limiter;
 mod read;
 mod recover;
+mod sealing;
 mod snapshot;
 mod table_blocks;
 mod table_versions;
@@ -55,6 +56,8 @@ mod compaction_tests;
 mod compression_tests;
 #[cfg(test)]
 mod crash_step_tests;
+#[cfg(test)]
+mod encryption_tests;
 #[cfg(test)]
 mod fifo_tests;
 #[cfg(test)]
@@ -122,8 +125,6 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use tessarikv_constants::COMMIT_RING_SLOTS;
-#[cfg(test)]
-use tessarikv_sync::Switch;
 use tessarikv_sync::{Sequencer, SnapshotRegistry};
 use tessarikv_types::SequenceNumber;
 
@@ -253,36 +254,6 @@ impl Db {
             None => Ok(()),
         };
         flushed.and(logged)
-    }
-
-    /// Starts a new in-memory table: later claims carry the next epoch and land in it, while
-    /// the table it replaces stays readable. Returns `None` when another switch is running.
-    ///
-    /// The view naming the new table is published BEFORE the sequencer starts its epoch, so a
-    /// claim carrying that epoch always finds it (see [`Sequencer::switch`]).
-    #[cfg(test)]
-    pub(crate) fn switch_memtable(&self) -> Option<Switch> {
-        use std::sync::atomic::Ordering;
-        // Acquire: orders this switch after the previous one, whose Release clears the flag.
-        if self
-            .switching
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            return None;
-        }
-        let next = self.view.load().with_next_table();
-        let epoch = next.newest_epoch();
-        self.view.store(Arc::new(next));
-        let switch = self.sequencer.switch();
-        debug_assert_eq!(
-            switch.epoch(),
-            epoch,
-            "the view and the sequencer agree on epochs"
-        );
-        // Release: publishes this switch's view to the next switcher.
-        self.switching.store(false, Ordering::Release);
-        Some(switch)
     }
 
     /// The snapshot a read takes: the highest sequence covering only completed batches.

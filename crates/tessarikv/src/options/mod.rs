@@ -8,6 +8,7 @@
 mod bounds;
 mod compaction;
 mod db;
+mod encryption;
 mod keyspace;
 mod keyspace_bounds;
 mod keyspace_builder;
@@ -26,6 +27,7 @@ mod tests;
 
 pub use compaction::CompactionStyle;
 pub use db::{DbOptions, DbOptionsBuilder, StorageMode, WalRecovery};
+pub use encryption::{Encryption, KeyProvider};
 pub use keyspace::KeyspaceOptions;
 pub use keyspace_builder::KeyspaceOptionsBuilder;
 pub(crate) use keyspaces::DEFAULT_NAME;

@@ -48,7 +48,9 @@ impl Job {
             let id = self.numbers.take()?;
             let path = table_path(&self.dir, id);
             let mut file = self.storage.create(&path)?;
-            let built = build(table, *options, &mut |piece| file.append(piece))?;
+            let built = build(table, *options, self.cache.sealing(), &mut |piece| {
+                file.append(piece)
+            })?;
             file.sync()?;
             drop(file);
             let meta = TableMeta {

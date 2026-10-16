@@ -8,12 +8,13 @@
 use std::path::Path;
 
 use tessarikv_constants::{TABLE_WRITE_CHUNK_BYTES, TRAILER_BYTES};
-use tessarikv_format::{Table, TableBuilder, TableOptions};
+use tessarikv_format::{FileKind, Table, TableBuilder, TableOptions};
 use tessarikv_types::{
     InternalKeyRef, SequenceNumber, Trailer, ValueKind, compare_internal, encode_internal,
     seek_trailer,
 };
 
+use super::sealing::Sealing;
 use super::view::TableFile;
 use crate::memtable::Memtable;
 use crate::tombstones::RangeTombstone;
@@ -85,6 +86,21 @@ pub(crate) fn user_key(internal: &[u8]) -> &[u8] {
         .unwrap_or(internal)
 }
 
+/// A builder of a table file laid out by `options`, encrypted under a key of its own when the
+/// database's tables are (`sealing`).
+pub(crate) fn table_builder(
+    options: TableOptions,
+    sealing: Option<&Sealing>,
+) -> Result<TableBuilder> {
+    Ok(match sealing {
+        Some(sealing) => {
+            let (header, sealer) = sealing.new_file(FileKind::Table)?;
+            TableBuilder::sealed(options, compare_internal, user_key, sealer, &header)
+        }
+        None => TableBuilder::new(options, compare_internal, user_key),
+    })
+}
+
 /// Writes every version and range delete of `memtable` as a table file, handing its bytes to
 /// `write` in order as they are built. Runs on a blocking thread. The recorded key range spans
 /// the point entries and the starts of the range deletes.
@@ -97,9 +113,10 @@ pub(crate) fn user_key(internal: &[u8]) -> &[u8] {
 pub(crate) fn build(
     memtable: &Memtable,
     options: TableOptions,
+    sealing: Option<&Sealing>,
     write: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<BuiltTable> {
-    let mut builder = TableBuilder::new(options, compare_internal, user_key);
+    let mut builder = table_builder(options, sealing)?;
     let mut versions = memtable.iter();
     versions.seek_to_first();
     let mut key = Vec::new();

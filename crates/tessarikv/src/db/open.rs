@@ -22,6 +22,7 @@ use super::installer::{Flusher, Installer};
 use super::keyspaces::options_of;
 use super::rate_limiter::RateLimiter;
 use super::recover::recover;
+use super::sealing::{Sealing, check_key};
 use super::table_blocks::open_table;
 use super::view::{TableFile, View};
 use crate::log::LogWriter;
@@ -57,9 +58,13 @@ impl Db {
         let keyspace = options.default_keyspace().clone();
         // Kept for the installer: `options` goes to the opening task.
         let named = options.clone();
+        let sealing = options
+            .encryption()
+            .map(|encryption| Arc::new(Sealing::new(encryption)));
         let cache = Arc::new(
             BlockCache::new(options.block_cache_bytes(), keyspace.block_bytes())
-                .with_open_files(options.max_open_files(), Arc::clone(&storage)),
+                .with_open_files(options.max_open_files(), Arc::clone(&storage))
+                .with_sealing(sealing),
         );
         let opened = {
             let storage = Arc::clone(&storage);
@@ -67,8 +72,9 @@ impl Db {
             let cache = Arc::clone(&cache);
             tokio::task::spawn_blocking(move || {
                 let lock = prepare(storage.as_ref(), &path, &options)?;
-                let (version, number) = ManifestStore::recover(storage.as_ref(), &path)?
-                    .unwrap_or_else(|| (Version::empty(), 0));
+                let found = ManifestStore::recover(storage.as_ref(), &path)?;
+                check_key(storage.as_ref(), &path, cache.sealing(), found.is_some())?;
+                let (version, number) = found.unwrap_or_else(|| (Version::empty(), 0));
                 let mut files = restore_tables(storage.as_ref(), &path, &version, &cache)?;
                 let (replay, _) = super::keyspaces::tables_for(&options, version.keyspaces());
                 let flushed = version.flushed_sequence();

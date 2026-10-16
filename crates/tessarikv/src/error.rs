@@ -166,6 +166,18 @@ pub enum Error {
     /// [`crate::Db::begin`] may succeed.
     #[error("the transaction conflicts with a write committed after it began")]
     Conflict,
+    /// The key the caller gave for `key_id` does not open the database's files.
+    #[error("the key given for key id {key_id} does not open this database")]
+    WrongKey {
+        /// The id the database's files name.
+        key_id: u32,
+    },
+    /// The database's files are encrypted with key `key_id`, and no key was given for it.
+    #[error("the database is encrypted with key id {key_id}, and no key was given for it")]
+    KeyNotFound {
+        /// The id the database's files name.
+        key_id: u32,
+    },
     /// A key or value is larger than a batch entry can describe.
     #[error("{what} of {size} bytes exceeds the limit of {limit} bytes")]
     TooLarge {
@@ -199,7 +211,10 @@ impl Error {
             Self::WriteStalled { .. } => ErrorCategory::Unavailable,
             Self::AlreadyExists { .. } | Self::Conflict => ErrorCategory::Conflict,
             Self::Closed => ErrorCategory::ShutDown,
-            Self::TooLarge { .. } | Self::InvalidArgument { .. } => ErrorCategory::Validation,
+            Self::TooLarge { .. } | Self::InvalidArgument { .. } | Self::WrongKey { .. } => {
+                ErrorCategory::Validation
+            }
+            Self::KeyNotFound { .. } => ErrorCategory::NotFound,
         }
     }
 
@@ -227,6 +242,8 @@ impl Error {
             Self::TooLarge { .. } => "too_large",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::Conflict => "conflict",
+            Self::WrongKey { .. } => "wrong_key",
+            Self::KeyNotFound { .. } => "key_not_found",
         }
     }
 
@@ -254,7 +271,9 @@ impl Error {
             | Self::AlreadyExists { .. }
             | Self::Closed
             | Self::TooLarge { .. }
-            | Self::InvalidArgument { .. } => false,
+            | Self::InvalidArgument { .. }
+            | Self::WrongKey { .. }
+            | Self::KeyNotFound { .. } => false,
         }
     }
 
