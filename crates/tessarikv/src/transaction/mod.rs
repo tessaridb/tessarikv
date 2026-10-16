@@ -146,6 +146,25 @@ impl Transaction<'_> {
         }
     }
 
+    /// The values of `keys` in `keyspace`, in the order given, each as [`Transaction::get`]
+    /// returns it: all from the transaction's snapshot or its own writes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::get`].
+    pub async fn multi_get<K: AsRef<[u8]>>(
+        &mut self,
+        keyspace: KeyspaceId,
+        keys: impl IntoIterator<Item = K>,
+        options: &ReadOptions,
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        let mut values = Vec::new();
+        for key in keys {
+            values.push(self.get(keyspace, key.as_ref(), options).await?);
+        }
+        Ok(values)
+    }
+
     /// Sets `key` in `keyspace` to `value` when the transaction commits.
     ///
     /// # Errors

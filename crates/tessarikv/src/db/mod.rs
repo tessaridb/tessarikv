@@ -20,6 +20,7 @@ mod flush_signals;
 mod installer;
 mod iterator;
 mod merge;
+mod multi_get;
 mod open;
 mod prefixes;
 mod rate_limiter;
@@ -54,6 +55,8 @@ mod kill_tests;
 mod level0_stall_tests;
 #[cfg(test)]
 mod level_tests;
+#[cfg(test)]
+mod multi_get_tests;
 #[cfg(test)]
 mod open_tests;
 #[cfg(test)]

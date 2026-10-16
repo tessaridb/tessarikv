@@ -79,6 +79,22 @@ impl Db {
 }
 
 impl Snapshot<'_> {
+    /// The values of `keys` in `keyspace` at this snapshot, as [`Db::multi_get`] returns them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::get`].
+    pub async fn multi_get<K: AsRef<[u8]>>(
+        &self,
+        keyspace: KeyspaceId,
+        keys: impl IntoIterator<Item = K>,
+        options: &ReadOptions,
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        self.db
+            .multi_get_at(keyspace, keys, self.sequence, options)
+            .await
+    }
+
     /// The sequence number the snapshot reads at.
     pub fn sequence(&self) -> SequenceNumber {
         self.sequence
