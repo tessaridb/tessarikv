@@ -241,6 +241,11 @@ pub const MAX_LOG_PAYLOAD_BYTES: usize = MAX_BATCH_BYTES + 8;
 /// the oldest commit still being applied before its completion waits.
 pub const COMMIT_RING_SLOTS: usize = 4096;
 
+/// Buckets of the table that remembers, per hashed key, the newest commit that wrote it, which
+/// a committing transaction checks for writes after its snapshot (8 bytes each). Keys sharing a
+/// bucket may refuse a commit that wrote neither; more buckets make that rarer.
+pub const CONFLICT_BUCKETS: usize = 1 << 16;
+
 /// The largest number of keyspaces one database may hold.
 ///
 /// A keyspace id is a `u32` on disk; this bound is what the engine sizes per-keyspace state for.

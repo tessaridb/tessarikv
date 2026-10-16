@@ -13,6 +13,7 @@
 //! table file in the background (see `installer`); in memory, every batch stays in memory.
 
 mod block_cache;
+mod commits;
 mod compaction;
 mod flush_job;
 mod flush_signals;
@@ -112,6 +113,8 @@ pub use snapshot::Snapshot;
 /// ```
 pub struct Db {
     sequencer: Arc<Sequencer>,
+    /// What each commit wrote, for transactions' conflict checks.
+    commits: commits::Commits,
     /// The tables reads consult and writes land in.
     view: Arc<ArcSwap<View>>,
     /// The snapshots readers hold, which compaction keeps versions for.
@@ -151,6 +154,7 @@ impl Db {
         match options.storage() {
             StorageMode::Memory => Ok(Self {
                 sequencer: Arc::new(Sequencer::new(0, COMMIT_RING_SLOTS)),
+                commits: commits::Commits::new(),
                 view: Arc::new(ArcSwap::from_pointee(View::new(
                     0,
                     Memtable::sized(options.default_keyspace().memtable_bytes()),

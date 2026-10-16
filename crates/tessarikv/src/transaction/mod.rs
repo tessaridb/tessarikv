@@ -6,11 +6,24 @@
 //! atomic batch; dropping it without committing writes nothing. A savepoint marks a point the
 //! transaction can return to, forgetting what it wrote since.
 //!
-//! The commit does not yet check for writes other transactions committed after this one began:
-//! two transactions that update the same key both commit, the later one winning.
+//! Isolation is snapshot isolation, first committer wins: the commit is refused with
+//! [`Error::Conflict`] when a write committed after the transaction began, by another
+//! transaction or a plain [`Db::write`], touched a key the transaction writes. A refused
+//! transaction writes nothing and may be run again. The check runs concurrently with other
+//! commits, with no lock and no single committer: it waits only for commits that claimed their
+//! sequence numbers earlier to publish their keys, which they do before anything that can wait.
+//!
+//! What it does not guarantee: two transactions that each read what the other writes, and write
+//! disjoint keys, both commit (write skew), so a constraint spanning keys needs the keys written,
+//! not only read. Keys are compared by hash, so a commit is occasionally refused for a key it
+//! did not share; and range deletes are checked conservatively: a transaction is refused when a
+//! range delete committed after it began, and its own range delete is refused when anything
+//! committed after it began.
 
 mod write_set;
 
+#[cfg(test)]
+mod conflict_tests;
 #[cfg(test)]
 mod tests;
 
@@ -148,15 +161,19 @@ impl Transaction<'_> {
         self.writes.truncate(savepoint.0);
     }
 
-    /// Writes everything the transaction wrote as one atomic batch, under `options`. Returns
-    /// the sequence number of its last entry.
+    /// Writes everything the transaction wrote as one atomic batch, under `options`, unless a
+    /// write committed after the transaction began touched one of its keys. Returns the sequence
+    /// number of its last entry.
     ///
     /// # Errors
     ///
-    /// As [`Db::write`].
+    /// [`Error::Conflict`] when the commit is refused (nothing is written; the transaction may
+    /// be run again), otherwise as [`Db::write`].
     pub async fn commit(self, options: &WriteOptions) -> Result<SequenceNumber> {
         let batch = self.writes.batch()?;
-        self.db.write(&batch, options).await
+        self.db
+            .commit_batch(&batch, options, Some(self.snapshot.sequence().get()))
+            .await
     }
 }
 

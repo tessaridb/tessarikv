@@ -40,6 +40,18 @@ impl Db {
         batch: &WriteBatch,
         options: &WriteOptions,
     ) -> Result<SequenceNumber> {
+        self.commit_batch(batch, options, None).await
+    }
+
+    /// As [`Db::write`]; with a `snapshot`, the batch is a transaction's and is refused with
+    /// [`Error::Conflict`] when a write committed after that snapshot touched one of its keys
+    /// (see `commits`). A refused batch is not applied and reaches the log only as a skip.
+    pub(crate) async fn commit_batch(
+        &self,
+        batch: &WriteBatch,
+        options: &WriteOptions,
+        snapshot: Option<u64>,
+    ) -> Result<SequenceNumber> {
         for entry in batch {
             Self::check_keyspace(entry.keyspace)?;
         }
@@ -47,7 +59,14 @@ impl Db {
             return self.visible_sequence();
         }
         let Some(log) = &self.log else {
-            let claim = Completion::new(&self.sequencer, None, self.claim(batch)?);
+            let claim = self.claim(batch)?;
+            let accepted = self
+                .commits
+                .publish(&self.sequencer, &claim, batch, snapshot);
+            let claim = Completion::new(&self.sequencer, None, claim);
+            if !accepted {
+                return claim.complete(Err(Error::Conflict));
+            }
             let applied = self.apply(claim.epoch(), claim.first(), batch);
             return claim.complete(applied);
         };
@@ -71,8 +90,15 @@ impl Db {
         }
         let slot = log.reserve().await?;
         let completed = installer.map(|installer| &installer.signals.visible);
-        let claim = Completion::new(&self.sequencer, completed, self.claim(batch)?);
+        let claim = self.claim(batch)?;
+        // Published before anything awaits, so a later transaction never waits on this one for
+        // longer than its synchronous publication.
+        let accepted = self
+            .commits
+            .publish(&self.sequencer, &claim, batch, snapshot);
+        let claim = Completion::new(&self.sequencer, completed, claim);
         let (first, last) = (claim.first(), claim.last());
+        let logged = logged.filter(|_| accepted);
         let (record, built) = match logged.map(|(prepared, wait)| (prepared.finish(first), wait)) {
             Some((Ok(frame), wait)) => (Record::Frame { frame, wait }, Ok(())),
             // The range still reaches the log, as a skip, so later frames are not held back.
@@ -81,6 +107,9 @@ impl Db {
         };
         let wait = slot.send(first, last, record);
         built?;
+        if !accepted {
+            return claim.complete(Err(Error::Conflict));
+        }
         if let Some(wait) = wait {
             log.wait(last, wait).await?;
         }

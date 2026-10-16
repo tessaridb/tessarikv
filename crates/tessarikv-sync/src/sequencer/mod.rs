@@ -1,6 +1,7 @@
 //! Sequence numbers for commits, and the highest sequence readers may see.
 
 mod advance;
+mod publish;
 
 #[cfg(all(test, not(loom)))]
 mod tests;
@@ -32,6 +33,8 @@ use crate::shim::{AtomicU64, Ordering};
 /// | `complete` | the store marking the batch's ring slot ready; the batch becomes visible at the compare-and-swap on `visible` that passes it, by this thread or a later completer | lock-free once the slot is free |
 /// | `visible` | the Acquire load of `visible` | wait-free |
 /// | `watch` | the read-modify-write on `visible` | wait-free |
+/// | `publish` | the Release store of the claim's publication slot | wait-free once the slot is free |
+/// | `wait_published` | the last Acquire load (of a slot or of `visible`) that passes the target | blocking: on every earlier claim that has not published |
 ///
 /// Two windows block. A completion waits while its ring slot still holds a batch that started at
 /// least `capacity` sequences earlier and is not yet visible (backpressure on a writer far ahead).
@@ -65,7 +68,18 @@ use crate::shim::{AtomicU64, Ordering};
 /// their order and synchronizes with the watcher's (and sees the target), or the watcher's
 /// read-modify-write comes later and reads the advanced value: a reached target is never missed.
 ///
-/// Reclamation: the ring is fixed at construction and freed with the sequencer. A slot is reused
+/// Publication: a second ring lets a writer announce, right after claiming and before anything
+/// that can wait, that it has published something about its batch (in the engine, the keys it
+/// writes), and lets a reader wait for every claim in a range of sequences to announce, without
+/// waiting for any of them to complete. [`Sequencer::publish`] stores the claim's range into its
+/// slot (Release); [`Sequencer::wait_published`] walks the ranges after a starting sequence,
+/// reading each slot (Acquire) and, where a slot does not show the range it expects, skipping
+/// everything `visible` already covers. A writer publishes before it completes, so a completed
+/// batch is a published one, and a publication slot is reused only once its previous range is
+/// visible: a reader that finds a newer range in a slot rereads `visible` and moves past it.
+/// What a writer did before publishing happens before what the reader does after the wait.
+///
+/// Reclamation: the rings are fixed at construction and freed with the sequencer. A slot is reused
 /// only after its previous batch is visible, and the starts stored in one slot strictly increase,
 /// so a stale slot never matches the sequence being probed.
 pub struct Sequencer {
@@ -74,6 +88,8 @@ pub struct Sequencer {
     /// The sequence a waiter wants to learn `visible` reached; [`NO_TARGET`] for none.
     target: CachePadded<AtomicU64>,
     slots: Box<[Slot]>,
+    /// The publication ring, indexed like `slots`.
+    published: Box<[Slot]>,
     mask: u64,
 }
 
@@ -126,6 +142,16 @@ const EPOCH_STEP: u64 = 1 << SEQUENCE_FIELD_BITS;
 /// Keeps an epoch inside the counter's seven epoch bits.
 const EPOCH_MASK: u8 = 0x7f;
 
+/// A ring of `capacity` empty slots.
+fn ring(capacity: usize) -> Box<[Slot]> {
+    (0..capacity)
+        .map(|_| Slot {
+            start: AtomicU64::new(0),
+            end: AtomicU64::new(0),
+        })
+        .collect()
+}
+
 /// The epoch a switch out of `epoch` starts; epochs count modulo 128.
 pub fn next_epoch(epoch: u8) -> u8 {
     epoch.wrapping_add(1) & EPOCH_MASK
@@ -163,12 +189,8 @@ impl Sequencer {
             next: CachePadded::new(AtomicU64::new(last.saturating_add(1))),
             visible: CachePadded::new(AtomicU64::new(last)),
             target: CachePadded::new(AtomicU64::new(NO_TARGET)),
-            slots: (0..capacity)
-                .map(|_| Slot {
-                    start: AtomicU64::new(0),
-                    end: AtomicU64::new(0),
-                })
-                .collect(),
+            slots: ring(capacity),
+            published: ring(capacity),
             mask: u64::try_from(capacity).map_or(1, |capacity| capacity.wrapping_sub(1)),
         }
     }

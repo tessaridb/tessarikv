@@ -152,3 +152,26 @@ fn a_target_reached_by_another_threads_advance_is_never_missed() {
         assert!(seen || reported, "the reached target was missed");
     });
 }
+
+/// A reader that waited for a claim's publication sees what the writer did before publishing,
+/// whether or not the claim has completed.
+#[test]
+fn a_published_claim_carries_its_writers_writes() {
+    loom::model(|| {
+        let sequencer = Arc::new(Sequencer::new(0, 2));
+        let payload = Arc::new(UnsafeCell::new(0_u64));
+        let claim = sequencer.claim(1).unwrap();
+        let (writer_sequencer, writer_payload) = (Arc::clone(&sequencer), Arc::clone(&payload));
+        let writer = loom::thread::spawn(move || {
+            // SAFETY: only this thread writes, before publishing.
+            writer_payload.with_mut(|value| unsafe { *value = 7 });
+            writer_sequencer.publish(&claim);
+            writer_sequencer.complete(claim);
+        });
+        sequencer.wait_published(0, 1);
+        // SAFETY: as above; loom reports the read if it is not ordered after the write.
+        let value = payload.with(|value| unsafe { *value });
+        assert_eq!(value, 7);
+        writer.join().unwrap();
+    });
+}

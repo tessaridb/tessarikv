@@ -136,3 +136,34 @@ fn every_visible_sequence_belongs_to_a_completed_batch() {
         "every completed batch is visible"
     );
 }
+
+/// Published claims, single- and multi-sequence, let a wait over them return; a wait over
+/// nothing returns at once.
+#[test]
+fn a_wait_passes_every_published_claim() {
+    let sequencer = Sequencer::new(0, 8);
+    sequencer.wait_published(0, 0);
+    let wide = sequencer.claim(3).unwrap();
+    let narrow = sequencer.claim(1).unwrap();
+    sequencer.publish(&narrow);
+    sequencer.publish(&wide);
+    sequencer.wait_published(0, narrow.first());
+    sequencer.complete(wide);
+    sequencer.complete(narrow);
+}
+
+/// Once a publication slot is reused by a later claim, a wait from an old starting point still
+/// returns: everything the slot held before is visible.
+#[test]
+fn a_wait_over_reused_slots_returns() {
+    let sequencer = Sequencer::new(0, 2);
+    for _ in 0..5 {
+        let claim = sequencer.claim(1).unwrap();
+        sequencer.publish(&claim);
+        sequencer.complete(claim);
+    }
+    let pending = sequencer.claim(1).unwrap();
+    sequencer.publish(&pending);
+    sequencer.wait_published(0, pending.first());
+    sequencer.complete(pending);
+}

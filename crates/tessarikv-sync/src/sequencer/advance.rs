@@ -74,7 +74,7 @@ impl Sequencer {
 }
 
 /// Lets the batch that owns the slot finish: spins with a pause hint, then yields the thread.
-fn wait(backoff: &Backoff) {
+pub(super) fn wait(backoff: &Backoff) {
     #[cfg(loom)]
     {
         let _ = backoff;

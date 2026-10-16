@@ -15,6 +15,7 @@ use tessarikv_sync::Sequencer;
 
 use super::Db;
 use super::block_cache::BlockCache;
+use super::commits::Commits;
 use super::flush_job::{FileNumbers, Job, table_options, table_path};
 use super::installer::{Flusher, Installer};
 use super::rate_limiter::RateLimiter;
@@ -139,6 +140,7 @@ impl Db {
         });
         Ok(Self {
             sequencer,
+            commits: Commits::new(),
             view,
             snapshots,
             #[cfg(test)]

@@ -161,6 +161,11 @@ pub enum Error {
         /// Why.
         reason: &'static str,
     },
+    /// A transaction's commit was refused: a write committed after the transaction began
+    /// touched a key it writes. Nothing of the transaction was written; running it again from
+    /// [`crate::Db::begin`] may succeed.
+    #[error("the transaction conflicts with a write committed after it began")]
+    Conflict,
     /// A key or value is larger than a batch entry can describe.
     #[error("{what} of {size} bytes exceeds the limit of {limit} bytes")]
     TooLarge {
@@ -192,7 +197,7 @@ impl Error {
             }
             Self::LogFailed | Self::FlushFailed | Self::CompactionFailed => ErrorCategory::Io,
             Self::WriteStalled { .. } => ErrorCategory::Unavailable,
-            Self::AlreadyExists { .. } => ErrorCategory::Conflict,
+            Self::AlreadyExists { .. } | Self::Conflict => ErrorCategory::Conflict,
             Self::Closed => ErrorCategory::ShutDown,
             Self::TooLarge { .. } | Self::InvalidArgument { .. } => ErrorCategory::Validation,
         }
@@ -221,6 +226,7 @@ impl Error {
             Self::Closed => "closed",
             Self::TooLarge { .. } => "too_large",
             Self::InvalidArgument { .. } => "invalid_argument",
+            Self::Conflict => "conflict",
         }
     }
 
@@ -232,7 +238,7 @@ impl Error {
                 source.kind(),
                 std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
             ),
-            Self::Locked { .. } | Self::WriteStalled { .. } => true,
+            Self::Locked { .. } | Self::WriteStalled { .. } | Self::Conflict => true,
             Self::NotFound { .. }
             | Self::InvalidOptions { .. }
             | Self::Corruption { .. }

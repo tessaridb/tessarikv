@@ -46,6 +46,7 @@ fn samples() -> Vec<Error> {
             path: PathBuf::from("db"),
         },
         Error::Closed,
+        Error::Conflict,
     ]
 }
 
@@ -73,6 +74,7 @@ fn every_variant_maps_to_its_category() {
             ErrorCategory::Unavailable,
             ErrorCategory::Conflict,
             ErrorCategory::ShutDown,
+            ErrorCategory::Conflict,
         ]
     );
 }
@@ -100,7 +102,8 @@ fn codes_are_stable_strings() {
             "read_failed",
             "write_stalled",
             "already_exists",
-            "closed"
+            "closed",
+            "conflict"
         ]
     );
 }
@@ -112,7 +115,7 @@ fn only_transient_failures_are_retryable() {
         retryable,
         [
             false, false, true, false, false, false, false, false, false, false, false, false,
-            false, false, true, false, false
+            false, false, true, false, false, true
         ]
     );
     let interrupted = Error::Io {
