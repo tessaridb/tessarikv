@@ -275,6 +275,11 @@ impl LogWriter {
         self.task.await.map_err(|_| Error::LogFailed)?
     }
 
+    /// Whether the log stopped after a failed write or sync.
+    pub(crate) fn failed(&self) -> bool {
+        self.progress.borrow().failed
+    }
+
     /// The error for a log that no longer takes records.
     fn stopped(&self) -> Error {
         if self.progress.borrow().failed {

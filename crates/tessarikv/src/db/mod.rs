@@ -43,6 +43,8 @@ mod write;
 #[cfg(test)]
 mod approximate_size_tests;
 #[cfg(test)]
+mod background_error_tests;
+#[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
 mod compaction_model_tests;

@@ -28,7 +28,7 @@ Early development. Nothing is published to crates.io yet, and the on-disk format
 | In-memory table | lock-free skiplist with a whole-key filter that lets reads of absent keys skip it; a database can also live entirely in memory |
 | Tables | sorted blocks with prefix compression, an index, a bloom filter and a checksum on every block; LZ4 (default), Snappy, Zstandard or Deflate per keyspace, with a separate codec for the bottom level |
 | Block cache | lock-free CLOCK cache, sized by `DbOptions::block_cache_bytes` |
-| Flush | background flush to table files named by a synced manifest; recovery replays only the log above them, flushes what it replayed and removes that log; `Db::flush` on demand |
+| Flush | background flush to table files named by a synced manifest; recovery replays only the log above them, flushes what it replayed and removes that log; `Db::flush` on demand; a failed flush, compaction or log write stops writes and `Db::background_error` reports it |
 | Compaction | leveled (default), universal and FIFO; several compactions at once, each split into parallel parts; rate-limited output; `Db::compact_range` on demand |
 | Backpressure | writes slow down, then stop, on level-0 size, pending compaction bytes and unflushed tables |
 | Keyspaces | independent sets of keys, each with its own options, in-memory tables, levels and compactions; named at open, created or dropped while running (`Db::create_keyspace`, `Db::drop_keyspace`); a batch may span several and stays atomic across crashes |

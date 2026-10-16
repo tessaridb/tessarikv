@@ -11,6 +11,7 @@ use super::flush_job::{Job, table_options};
 use super::flush_signals::FlushSignals;
 use super::installer::Flusher;
 use super::view::TableFile;
+use crate::log::LogWriter;
 use crate::memtable::Memtable;
 use crate::version::manifest::ManifestStore;
 use crate::{Error, Result};
@@ -152,5 +153,19 @@ impl Db {
             Some(log) => log.sync().await,
             None => Ok(()),
         }
+    }
+
+    /// The failure that stopped this database's background work, if one did: a failed log
+    /// write or sync ([`Error::LogFailed`]), else a failed flush or compaction
+    /// ([`Error::FlushFailed`], [`Error::CompactionFailed`]). Writes are refused from then on
+    /// until the database is reopened; this reads the state without attempting one. `None`
+    /// while healthy, and always in memory.
+    pub fn background_error(&self) -> Option<Error> {
+        if self.log.as_ref().is_some_and(LogWriter::failed) {
+            return Some(Error::LogFailed);
+        }
+        self.installer
+            .as_ref()
+            .and_then(|installer| installer.signals.failure())
     }
 }
