@@ -43,11 +43,24 @@ fn keyspace_defaults_are_the_documented_constants() {
         options.bloom_bits_per_key(),
         limits::DEFAULT_BLOOM_BITS_PER_KEY
     );
+    assert_eq!(
+        options.level0_compaction_trigger(),
+        limits::DEFAULT_LEVEL0_COMPACTION_TRIGGER
+    );
+    assert_eq!(options.level_base_bytes(), limits::DEFAULT_LEVEL_BASE_BYTES);
+    assert_eq!(
+        options.level_size_multiplier(),
+        limits::DEFAULT_LEVEL_SIZE_MULTIPLIER
+    );
+    assert_eq!(
+        options.target_file_bytes(),
+        limits::DEFAULT_TARGET_FILE_BYTES
+    );
 }
 
 #[test]
 fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
-    let edges: [Edge<KeyspaceOptions>; 5] = [
+    let edges: [Edge<KeyspaceOptions>; 9] = [
         (
             "keyspace.memtable_bytes",
             limits::MIN_MEMTABLE_BYTES,
@@ -89,6 +102,38 @@ fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
                     .bloom_bits_per_key(narrow(value))
                     .build()
             },
+        ),
+        (
+            "keyspace.level0_compaction_trigger",
+            1,
+            u64::from(limits::MAX_LEVEL0_COMPACTION_TRIGGER),
+            |value| {
+                KeyspaceOptions::builder()
+                    .level0_compaction_trigger(narrow(value))
+                    .build()
+            },
+        ),
+        (
+            "keyspace.level_base_bytes",
+            limits::MIN_LEVEL_BASE_BYTES,
+            limits::MAX_LEVEL_BASE_BYTES,
+            |value| KeyspaceOptions::builder().level_base_bytes(value).build(),
+        ),
+        (
+            "keyspace.level_size_multiplier",
+            u64::from(limits::MIN_LEVEL_SIZE_MULTIPLIER),
+            u64::from(limits::MAX_LEVEL_SIZE_MULTIPLIER),
+            |value| {
+                KeyspaceOptions::builder()
+                    .level_size_multiplier(narrow(value))
+                    .build()
+            },
+        ),
+        (
+            "keyspace.target_file_bytes",
+            limits::MIN_TARGET_FILE_BYTES,
+            limits::MAX_TARGET_FILE_BYTES,
+            |value| KeyspaceOptions::builder().target_file_bytes(value).build(),
         ),
     ];
     for (option, min, max, build) in edges {

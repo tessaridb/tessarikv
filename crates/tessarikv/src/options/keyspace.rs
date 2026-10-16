@@ -13,6 +13,10 @@ pub struct KeyspaceOptions {
     block_bytes: u64,
     block_restart_interval: u32,
     bloom_bits_per_key: u32,
+    level0_compaction_trigger: u32,
+    level_base_bytes: u64,
+    level_size_multiplier: u32,
+    target_file_bytes: u64,
 }
 
 impl Default for KeyspaceOptions {
@@ -23,6 +27,10 @@ impl Default for KeyspaceOptions {
             block_bytes: limits::DEFAULT_BLOCK_BYTES,
             block_restart_interval: limits::DEFAULT_BLOCK_RESTART_INTERVAL,
             bloom_bits_per_key: limits::DEFAULT_BLOOM_BITS_PER_KEY,
+            level0_compaction_trigger: limits::DEFAULT_LEVEL0_COMPACTION_TRIGGER,
+            level_base_bytes: limits::DEFAULT_LEVEL_BASE_BYTES,
+            level_size_multiplier: limits::DEFAULT_LEVEL_SIZE_MULTIPLIER,
+            target_file_bytes: limits::DEFAULT_TARGET_FILE_BYTES,
         }
     }
 }
@@ -102,6 +110,33 @@ impl KeyspaceOptions {
     pub const fn bloom_bits_per_key(&self) -> u32 {
         self.bloom_bits_per_key
     }
+
+    /// Level-0 tables that start a compaction of level 0 into the levels below.
+    #[must_use]
+    pub const fn level0_compaction_trigger(&self) -> u32 {
+        self.level0_compaction_trigger
+    }
+
+    /// Target size of the first level below level 0 that holds data, in bytes. Targets are
+    /// computed from the bottom level up, so data first goes to the bottom level and the levels
+    /// above it fill as it grows.
+    #[must_use]
+    pub const fn level_base_bytes(&self) -> u64 {
+        self.level_base_bytes
+    }
+
+    /// Factor by which each level's target size exceeds the one above it.
+    #[must_use]
+    pub const fn level_size_multiplier(&self) -> u32 {
+        self.level_size_multiplier
+    }
+
+    /// Size at which a compaction closes one output table and starts the next, in bytes. A table
+    /// may exceed it by the versions of one key: a key's versions never span two tables.
+    #[must_use]
+    pub const fn target_file_bytes(&self) -> u64 {
+        self.target_file_bytes
+    }
 }
 
 /// Builds a validated [`KeyspaceOptions`].
@@ -142,6 +177,30 @@ impl KeyspaceOptionsBuilder {
         self
     }
 
+    /// Sets [`KeyspaceOptions::level0_compaction_trigger`].
+    pub const fn level0_compaction_trigger(mut self, value: u32) -> Self {
+        self.options.level0_compaction_trigger = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::level_base_bytes`].
+    pub const fn level_base_bytes(mut self, value: u64) -> Self {
+        self.options.level_base_bytes = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::level_size_multiplier`].
+    pub const fn level_size_multiplier(mut self, value: u32) -> Self {
+        self.options.level_size_multiplier = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::target_file_bytes`].
+    pub const fn target_file_bytes(mut self, value: u64) -> Self {
+        self.options.target_file_bytes = value;
+        self
+    }
+
     /// Validates every field and returns the options.
     ///
     /// # Errors
@@ -178,6 +237,30 @@ impl KeyspaceOptionsBuilder {
             u64::from(options.bloom_bits_per_key),
             0,
             u64::from(limits::MAX_BLOOM_BITS_PER_KEY),
+        )?;
+        check_range(
+            "keyspace.level0_compaction_trigger",
+            u64::from(options.level0_compaction_trigger),
+            1,
+            u64::from(limits::MAX_LEVEL0_COMPACTION_TRIGGER),
+        )?;
+        check_range(
+            "keyspace.level_base_bytes",
+            options.level_base_bytes,
+            limits::MIN_LEVEL_BASE_BYTES,
+            limits::MAX_LEVEL_BASE_BYTES,
+        )?;
+        check_range(
+            "keyspace.level_size_multiplier",
+            u64::from(options.level_size_multiplier),
+            u64::from(limits::MIN_LEVEL_SIZE_MULTIPLIER),
+            u64::from(limits::MAX_LEVEL_SIZE_MULTIPLIER),
+        )?;
+        check_range(
+            "keyspace.target_file_bytes",
+            options.target_file_bytes,
+            limits::MIN_TARGET_FILE_BYTES,
+            limits::MAX_TARGET_FILE_BYTES,
         )?;
         Ok(options)
     }

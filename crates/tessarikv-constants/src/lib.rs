@@ -65,6 +65,39 @@ pub const DEFAULT_BLOOM_BITS_PER_KEY: u32 = 10;
 /// Zero bits per key means no filter.
 pub const MAX_BLOOM_BITS_PER_KEY: u32 = 64;
 
+/// Default number of level-0 tables that starts a compaction of level 0.
+pub const DEFAULT_LEVEL0_COMPACTION_TRIGGER: u32 = 4;
+
+/// Largest level-0 compaction trigger: a point read consults every level-0 table, so more would make reads pay for it.
+pub const MAX_LEVEL0_COMPACTION_TRIGGER: u32 = 1024;
+
+/// Default target size of the first level below level 0 (256 MiB).
+pub const DEFAULT_LEVEL_BASE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Smallest target size of the first level below level 0 (64 KiB), the smallest memtable.
+pub const MIN_LEVEL_BASE_BYTES: u64 = 64 * 1024;
+
+/// Largest target size of the first level below level 0 (1 TiB).
+pub const MAX_LEVEL_BASE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+
+/// Default factor by which each level's target size exceeds the one above it.
+pub const DEFAULT_LEVEL_SIZE_MULTIPLIER: u32 = 10;
+
+/// Smallest level size multiplier: below 2 the levels stop growing.
+pub const MIN_LEVEL_SIZE_MULTIPLIER: u32 = 2;
+
+/// Largest level size multiplier: beyond it one compaction rewrites far more than it moves down.
+pub const MAX_LEVEL_SIZE_MULTIPLIER: u32 = 100;
+
+/// Default size at which a compaction closes one output table and starts the next (64 MiB).
+pub const DEFAULT_TARGET_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Smallest compaction output table (4 KiB): one data block.
+pub const MIN_TARGET_FILE_BYTES: u64 = 4 * 1024;
+
+/// Largest compaction output table (4 GiB).
+pub const MAX_TARGET_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 /// Default block cache capacity (512 MiB).
 pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
