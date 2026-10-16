@@ -41,8 +41,9 @@ fn options(compacting: bool) -> DbOptions {
         .keyspace(USERS, keyspace)
         .create_missing_keyspaces(true)
         .wal_segment_bytes(1024 * 1024)
-        // Small enough that the manifest rolls several times, so rolls are crashed at too.
-        .max_manifest_bytes(3072)
+        // The smallest limit: the manifest rolls after a few edits however many flushes the
+        // load folds the writes into, so rolls are crashed at too.
+        .max_manifest_bytes(1024)
         .build()
         .expect("valid")
 }
