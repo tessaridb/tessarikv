@@ -55,14 +55,14 @@ impl Shared {
     pub(super) fn chunk_for_write(&self, index: u64) -> Option<&Chunk> {
         let (block_index, slot_index) = locate(index)?;
         let block_slot = self.blocks.get(block_index)?;
-        // Relaxed: the single writer reads back its own store (ledger #7).
+        // Relaxed: the single writer reads back its own store.
         let mut block = block_slot.load(Ordering::Relaxed);
         if block.is_null() {
             let slots = 1_usize.checked_shl(u32::try_from(block_index).ok()?)?;
             let fresh = Box::into_raw(Box::new(Block {
                 slots: (0..slots).map(|_| AtomicPtr::new(null_mut())).collect(),
             }));
-            // Release: publishes the slot array to readers' Acquire load (ledger #1 → #4).
+            // Release: publishes the slot array to readers' Acquire load.
             block_slot.store(fresh, Ordering::Release);
             block = fresh;
         }
@@ -75,7 +75,7 @@ impl Shared {
             let fresh = Box::into_raw(Box::new(Chunk {
                 bytes: ByteCells::zeroed(self.chunk_bytes),
             }));
-            // Release: publishes the chunk allocation to readers' Acquire load (ledger #2 → #5).
+            // Release: publishes the chunk allocation to readers' Acquire load.
             slot.store(fresh, Ordering::Release);
             chunk = fresh;
         }
@@ -86,14 +86,14 @@ impl Shared {
     /// The chunk at `index` if it has been installed. Any thread.
     pub(super) fn chunk(&self, index: u64) -> Option<&Chunk> {
         let (block_index, slot_index) = locate(index)?;
-        // Acquire: pairs with the writer's Release install (ledger #4 ← #1).
+        // Acquire: pairs with the writer's Release install.
         let block = self.blocks.get(block_index)?.load(Ordering::Acquire);
         if block.is_null() {
             return None;
         }
         // SAFETY: installed once, never replaced, freed only in `Drop` (see `chunk_for_write`).
         let block = unsafe { &*block };
-        // Acquire: pairs with the writer's Release install (ledger #5 ← #2).
+        // Acquire: pairs with the writer's Release install.
         let chunk = block.slots.get(slot_index)?.load(Ordering::Acquire);
         if chunk.is_null() {
             return None;

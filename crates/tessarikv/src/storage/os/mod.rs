@@ -1,6 +1,6 @@
 //! The operating system's file system.
 //!
-//! Platform differences (ADR-0006) live in `flush` (durable data and directory flushes) and
+//! Platform differences live in `flush` (durable data and directory flushes) and
 //! `positional` (positional reads); everything else is portable `std`.
 
 use std::fs::{self, File, OpenOptions};
@@ -139,6 +139,10 @@ impl ReadableFile for OsReadable {
             }
             Err(error) => Err(Error::io("read", &self.path, error)),
         }
+    }
+
+    fn try_read_at(&self, offset: u64, buf: &mut [u8]) -> Result<bool> {
+        Ok(positional::read_exact_at_nowait(&self.file, offset, buf))
     }
 
     fn len(&self) -> Result<u64> {

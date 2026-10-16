@@ -51,16 +51,24 @@ fn a_zero_chunk_size_is_refused() {
 }
 
 /// Readers on other threads only ever see published, correct bytes while the writer appends.
+/// The writer goes on until every reader has checked at least once, so a reader scheduled late
+/// still reads while bytes are being appended.
 #[test]
 fn concurrent_readers_never_see_unpublished_or_torn_bytes() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    const READERS: usize = 4;
     let (mut writer, reader) = append_buffer(64).unwrap();
-    let readers: Vec<_> = (0..4)
-        .map(|seed| {
-            let reader = reader.clone();
+    let checks: Arc<[AtomicU64; READERS]> = Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
+    let done = Arc::new(AtomicBool::new(false));
+    let readers: Vec<_> = (0..READERS)
+        .map(|index| {
+            let (reader, checks, done) = (reader.clone(), Arc::clone(&checks), Arc::clone(&done));
             thread::spawn(move || {
-                let mut checked = 0_u64;
-                let mut state = seed + 1_u64;
-                while reader.len() < 200_000 {
+                let mut state = index as u64 + 1;
+                // Relaxed: the flag only ends the loop; the bytes are ordered by the buffer.
+                while !done.load(Ordering::Relaxed) {
                     let len = reader.len();
                     if len == 0 {
                         continue;
@@ -71,18 +79,27 @@ fn concurrent_readers_never_see_unpublished_or_torn_bytes() {
                     let mut buf = vec![0; size];
                     reader.read_at(start, &mut buf).unwrap();
                     assert_eq!(buf, pattern(start, size));
-                    checked += 1;
+                    // Relaxed: a progress count read on its own.
+                    checks[index].fetch_add(1, Ordering::Relaxed);
                 }
-                checked
             })
         })
         .collect();
-    while writer.len() < 200_000 {
+    let unchecked = || {
+        checks
+            .iter()
+            .any(|count| count.load(Ordering::Relaxed) == 0)
+    };
+    // A reader that stopped early, by a failed check, ends the writing too.
+    while (writer.len() < 200_000 || unchecked())
+        && !readers.iter().any(thread::JoinHandle::is_finished)
+    {
         let from = writer.len();
         let size = 1 + (from % 97) as usize;
         writer.append(&pattern(from, size)).unwrap();
     }
+    done.store(true, Ordering::Relaxed);
     for handle in readers {
-        assert!(handle.join().unwrap() > 0);
+        handle.join().unwrap();
     }
 }

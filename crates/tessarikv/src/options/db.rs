@@ -3,17 +3,9 @@
 use tessarikv_constants as limits;
 
 use super::bounds::check_range;
+use super::keyspace::KeyspaceOptions;
+use super::modes::{StorageMode, WalRecovery};
 use crate::{Error, Result};
-
-/// Where the database keeps its files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum StorageMode {
-    /// The operating system's file system, at the path the database is opened with.
-    Os,
-    /// Process memory only: the same engine, nothing survives the process.
-    Memory,
-}
 
 /// Validated database-wide options. Built through [`DbOptions::builder`] or a preset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,8 +14,22 @@ pub struct DbOptions {
     error_if_exists: bool,
     storage: StorageMode,
     wal_segment_bytes: u64,
+    wal_recovery: WalRecovery,
     block_cache_bytes: u64,
     background_threads: u32,
+    compaction_bytes_per_second: u64,
+    delayed_write_bytes_per_second: u64,
+    serializable_transactions: bool,
+    pub(super) total_memtable_bytes: u64,
+    pub(super) max_open_files: u32,
+    pub(super) encryption: Option<super::Encryption>,
+    pub(super) encryption_cipher: Option<tessarikv_format::Cipher>,
+    pub(super) max_manifest_bytes: u64,
+    pub(super) statistics: bool,
+    default_keyspace: KeyspaceOptions,
+    /// Named keyspaces beside the default one (see `keyspaces.rs`).
+    pub(super) keyspaces: Vec<(String, KeyspaceOptions)>,
+    pub(super) create_missing_keyspaces: bool,
 }
 
 impl Default for DbOptions {
@@ -33,8 +39,21 @@ impl Default for DbOptions {
             error_if_exists: false,
             storage: StorageMode::Os,
             wal_segment_bytes: limits::DEFAULT_WAL_SEGMENT_BYTES,
+            wal_recovery: WalRecovery::PointInTime,
             block_cache_bytes: limits::DEFAULT_BLOCK_CACHE_BYTES,
             background_threads: limits::DEFAULT_BACKGROUND_THREADS,
+            compaction_bytes_per_second: 0,
+            delayed_write_bytes_per_second: limits::DEFAULT_DELAYED_WRITE_BYTES_PER_SECOND,
+            serializable_transactions: false,
+            total_memtable_bytes: 0,
+            max_open_files: 0,
+            encryption: None,
+            encryption_cipher: None,
+            max_manifest_bytes: limits::DEFAULT_MAX_MANIFEST_BYTES,
+            statistics: false,
+            default_keyspace: KeyspaceOptions::default(),
+            keyspaces: Vec::new(),
+            create_missing_keyspaces: false,
         }
     }
 }
@@ -85,10 +104,21 @@ impl DbOptions {
         self.wal_segment_bytes
     }
 
+    /// What opening does with a damaged log (default [`WalRecovery::PointInTime`]).
+    pub const fn wal_recovery(&self) -> WalRecovery {
+        self.wal_recovery
+    }
+
     /// Block cache capacity shared by every keyspace, in bytes; zero disables the cache.
     #[must_use]
     pub const fn block_cache_bytes(&self) -> u64 {
         self.block_cache_bytes
+    }
+
+    /// Options of the default keyspace: its in-memory table size and the tables it flushes.
+    #[must_use]
+    pub const fn default_keyspace(&self) -> &KeyspaceOptions {
+        &self.default_keyspace
     }
 
     /// Threads running flushes and compactions.
@@ -96,13 +126,37 @@ impl DbOptions {
     pub const fn background_threads(&self) -> u32 {
         self.background_threads
     }
+
+    /// The rate compactions write their output tables at, in bytes per second, with up to a
+    /// second's worth let through at once; zero (the default) does not pace them. Flushes are
+    /// never paced: they free the in-memory tables writes wait for.
+    #[must_use]
+    pub const fn compaction_bytes_per_second(&self) -> u64 {
+        self.compaction_bytes_per_second
+    }
+
+    /// Whether transactions may run serializable ([`crate::Isolation::Serializable`]); default
+    /// `false`. When set, every write also records the prefixes of the keys it writes, so a
+    /// serializable transaction can tell whether a range it read was written after it began; that
+    /// costs every write a few more atomic updates.
+    #[must_use]
+    pub const fn serializable_transactions(&self) -> bool {
+        self.serializable_transactions
+    }
+
+    /// The rate writes go at, in bytes per second, while a keyspace's level 0 is past its
+    /// slowdown trigger: each write waits for its own bytes, a millisecond's worth at once.
+    #[must_use]
+    pub const fn delayed_write_bytes_per_second(&self) -> u64 {
+        self.delayed_write_bytes_per_second
+    }
 }
 
 /// Builds a validated [`DbOptions`].
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct DbOptionsBuilder {
-    options: DbOptions,
+    pub(super) options: DbOptions,
 }
 
 impl DbOptionsBuilder {
@@ -124,9 +178,21 @@ impl DbOptionsBuilder {
         self
     }
 
+    /// Sets [`DbOptions::serializable_transactions`].
+    pub const fn serializable_transactions(mut self, value: bool) -> Self {
+        self.options.serializable_transactions = value;
+        self
+    }
+
     /// Sets [`DbOptions::wal_segment_bytes`].
     pub const fn wal_segment_bytes(mut self, value: u64) -> Self {
         self.options.wal_segment_bytes = value;
+        self
+    }
+
+    /// Sets [`DbOptions::wal_recovery`].
+    pub const fn wal_recovery(mut self, value: WalRecovery) -> Self {
+        self.options.wal_recovery = value;
         self
     }
 
@@ -139,6 +205,24 @@ impl DbOptionsBuilder {
     /// Sets [`DbOptions::background_threads`].
     pub const fn background_threads(mut self, value: u32) -> Self {
         self.options.background_threads = value;
+        self
+    }
+
+    /// Sets [`DbOptions::compaction_bytes_per_second`].
+    pub const fn compaction_bytes_per_second(mut self, value: u64) -> Self {
+        self.options.compaction_bytes_per_second = value;
+        self
+    }
+
+    /// Sets [`DbOptions::delayed_write_bytes_per_second`].
+    pub const fn delayed_write_bytes_per_second(mut self, value: u64) -> Self {
+        self.options.delayed_write_bytes_per_second = value;
+        self
+    }
+
+    /// Sets [`DbOptions::default_keyspace`].
+    pub fn default_keyspace(mut self, value: KeyspaceOptions) -> Self {
+        self.options.default_keyspace = value;
         self
     }
 
@@ -168,6 +252,23 @@ impl DbOptionsBuilder {
             1,
             u64::from(limits::MAX_BACKGROUND_THREADS),
         )?;
+        check_range(
+            "db.delayed_write_bytes_per_second",
+            options.delayed_write_bytes_per_second,
+            limits::MIN_DELAYED_WRITE_BYTES_PER_SECOND,
+            limits::MAX_DELAYED_WRITE_BYTES_PER_SECOND,
+        )?;
+        if options.compaction_bytes_per_second != 0 {
+            check_range(
+                "db.compaction_bytes_per_second",
+                options.compaction_bytes_per_second,
+                limits::MIN_COMPACTION_BYTES_PER_SECOND,
+                limits::MAX_COMPACTION_BYTES_PER_SECOND,
+            )?;
+        }
+        super::memory::check(&options)?;
+        super::manifest::check(&options)?;
+        super::keyspaces::check(&options)?;
         Ok(options)
     }
 }

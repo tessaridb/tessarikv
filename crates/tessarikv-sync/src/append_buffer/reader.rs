@@ -17,7 +17,7 @@ impl AppendReader {
     /// How many bytes are published.
     #[must_use]
     pub fn len(&self) -> u64 {
-        // Acquire: pairs with the writer's Release publish (ledger #6 ← #3).
+        // Acquire: pairs with the writer's Release publish.
         self.shared.published.load(Ordering::Acquire)
     }
 

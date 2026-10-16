@@ -1,4 +1,4 @@
-//! The engine's error type and its categories (ADR-0005).
+//! The engine's error type and its categories.
 //!
 //! Every failure is a typed variant carrying the context needed to act on it, belongs to one
 //! [`ErrorCategory`], and has a stable [`Error::code`]. Callers branch on the category or the
@@ -97,6 +97,97 @@ pub enum Error {
         /// Bytes in the file.
         available: u64,
     },
+    /// A batch or a read names a keyspace the database does not hold.
+    #[error("unknown keyspace {keyspace}")]
+    UnknownKeyspace {
+        /// The keyspace id.
+        keyspace: u32,
+    },
+    /// The operation needs something this version of the engine does not provide.
+    #[error("not supported: {what}")]
+    Unsupported {
+        /// What was asked for.
+        what: &'static str,
+    },
+    /// Every sequence number has been used; the database accepts no more writes.
+    #[error("sequence numbers exhausted")]
+    SequenceExhausted,
+    /// An in-memory table refused an entry: an engine invariant was broken or its arena is
+    /// exhausted.
+    #[error("in-memory table refused an entry: {reason}")]
+    Memtable {
+        /// Why.
+        reason: &'static str,
+    },
+    /// The write-ahead log stopped after a write or a sync failed. Writes acknowledged before the
+    /// failure are as durable as they were acknowledged; nothing else is written until the
+    /// database is reopened, which recovers from the log on storage.
+    #[error("the write-ahead log stopped after a failed write or sync; reopen the database")]
+    LogFailed,
+    /// Writing a flushed table or its manifest record failed. Acknowledged writes stay in the
+    /// write-ahead log; nothing else is written until the database is reopened, which recovers
+    /// from the manifest and the log.
+    #[error("a flush failed to write its table or the manifest; reopen the database")]
+    FlushFailed,
+    /// A compaction failed to read its tables, write its outputs or record them in the
+    /// manifest. Every table it read is still in place and named by the manifest; nothing else
+    /// is written until the database is reopened, which removes the outputs no edit named.
+    #[error("a compaction failed to write its tables or the manifest; reopen the database")]
+    CompactionFailed,
+    /// The thread reading a table block stopped without an answer. Nothing was changed.
+    #[error("a table block read stopped without an answer")]
+    ReadFailed,
+    /// The write asked not to wait while in-memory tables wait for flushes, and they do: the
+    /// active table is full and no more tables may be frozen. Retry later.
+    #[error("writes are stalled: {reason}")]
+    WriteStalled {
+        /// What the engine is waiting for.
+        reason: &'static str,
+    },
+    /// Opening was told to fail when a database already exists, and one does.
+    #[error("a database already exists at {path}")]
+    AlreadyExists {
+        /// The database's path.
+        path: PathBuf,
+    },
+    /// The database was closed.
+    #[error("the database is closed")]
+    Closed,
+    /// An argument the operation cannot accept.
+    #[error("invalid {what}: {reason}")]
+    InvalidArgument {
+        /// What was refused.
+        what: &'static str,
+        /// Why.
+        reason: &'static str,
+    },
+    /// A transaction's commit was refused: a write committed after the transaction began
+    /// touched a key it writes. Nothing of the transaction was written; running it again from
+    /// [`crate::Db::begin`] may succeed.
+    #[error("the transaction conflicts with a write committed after it began")]
+    Conflict,
+    /// The key the caller gave for `key_id` does not open the database's files.
+    #[error("the key given for key id {key_id} does not open this database")]
+    WrongKey {
+        /// The id the database's files name.
+        key_id: u32,
+    },
+    /// The database's files are encrypted with key `key_id`, and no key was given for it.
+    #[error("the database is encrypted with key id {key_id}, and no key was given for it")]
+    KeyNotFound {
+        /// The id the database's files name.
+        key_id: u32,
+    },
+    /// A key or value is larger than a batch entry can describe.
+    #[error("{what} of {size} bytes exceeds the limit of {limit} bytes")]
+    TooLarge {
+        /// What was too large.
+        what: &'static str,
+        /// Its size in bytes.
+        size: u64,
+        /// The largest size accepted.
+        limit: u64,
+    },
 }
 
 /// Result of an engine operation.
@@ -112,6 +203,18 @@ impl Error {
             Self::Locked { .. } => ErrorCategory::Unavailable,
             Self::InvalidOptions { .. } => ErrorCategory::Validation,
             Self::Corruption { .. } | Self::ShortRead { .. } => ErrorCategory::Corruption,
+            Self::UnknownKeyspace { .. } | Self::Unsupported { .. } => ErrorCategory::Validation,
+            Self::Memtable { .. } | Self::SequenceExhausted | Self::ReadFailed => {
+                ErrorCategory::Internal
+            }
+            Self::LogFailed | Self::FlushFailed | Self::CompactionFailed => ErrorCategory::Io,
+            Self::WriteStalled { .. } => ErrorCategory::Unavailable,
+            Self::AlreadyExists { .. } | Self::Conflict => ErrorCategory::Conflict,
+            Self::Closed => ErrorCategory::ShutDown,
+            Self::TooLarge { .. } | Self::InvalidArgument { .. } | Self::WrongKey { .. } => {
+                ErrorCategory::Validation
+            }
+            Self::KeyNotFound { .. } => ErrorCategory::NotFound,
         }
     }
 
@@ -125,6 +228,22 @@ impl Error {
             Self::InvalidOptions { .. } => "invalid_options",
             Self::Corruption { .. } => "corruption",
             Self::ShortRead { .. } => "short_read",
+            Self::UnknownKeyspace { .. } => "unknown_keyspace",
+            Self::Unsupported { .. } => "unsupported",
+            Self::SequenceExhausted => "sequence_exhausted",
+            Self::Memtable { .. } => "memtable",
+            Self::LogFailed => "log_failed",
+            Self::FlushFailed => "flush_failed",
+            Self::CompactionFailed => "compaction_failed",
+            Self::ReadFailed => "read_failed",
+            Self::WriteStalled { .. } => "write_stalled",
+            Self::AlreadyExists { .. } => "already_exists",
+            Self::Closed => "closed",
+            Self::TooLarge { .. } => "too_large",
+            Self::InvalidArgument { .. } => "invalid_argument",
+            Self::Conflict => "conflict",
+            Self::WrongKey { .. } => "wrong_key",
+            Self::KeyNotFound { .. } => "key_not_found",
         }
     }
 
@@ -136,11 +255,25 @@ impl Error {
                 source.kind(),
                 std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
             ),
-            Self::Locked { .. } => true,
+            Self::Locked { .. } | Self::WriteStalled { .. } | Self::Conflict => true,
             Self::NotFound { .. }
             | Self::InvalidOptions { .. }
             | Self::Corruption { .. }
-            | Self::ShortRead { .. } => false,
+            | Self::ShortRead { .. }
+            | Self::UnknownKeyspace { .. }
+            | Self::Unsupported { .. }
+            | Self::SequenceExhausted
+            | Self::Memtable { .. }
+            | Self::LogFailed
+            | Self::FlushFailed
+            | Self::CompactionFailed
+            | Self::ReadFailed
+            | Self::AlreadyExists { .. }
+            | Self::Closed
+            | Self::TooLarge { .. }
+            | Self::InvalidArgument { .. }
+            | Self::WrongKey { .. }
+            | Self::KeyNotFound { .. } => false,
         }
     }
 

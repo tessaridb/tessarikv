@@ -4,7 +4,7 @@ use super::{DbOptions, Durability, KeyspaceOptions, ReadOptions, StorageMode, Wr
 use crate::{Error, ErrorCategory};
 
 /// Asserts that `result` is the refusal of exactly `option`.
-fn assert_refused<T: std::fmt::Debug>(result: crate::Result<T>, option: &str) {
+pub(super) fn assert_refused<T: std::fmt::Debug>(result: crate::Result<T>, option: &str) {
     match result {
         Err(error @ Error::InvalidOptions { .. }) => {
             assert_eq!(error.category(), ErrorCategory::Validation);
@@ -19,86 +19,11 @@ fn assert_refused<T: std::fmt::Debug>(result: crate::Result<T>, option: &str) {
 }
 
 /// One bounded option: its field path, its minimum and maximum, and a build with a given value.
-type Edge<T> = (&'static str, u64, u64, fn(u64) -> crate::Result<T>);
+pub(super) type Edge<T> = (&'static str, u64, u64, fn(u64) -> crate::Result<T>);
 
 /// The u32 bounds under test are all far below `u32::MAX`, so saturating loses nothing.
-fn narrow(value: u64) -> u32 {
+pub(super) fn narrow(value: u64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
-}
-
-#[test]
-fn keyspace_defaults_are_the_documented_constants() {
-    let options = KeyspaceOptions::default();
-    assert_eq!(options.memtable_bytes(), limits::DEFAULT_MEMTABLE_BYTES);
-    assert_eq!(
-        options.max_immutable_memtables(),
-        limits::DEFAULT_MAX_IMMUTABLE_MEMTABLES
-    );
-    assert_eq!(options.block_bytes(), limits::DEFAULT_BLOCK_BYTES);
-    assert_eq!(
-        options.block_restart_interval(),
-        limits::DEFAULT_BLOCK_RESTART_INTERVAL
-    );
-    assert_eq!(
-        options.bloom_bits_per_key(),
-        limits::DEFAULT_BLOOM_BITS_PER_KEY
-    );
-}
-
-#[test]
-fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
-    let edges: [Edge<KeyspaceOptions>; 5] = [
-        (
-            "keyspace.memtable_bytes",
-            limits::MIN_MEMTABLE_BYTES,
-            limits::MAX_MEMTABLE_BYTES,
-            |value| KeyspaceOptions::builder().memtable_bytes(value).build(),
-        ),
-        (
-            "keyspace.max_immutable_memtables",
-            1,
-            u64::from(limits::MAX_IMMUTABLE_MEMTABLES),
-            |value| {
-                KeyspaceOptions::builder()
-                    .max_immutable_memtables(narrow(value))
-                    .build()
-            },
-        ),
-        (
-            "keyspace.block_bytes",
-            limits::MIN_BLOCK_BYTES,
-            limits::MAX_BLOCK_BYTES,
-            |value| KeyspaceOptions::builder().block_bytes(value).build(),
-        ),
-        (
-            "keyspace.block_restart_interval",
-            1,
-            u64::from(limits::MAX_BLOCK_RESTART_INTERVAL),
-            |value| {
-                KeyspaceOptions::builder()
-                    .block_restart_interval(narrow(value))
-                    .build()
-            },
-        ),
-        (
-            "keyspace.bloom_bits_per_key",
-            0,
-            u64::from(limits::MAX_BLOOM_BITS_PER_KEY),
-            |value| {
-                KeyspaceOptions::builder()
-                    .bloom_bits_per_key(narrow(value))
-                    .build()
-            },
-        ),
-    ];
-    for (option, min, max, build) in edges {
-        assert!(build(min).is_ok(), "{option} refused its minimum {min}");
-        assert!(build(max).is_ok(), "{option} refused its maximum {max}");
-        if min > 0 {
-            assert_refused(build(min - 1), option);
-        }
-        assert_refused(build(max + 1), option);
-    }
 }
 
 #[test]
@@ -119,11 +44,16 @@ fn db_defaults_are_the_documented_constants() {
         options.background_threads(),
         limits::DEFAULT_BACKGROUND_THREADS
     );
+    assert_eq!(options.compaction_bytes_per_second(), 0, "not paced");
+    assert_eq!(
+        options.delayed_write_bytes_per_second(),
+        limits::DEFAULT_DELAYED_WRITE_BYTES_PER_SECOND
+    );
 }
 
 #[test]
 fn db_bounds_accept_the_edges_and_refuse_past_them() {
-    let edges: [Edge<DbOptions>; 2] = [
+    let edges: [Edge<DbOptions>; 4] = [
         (
             "db.wal_segment_bytes",
             limits::MIN_WAL_SEGMENT_BYTES,
@@ -137,6 +67,26 @@ fn db_bounds_accept_the_edges_and_refuse_past_them() {
             |value| {
                 DbOptions::builder()
                     .background_threads(narrow(value))
+                    .build()
+            },
+        ),
+        (
+            "db.compaction_bytes_per_second",
+            limits::MIN_COMPACTION_BYTES_PER_SECOND,
+            limits::MAX_COMPACTION_BYTES_PER_SECOND,
+            |value| {
+                DbOptions::builder()
+                    .compaction_bytes_per_second(value)
+                    .build()
+            },
+        ),
+        (
+            "db.delayed_write_bytes_per_second",
+            limits::MIN_DELAYED_WRITE_BYTES_PER_SECOND,
+            limits::MAX_DELAYED_WRITE_BYTES_PER_SECOND,
+            |value| {
+                DbOptions::builder()
+                    .delayed_write_bytes_per_second(value)
                     .build()
             },
         ),

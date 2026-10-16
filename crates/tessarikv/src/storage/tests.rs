@@ -131,3 +131,56 @@ fn a_reader_of_a_replaced_file_keeps_its_bytes() {
     old.read_at(0, &mut buf).unwrap();
     assert_eq!(&buf, b"first");
 }
+
+#[test]
+fn a_read_that_must_not_block_fills_the_buffer_only_where_the_backend_promises_it() {
+    for (storage, root, guard) in backends() {
+        storage.create_dir_all(&root).unwrap();
+        let path = root.join("000001.sst");
+        write(&*storage, &path, b"hello world");
+        let file = storage.open(&path).unwrap();
+        let mut buf = [0; 5];
+        let filled = file.try_read_at(6, &mut buf).unwrap();
+        // Memory never waits; on Linux a just-written file is in the page cache. Overlay file
+        // systems refuse such reads, so a Linux run keeps TMPDIR on ext4, XFS or Btrfs.
+        let promised = guard.is_none() || cfg!(any(target_os = "linux", target_os = "android"));
+        assert_eq!(
+            filled, promised,
+            "{storage:?} (on Linux: is TMPDIR on overlayfs?)"
+        );
+        if filled {
+            assert_eq!(&buf, b"world");
+        }
+    }
+}
+
+#[test]
+fn a_read_that_must_not_block_past_the_end_never_reports_a_full_buffer() {
+    for (storage, root, guard) in backends() {
+        storage.create_dir_all(&root).unwrap();
+        let path = root.join("000001.sst");
+        write(&*storage, &path, b"hello");
+        let file = storage.open(&path).unwrap();
+        let mut buf = [0; 8];
+        let result = file.try_read_at(2, &mut buf);
+        if guard.is_none() {
+            assert!(matches!(result, Err(Error::ShortRead { .. })), "{result:?}");
+        } else {
+            assert!(matches!(result, Ok(false)), "{result:?}");
+        }
+    }
+}
+
+#[test]
+fn a_file_that_cannot_promise_a_read_will_not_block_says_so() {
+    struct Plain;
+    impl ReadableFile for Plain {
+        fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> crate::Result<()> {
+            Ok(())
+        }
+        fn len(&self) -> crate::Result<u64> {
+            Ok(0)
+        }
+    }
+    assert!(!Plain.try_read_at(0, &mut [0; 4]).unwrap());
+}

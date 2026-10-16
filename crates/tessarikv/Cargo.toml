@@ -19,11 +19,17 @@ tessarikv-sync.workspace = true
 tessarikv-format.workspace = true
 thiserror.workspace = true
 papaya.workspace = true
+arc-swap = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 rustix.workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 proptest.workspace = true
 tempfile.workspace = true
 

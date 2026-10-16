@@ -19,8 +19,24 @@
 )]
 
 mod append_buffer;
+mod arena;
+mod bloom;
+mod clock_cache;
+mod conflicts;
 mod error;
+mod sequencer;
 mod shim;
+mod skiplist;
+mod slot_directory;
+mod snapshots;
+mod striped;
 
 pub use append_buffer::{AppendReader, AppendWriter, append_buffer};
-pub use error::BufferError;
+pub use bloom::ConcurrentBloom;
+pub use clock_cache::{Admission, ClockCache};
+pub use conflicts::ConflictTable;
+pub use error::{ArenaError, BufferError};
+pub use sequencer::{Claim, Sequencer, Switch, next_epoch};
+pub use skiplist::{BytewiseComparator, Cursor, CursorPosition, Insert, KeyComparator, SkipList};
+pub use snapshots::{Horizon, Registration, SnapshotRegistry};
+pub use striped::StripedCounters;

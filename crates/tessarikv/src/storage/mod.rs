@@ -11,6 +11,8 @@ mod memory;
 mod os;
 
 #[cfg(test)]
+pub(crate) mod counted;
+#[cfg(test)]
 mod tests;
 
 use std::path::Path;
@@ -19,7 +21,7 @@ use std::sync::Arc;
 pub use memory::MemoryStorage;
 pub use os::OsStorage;
 
-use crate::Result;
+use crate::{Error, Result};
 
 /// A file system the engine can keep a database in.
 pub trait Storage: Send + Sync + std::fmt::Debug {
@@ -125,6 +127,20 @@ pub trait ReadableFile: Send + Sync {
     /// [`crate::Error::ShortRead`] when the file ends first; the backend's I/O failure otherwise.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()>;
 
+    /// Fills `buf` from `offset` only if that cannot wait for a device, and says whether it did.
+    /// `false` means the read could block, or the backend cannot tell: the caller then reads with
+    /// [`ReadableFile::read_at`] where blocking is allowed. A caller on an async runtime's worker
+    /// uses this first, so a block already in memory costs no hand-off to another thread. The
+    /// default never tries.
+    ///
+    /// # Errors
+    ///
+    /// As [`ReadableFile::read_at`], for a backend that answers in memory.
+    fn try_read_at(&self, offset: u64, buf: &mut [u8]) -> Result<bool> {
+        let _ = (offset, buf);
+        Ok(false)
+    }
+
     /// The file's current length.
     ///
     /// # Errors
@@ -144,3 +160,22 @@ pub trait ReadableFile: Send + Sync {
 
 /// An exclusive lock on a database directory, released on drop.
 pub trait StorageLock: Send + Sync + std::fmt::Debug {}
+
+/// Every byte of the file at `path`, which holds `what`.
+///
+/// # Errors
+///
+/// [`Error::Corruption`] when the file is larger than memory can address, and whatever opening
+/// or reading the file returns.
+pub(crate) fn read_all(storage: &dyn Storage, path: &Path, what: &'static str) -> Result<Vec<u8>> {
+    let file = storage.open(path)?;
+    let len = usize::try_from(file.len()?).map_err(|_| Error::Corruption {
+        what,
+        path: Some(path.to_path_buf()),
+        offset: Some(0),
+        detail: "the file is larger than memory can address".to_owned(),
+    })?;
+    let mut bytes = vec![0; len];
+    file.read_at(0, &mut bytes)?;
+    Ok(bytes)
+}
