@@ -12,10 +12,15 @@
 //! ```
 //!
 //! A handle is `[offset: u64][size: u64]`, the size including the block's 5-byte seal.
+//!
+//! A sealed file (see the crate's `FileSealer`) starts with its seal header, and each block,
+//! seal included, and the footer are encrypted as the unit at their offset: a handle's size then
+//! counts the authentication tag, and the footer is the last [`FOOTER_BYTES`] plus a tag.
 
 use super::filter::Probing;
 use super::{Compression, codec};
 use crate::error::{Error, Result};
+use crate::seal::FileSealer;
 
 /// Bytes of the footer.
 pub const FOOTER_BYTES: usize = 64;
@@ -185,14 +190,16 @@ impl Footer {
 }
 
 /// Appends `payload` to `out` as a sealed block, compressed when that saves at least an
-/// eighth; returns its handle.
+/// eighth, and encrypted at its offset when the file has a `sealer`; returns its handle.
 pub(super) fn write_block(
     out: &mut Vec<u8>,
     base: u64,
     payload: &[u8],
     compression: Compression,
-) -> BlockHandle {
-    let offset = base.saturating_add(u64::try_from(out.len()).unwrap_or(u64::MAX));
+    sealer: Option<&FileSealer>,
+) -> Result<BlockHandle> {
+    let start = out.len();
+    let offset = base.saturating_add(u64::try_from(start).unwrap_or(u64::MAX));
     let compressed = codec::compress(compression, payload);
     let (stored, kind) = match &compressed {
         Some((sealed, byte)) => (sealed.as_slice(), *byte),
@@ -202,15 +209,23 @@ pub(super) fn write_block(
     out.push(kind);
     let checksum = crc32c::crc32c_append(crc32c::crc32c(stored), &[kind]);
     out.extend_from_slice(&checksum.to_le_bytes());
+    if let Some(sealer) = sealer {
+        let plain = out.split_off(start);
+        out.extend_from_slice(&sealer.seal(offset, &plain)?);
+    }
     let end = base.saturating_add(u64::try_from(out.len()).unwrap_or(u64::MAX));
-    BlockHandle {
+    Ok(BlockHandle {
         offset,
         size: end.saturating_sub(offset),
-    }
+    })
 }
 
 /// The verified, uncompressed payload of the block at `handle` in `file`.
-pub(super) fn read_block(file: &[u8], handle: BlockHandle) -> Result<Vec<u8>> {
+pub(super) fn read_block(
+    file: &[u8],
+    handle: BlockHandle,
+    sealer: Option<&FileSealer>,
+) -> Result<Vec<u8>> {
     let len = u64::try_from(file.len()).unwrap_or(u64::MAX);
     let end = handle.end_within(len)?;
     let sealed = usize::try_from(handle.offset)
@@ -221,11 +236,20 @@ pub(super) fn read_block(file: &[u8], handle: BlockHandle) -> Result<Vec<u8>> {
             what: "table block",
             reason: "handle points past the file",
         })?;
-    unseal(sealed)
+    unseal(sealed, handle.offset, sealer)
 }
 
-/// The verified, uncompressed payload of a sealed block: its stored bytes and its seal.
-pub(super) fn unseal(sealed: &[u8]) -> Result<Vec<u8>> {
+/// The verified, uncompressed payload of a sealed block: its stored bytes and its seal, first
+/// decrypted as the unit at `at` when the file has a `sealer`.
+pub(super) fn unseal(sealed: &[u8], at: u64, sealer: Option<&FileSealer>) -> Result<Vec<u8>> {
+    let opened;
+    let sealed = match sealer {
+        Some(sealer) => {
+            opened = sealer.open(at, sealed)?;
+            opened.as_slice()
+        }
+        None => sealed,
+    };
     let corrupt = |reason| Error::Malformed {
         what: "table block",
         reason,

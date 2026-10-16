@@ -1,12 +1,14 @@
 //! Writing a table.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use super::block::{BlockBuilder, Compare};
 use super::filter::{BloomBuilder, Probing};
 use super::handle::{Footer, write_block};
 use super::{Compression, TableOptions};
 use crate::error::{Error, Result};
+use crate::seal::{FileSealer, SealHeader};
 
 /// The properties block's key for the entry count.
 pub(super) const ENTRIES_PROPERTY: &[u8] = b"entries";
@@ -31,6 +33,7 @@ pub struct TableBuilder {
     entries: u64,
     range_deletes: BlockBuilder,
     last_range_key: Vec<u8>,
+    sealer: Option<Arc<FileSealer>>,
 }
 
 impl TableBuilder {
@@ -50,7 +53,23 @@ impl TableBuilder {
             entries: 0,
             range_deletes: BlockBuilder::new(options.restart_interval, compare),
             last_range_key: Vec::new(),
+            sealer: None,
         }
+    }
+
+    /// An empty sealed table, as [`TableBuilder::new`]: the file starts with `header`, and each
+    /// block and the footer are encrypted by `sealer`, the key `header` derives for a table.
+    pub fn sealed(
+        options: TableOptions,
+        compare: Compare,
+        filter_key: fn(&[u8]) -> &[u8],
+        sealer: Arc<FileSealer>,
+        header: &SealHeader,
+    ) -> Self {
+        let mut builder = Self::new(options, compare, filter_key);
+        builder.out.extend_from_slice(&header.encode());
+        builder.sealer = Some(sealer);
+        builder
     }
 
     /// Appends an entry.
@@ -145,21 +164,25 @@ impl TableBuilder {
             self.drained,
             &self.filter.finish(),
             Compression::None,
-        );
+            self.sealer.as_deref(),
+        )?;
         let index = write_block(
             &mut self.out,
             self.drained,
             &self.index.finish(),
             Compression::None,
-        );
+            self.sealer.as_deref(),
+        )?;
         let range_deletes = (!self.range_deletes.is_empty()).then(|| {
             write_block(
                 &mut self.out,
                 self.drained,
                 &self.range_deletes.finish(),
                 Compression::None,
+                self.sealer.as_deref(),
             )
         });
+        let range_deletes = range_deletes.transpose()?;
         let mut properties = BlockBuilder::new(1, |left, right| left.cmp(right));
         properties.add(ENTRIES_PROPERTY, &self.entries.to_le_bytes())?;
         if let Some(handle) = range_deletes {
@@ -170,14 +193,24 @@ impl TableBuilder {
             self.drained,
             &properties.finish(),
             Compression::None,
-        );
+            self.sealer.as_deref(),
+        )?;
         let footer = Footer {
             filter,
             index,
             properties,
             probing: Probing::Remixed,
         };
-        self.out.extend_from_slice(&footer.encode());
+        let footer = footer.encode();
+        match &self.sealer {
+            Some(sealer) => {
+                let at = self
+                    .drained
+                    .saturating_add(u64::try_from(self.out.len()).unwrap_or(u64::MAX));
+                self.out.extend_from_slice(&sealer.seal(at, &footer)?);
+            }
+            None => self.out.extend_from_slice(&footer),
+        }
         Ok(self.out)
     }
 
@@ -189,7 +222,8 @@ impl TableBuilder {
             self.drained,
             &payload,
             self.options.compression,
-        );
+            self.sealer.as_deref(),
+        )?;
         self.index.add(&self.last_key, &handle.encode())
     }
 }

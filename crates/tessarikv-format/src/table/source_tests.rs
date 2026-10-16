@@ -55,7 +55,7 @@ impl Sparse {
     fn read(&self, handle: BlockHandle) -> Result<Block> {
         let start = usize::try_from(handle.offset()).unwrap();
         let end = start + usize::try_from(handle.size()).unwrap();
-        let block = unseal_block(&self.file[start..end], bytewise)?;
+        let block = unseal_block(&self.file[start..end], handle.offset(), None, bytewise)?;
         if self.learn {
             self.present.lock().unwrap().insert(handle.offset());
         }
@@ -84,6 +84,7 @@ fn open_sparse(file: &[u8], source: Arc<Sparse>) -> Table {
             Ok::<(), ()>(())
         },
         source,
+        None,
         bytewise,
         whole,
     )
@@ -203,6 +204,7 @@ fn a_failed_read_while_opening_is_the_reader_s_error() {
         u64::try_from(file.len()).unwrap(),
         |_, _: &mut [u8]| Err("disk gone"),
         source,
+        None,
         bytewise,
         whole,
     );
@@ -233,6 +235,7 @@ fn a_handle_past_the_file_is_refused_before_anything_is_read() {
             Ok::<(), ()>(())
         },
         source,
+        None,
         bytewise,
         whole,
     );

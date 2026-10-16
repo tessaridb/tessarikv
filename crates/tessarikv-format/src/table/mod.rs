@@ -31,6 +31,8 @@ mod codec_tests;
 #[cfg(test)]
 mod offset_tests;
 #[cfg(test)]
+mod sealed_tests;
+#[cfg(test)]
 mod source_tests;
 #[cfg(test)]
 mod tests;

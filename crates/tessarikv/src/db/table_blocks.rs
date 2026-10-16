@@ -122,7 +122,7 @@ impl TableBlocks {
             None => self.cache.file(self.id, &self.path)?,
         };
         file.read_at(handle.offset(), &mut sealed)?;
-        self.unseal(&sealed)
+        self.unseal(handle, &sealed)
     }
 
     /// Reads and verifies the block at `handle` if the storage can do it without blocking;
@@ -140,7 +140,7 @@ impl TableBlocks {
         if !file.try_read_at(handle.offset(), &mut sealed)? {
             return Ok(None);
         }
-        self.unseal(&sealed).map(Some)
+        self.unseal(handle, &sealed).map(Some)
     }
 
     /// A buffer for the sealed block at `handle`. The handle comes from a verified index, but
@@ -160,8 +160,8 @@ impl TableBlocks {
         Ok(vec![0; size])
     }
 
-    fn unseal(&self, sealed: &[u8]) -> Result<Block> {
-        unseal_block(sealed, compare_internal)
+    fn unseal(&self, handle: BlockHandle, sealed: &[u8]) -> Result<Block> {
+        unseal_block(sealed, handle.offset(), None, compare_internal)
             .map_err(|error| format_error(&error, Some(&self.path)))
     }
 
@@ -223,11 +223,12 @@ pub(crate) fn open_table(
         }
     };
     let source: Arc<dyn BlockSource> = Arc::<TableBlocks>::clone(&blocks);
-    let table = Table::open_with(len, read, source, compare_internal, user_key).map_err(
-        |error| match error {
-            OpenError::Format(error) => format_error(&error, Some(path)),
-            OpenError::Read(error) => error,
-        },
-    )?;
+    let table =
+        Table::open_with(len, read, source, None, compare_internal, user_key).map_err(|error| {
+            match error {
+                OpenError::Format(error) => format_error(&error, Some(path)),
+                OpenError::Read(error) => error,
+            }
+        })?;
     Ok((table, blocks))
 }

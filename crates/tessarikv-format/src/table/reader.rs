@@ -9,6 +9,7 @@ use super::handle::{BlockHandle, FOOTER_BYTES, Footer, unseal};
 use super::iter::TableIter;
 use super::source::{BlockSource, OpenError, Resident};
 use crate::error::{Error, Result};
+use crate::seal::{FileSealer, TAG_BYTES};
 
 /// An open table: its index, filter and properties in memory, its data blocks read through a
 /// [`BlockSource`]. Cloning it shares everything it holds.
@@ -34,11 +35,37 @@ impl Table {
     /// [`Error::Truncated`], [`Error::Malformed`] or [`Error::UnsupportedVersion`] for a file
     /// that is not a whole table of this format.
     pub fn open(file: Vec<u8>, compare: Compare, filter_key: fn(&[u8]) -> &[u8]) -> Result<Self> {
+        Self::open_resident(file, None, compare, filter_key)
+    }
+
+    /// Opens the sealed table in `file`, as [`Table::open`], every block and the footer opened
+    /// with `sealer`, the key the file's seal header derives for a table.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unauthenticated`] for a file sealed with another key, or changed, cut short or
+    /// extended; otherwise as [`Table::open`].
+    pub fn open_sealed(
+        file: Vec<u8>,
+        sealer: Arc<FileSealer>,
+        compare: Compare,
+        filter_key: fn(&[u8]) -> &[u8],
+    ) -> Result<Self> {
+        Self::open_resident(file, Some(sealer), compare, filter_key)
+    }
+
+    fn open_resident(
+        file: Vec<u8>,
+        sealer: Option<Arc<FileSealer>>,
+        compare: Compare,
+        filter_key: fn(&[u8]) -> &[u8],
+    ) -> Result<Self> {
         let file: Arc<[u8]> = file.into();
         let len = u64::try_from(file.len()).unwrap_or(u64::MAX);
         let resident = Arc::new(Resident {
             file: Arc::clone(&file),
             compare,
+            sealer: sealer.clone(),
         });
         let read = |offset: u64, buf: &mut [u8]| {
             let copied = usize::try_from(offset)
@@ -47,22 +74,24 @@ impl Table {
                 .map(|bytes| buf.copy_from_slice(bytes));
             copied.ok_or(())
         };
-        Self::open_with(len, read, resident, compare, filter_key).map_err(|error| match error {
-            OpenError::Format(error) => error,
-            // Reads come from the bytes themselves and stay inside them: the footer and every
-            // handle are checked against the length before a read.
-            OpenError::Read(()) => Error::Malformed {
-                what: "table",
-                reason: "a block lies outside the file",
+        Self::open_with(len, read, resident, sealer.as_deref(), compare, filter_key).map_err(
+            |error| match error {
+                OpenError::Format(error) => error,
+                // Reads come from the bytes themselves and stay inside them: the footer and every
+                // handle are checked against the length before a read.
+                OpenError::Read(()) => Error::Malformed {
+                    what: "table",
+                    reason: "a block lies outside the file",
+                },
             },
-        })
+        )
     }
 
     /// Opens a table file of `len` bytes through `read`, which fills a buffer from a position
     /// of the file; data blocks then come from `source`. The footer, index, filter, properties
     /// and range deletes are read and verified now, once, and stay in memory. Every position
     /// read is checked against `len` first, so a damaged footer cannot ask for more bytes than
-    /// the file holds.
+    /// the file holds. A sealed file is opened with its `sealer`.
     ///
     /// # Errors
     ///
@@ -72,10 +101,12 @@ impl Table {
         len: u64,
         mut read: impl FnMut(u64, &mut [u8]) -> std::result::Result<(), E>,
         source: Arc<dyn BlockSource>,
+        sealer: Option<&FileSealer>,
         compare: Compare,
         filter_key: fn(&[u8]) -> &[u8],
     ) -> std::result::Result<Self, OpenError<E>> {
-        let footer_bytes = u64::try_from(FOOTER_BYTES).unwrap_or(u64::MAX);
+        let tag = if sealer.is_some() { TAG_BYTES } else { 0 };
+        let footer_bytes = u64::try_from(FOOTER_BYTES.saturating_add(tag)).unwrap_or(u64::MAX);
         let Some(footer_at) = len.checked_sub(footer_bytes) else {
             return Err(OpenError::Format(Error::Truncated {
                 what: "table",
@@ -83,8 +114,11 @@ impl Table {
                 available: len,
             }));
         };
-        let mut tail = [0; FOOTER_BYTES];
+        let mut tail = vec![0; FOOTER_BYTES.saturating_add(tag)];
         read(footer_at, &mut tail).map_err(OpenError::Read)?;
+        if let Some(sealer) = sealer {
+            tail = sealer.open(footer_at, &tail).map_err(OpenError::Format)?;
+        }
         let footer = Footer::decode(&tail).map_err(OpenError::Format)?;
         let mut block = |handle: BlockHandle| -> std::result::Result<Vec<u8>, OpenError<E>> {
             let end = handle.end_within(footer_at).map_err(OpenError::Format)?;
@@ -96,7 +130,7 @@ impl Table {
             })?;
             let mut sealed = vec![0; size];
             read(handle.offset(), &mut sealed).map_err(OpenError::Read)?;
-            unseal(&sealed).map_err(OpenError::Format)
+            unseal(&sealed, handle.offset(), sealer).map_err(OpenError::Format)
         };
         let index = block(footer.index)?;
         let filter = block(footer.filter)?;

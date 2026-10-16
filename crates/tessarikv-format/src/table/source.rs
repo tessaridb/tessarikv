@@ -14,6 +14,7 @@ use std::sync::Arc;
 use super::block::{Block, Compare};
 use super::handle::{BlockHandle, read_block, unseal};
 use crate::error::{Error, Result};
+use crate::seal::FileSealer;
 
 /// Data blocks of one table file, answered without waiting.
 pub trait BlockSource: Send + Sync + fmt::Debug {
@@ -26,13 +27,21 @@ pub trait BlockSource: Send + Sync + fmt::Debug {
 }
 
 /// The block in `sealed`, the exact bytes a [`BlockHandle`] names in a table file, ordered by
-/// `compare`. Its checksum is verified and its payload decompressed and checked.
+/// `compare`; `at` is the handle's offset and `sealer` the file's key when the file is sealed.
+/// Its checksum is verified and its payload decompressed and checked.
 ///
 /// # Errors
 ///
-/// [`Error::Malformed`] or [`Error::Truncated`] for bytes that are not a whole, intact block.
-pub fn unseal_block(sealed: &[u8], compare: Compare) -> Result<Block> {
-    Block::new(unseal(sealed)?, compare)
+/// [`Error::Unauthenticated`] for a sealed block opened with another key or at another offset,
+/// or changed; [`Error::Malformed`] or [`Error::Truncated`] for bytes that are not a whole,
+/// intact block.
+pub fn unseal_block(
+    sealed: &[u8],
+    at: u64,
+    sealer: Option<&FileSealer>,
+    compare: Compare,
+) -> Result<Block> {
+    Block::new(unseal(sealed, at, sealer)?, compare)
 }
 
 /// Why a table could not be opened through reads.
@@ -51,10 +60,15 @@ pub enum OpenError<E> {
 pub(super) struct Resident {
     pub(super) file: Arc<[u8]>,
     pub(super) compare: Compare,
+    pub(super) sealer: Option<Arc<FileSealer>>,
 }
 
 impl BlockSource for Resident {
     fn block(&self, handle: BlockHandle) -> Result<Option<Block>> {
-        Block::new(read_block(&self.file, handle)?, self.compare).map(Some)
+        Block::new(
+            read_block(&self.file, handle, self.sealer.as_deref())?,
+            self.compare,
+        )
+        .map(Some)
     }
 }
