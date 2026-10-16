@@ -53,6 +53,8 @@ mod level0_stall_tests;
 #[cfg(test)]
 mod level_tests;
 #[cfg(test)]
+mod open_tests;
+#[cfg(test)]
 mod range_delete_tests;
 #[cfg(test)]
 mod rate_limiter_tests;

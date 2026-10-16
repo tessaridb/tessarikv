@@ -1,5 +1,11 @@
 //! Opening a database on storage: its directory, its lock, its manifest and table files, and
 //! the replay of its log above what the tables hold.
+//!
+//! What the replay recovers is flushed to a level-0 table before the database opens, and the
+//! segments it came from are then removed, so a reopen leaves no log behind it and the next one
+//! replays nothing twice. The order is a flush's: the table synced, the manifest naming it, then
+//! the segments removed; a crash before the manifest edit leaves an unnamed table, removed at the
+//! next open, and the log whole.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,7 +15,7 @@ use tessarikv_sync::Sequencer;
 
 use super::Db;
 use super::block_cache::BlockCache;
-use super::flush_job::{FileNumbers, table_path};
+use super::flush_job::{FileNumbers, Job, table_options, table_path};
 use super::installer::{Flusher, Installer};
 use super::rate_limiter::RateLimiter;
 use super::recover::recover;
@@ -50,6 +56,7 @@ impl Db {
             keyspace.block_bytes(),
         ));
         let memtable_bytes = keyspace.memtable_bytes();
+        let flush_options = table_options(&keyspace, 0)?;
         let opened = {
             let storage = Arc::clone(&storage);
             let path = path.clone();
@@ -58,19 +65,37 @@ impl Db {
                 let lock = prepare(storage.as_ref(), &path, &options)?;
                 let (version, number) = ManifestStore::recover(storage.as_ref(), &path)?
                     .unwrap_or_else(|| (Version::empty(), 0));
-                let files = restore_tables(storage.as_ref(), &path, &version, &cache)?;
-                let table = Memtable::sized(memtable_bytes);
+                let mut files = restore_tables(storage.as_ref(), &path, &version, &cache)?;
+                let replay = Memtable::sized(memtable_bytes);
                 let flushed = version.flushed_sequence();
-                let recovered = recover(storage.as_ref(), &path, &table, recovery, flushed)?;
+                let recovered = recover(storage.as_ref(), &path, &replay, recovery, flushed)?;
                 let number = number.checked_add(1).ok_or(Error::SequenceExhausted)?;
-                let manifest = ManifestStore::create(storage, &path, &version, number)?;
+                let mut manifest =
+                    ManifestStore::create(Arc::clone(&storage), &path, &version, number)?;
                 let last = recovered.last_sequence.max(flushed);
+                let replayed = recovered.last_sequence > flushed;
+                if replayed {
+                    let job = Job {
+                        storage,
+                        dir: path,
+                        options: flush_options,
+                        table: Arc::new(replay),
+                        flushed: last,
+                        numbers: Arc::new(FileNumbers::new(manifest.version().next_file())),
+                        cache,
+                    };
+                    // The newest level-0 table: first among the files.
+                    if let Some(file) = job.run(&mut manifest)? {
+                        files.insert(0, file);
+                    }
+                }
                 Ok::<_, Error>((
                     lock,
-                    View::recovered(table, files),
+                    View::recovered(Memtable::sized(memtable_bytes), files),
                     recovered,
                     manifest,
                     last,
+                    replayed,
                 ))
             })
             .await
@@ -78,7 +103,7 @@ impl Db {
                 what: "opening a database after its opening task panicked",
             })??
         };
-        let (lock, view, recovered, manifest, last_sequence) = opened;
+        let (lock, view, recovered, manifest, last_sequence, replayed) = opened;
         let next_sequence = last_sequence
             .checked_add(1)
             .ok_or(Error::SequenceExhausted)?;
@@ -90,6 +115,10 @@ impl Db {
             segment_bytes,
             recovered.segments,
         )?;
+        if replayed {
+            // The replayed records are in a table the manifest names: their segments may go.
+            log.releaser().release_through(last_sequence);
+        }
         let sequencer = Arc::new(Sequencer::new(last_sequence, COMMIT_RING_SLOTS));
         let view = Arc::new(arc_swap::ArcSwap::from_pointee(view));
         let snapshots = Arc::new(tessarikv_sync::SnapshotRegistry::new());

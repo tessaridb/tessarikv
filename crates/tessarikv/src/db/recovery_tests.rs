@@ -215,18 +215,20 @@ async fn opening_respects_create_if_missing_and_error_if_exists() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_reports_each_segment_with_the_last_sequence_it_holds() {
+    // A segment closes before it would grow past a MiB: the second large value starts the
+    // second segment. (A reopen would flush what it replays and remove its segments.)
     let storage = FaultStorage::default();
-    let db = open(&storage, options()).await.expect("opened");
-    for key in ["a", "b"] {
-        db.write(&put(key, "1"), &write_options(Durability::Buffered))
+    let options = DbOptions::builder()
+        .wal_segment_bytes(1024 * 1024)
+        .build()
+        .expect("valid");
+    let db = open(&storage, options).await.expect("opened");
+    let large = "v".repeat(600 * 1024);
+    for (key, value) in [("a", large.as_str()), ("b", large.as_str()), ("c", "1")] {
+        db.write(&put(key, value), &write_options(Durability::Buffered))
             .await
             .expect("written");
     }
-    db.close().await.expect("closed");
-    let db = open(&storage, options()).await.expect("reopened");
-    db.write(&put("c", "1"), &write_options(Durability::Buffered))
-        .await
-        .expect("written");
     db.close().await.expect("closed");
 
     let recovered = super::recover::recover(
@@ -242,7 +244,7 @@ async fn recovery_reports_each_segment_with_the_last_sequence_it_holds() {
         .iter()
         .map(|segment| (segment.log_number, segment.last))
         .collect();
-    assert_eq!(found, [(1, 2), (2, 3)]);
+    assert_eq!(found, [(1, 1), (2, 3)]);
     assert_eq!(recovered.next_log_number, 3);
 }
 

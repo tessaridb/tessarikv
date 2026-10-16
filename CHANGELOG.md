@@ -40,7 +40,8 @@ All notable changes to this project are documented here. The format follows
   a failed write or sync stops the log instead of reporting lost data as durable.
 - `Db::open(path, options)` on the file system (or `Db::open_with_storage` on any `Storage`): creates or
   opens the database, holds its lock, and replays the log; `WalRecovery::PointInTime` cuts a damaged log
-  back to its valid prefix, `WalRecovery::Absolute` refuses to open. `Db::close` syncs and releases it.
+  back to its valid prefix, `WalRecovery::Absolute` refuses to open. What the replay recovers is flushed to a
+  table before the open returns and its log removed, so no log outlives a reopen. `Db::close` syncs and releases it.
 - `Db`: an in-memory database with async `open`, atomic batch `write`, `get` and paged `scan` at a
   consistent snapshot; a scan never shows part of a batch.
 - `ManifestEdit`: a versioned record of tables added and removed, the flushed sequence and the next file

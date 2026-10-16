@@ -32,7 +32,7 @@ fn options() -> DbOptions {
         .expect("valid")
 }
 
-async fn open(storage: &FaultStorage) -> Db {
+pub(super) async fn open(storage: &FaultStorage) -> Db {
     Db::open_with_storage(PATH, options(), Arc::new(storage.clone()))
         .await
         .expect("opened")
