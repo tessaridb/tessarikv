@@ -46,6 +46,7 @@ pub struct DbOptions {
     compaction_bytes_per_second: u64,
     delayed_write_bytes_per_second: u64,
     serializable_transactions: bool,
+    pub(super) total_memtable_bytes: u64,
     default_keyspace: KeyspaceOptions,
     /// Named keyspaces beside the default one (see `keyspaces.rs`).
     pub(super) keyspaces: Vec<(String, KeyspaceOptions)>,
@@ -65,6 +66,7 @@ impl Default for DbOptions {
             compaction_bytes_per_second: 0,
             delayed_write_bytes_per_second: limits::DEFAULT_DELAYED_WRITE_BYTES_PER_SECOND,
             serializable_transactions: false,
+            total_memtable_bytes: 0,
             default_keyspace: KeyspaceOptions::default(),
             keyspaces: Vec::new(),
             create_missing_keyspaces: false,
@@ -280,6 +282,7 @@ impl DbOptionsBuilder {
                 limits::MAX_COMPACTION_BYTES_PER_SECOND,
             )?;
         }
+        super::memory::check(&options)?;
         super::keyspaces::check(&options)?;
         Ok(options)
     }

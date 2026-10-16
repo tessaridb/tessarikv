@@ -57,6 +57,8 @@ All notable changes to this project are documented here. The format follows
 - `Db::approximate_size`: the bytes of table files a key range takes, from table metadata and indexes, reading
   nothing from storage; `Table::offset_of` places a key in a table file from its index.
 - `multi_get` on `Db`, `Snapshot` and `Transaction`: many keys read at one snapshot, values in the order asked.
+- `DbOptions::total_memtable_bytes`: one ceiling over the newest in-memory tables of every keyspace together;
+  reaching it freezes and flushes them as if one were full (zero, the default, sets none).
 - `Db::background_error`: the failure that stopped background work (log, flush or compaction), read without a
   write.
 - `Db::sync_wal`: makes every batch written before the call durable, buffered ones included, with one log sync.

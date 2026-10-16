@@ -68,6 +68,8 @@ pub(super) struct Flusher {
     pub(super) limiter: Option<Arc<RateLimiter>>,
     /// The rate writes go at while level 0 is past its slowdown trigger, in bytes a second.
     pub(super) delayed_writes: u64,
+    /// The ceiling on the newest tables together, in bytes; zero sets none.
+    pub(super) total_memtable_bytes: u64,
     /// Every sequence up to this one is in a frozen table or on table files.
     pub(super) switched: u64,
 }
@@ -89,7 +91,11 @@ impl Installer {
             .map(|(_, options)| options.max_immutable_memtables())
             .min()
             .unwrap_or(1);
-        let signals = Arc::new(FlushSignals::new(max_frozen, flusher.delayed_writes));
+        let signals = Arc::new(FlushSignals::new(
+            max_frozen,
+            flusher.delayed_writes,
+            flusher.total_memtable_bytes,
+        ));
         // Everything at or below the last switch is on table files when the database opens.
         signals.set_flushed(flusher.switched);
         let (shutdown, stop) = watch::channel(false);

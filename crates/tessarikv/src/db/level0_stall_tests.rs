@@ -50,7 +50,7 @@ fn view_with(tables: u64) -> View {
 }
 
 fn signals() -> FlushSignals {
-    FlushSignals::new(keyspace().max_immutable_memtables(), RATE)
+    FlushSignals::new(keyspace().max_immutable_memtables(), RATE, 0)
 }
 
 /// Publishes what `view` asks of writers, as the installer does after an install.

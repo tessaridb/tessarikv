@@ -52,6 +52,7 @@ impl Db {
         let limiter =
             RateLimiter::new(options.compaction_bytes_per_second(), COMPACTION_BURST).map(Arc::new);
         let delayed_writes = options.delayed_write_bytes_per_second();
+        let total_memtable_bytes = options.total_memtable_bytes();
         let serializable = options.serializable_transactions();
         let keyspace = options.default_keyspace().clone();
         // Kept for the installer: `options` goes to the opening task.
@@ -151,6 +152,7 @@ impl Db {
             numbers: Arc::new(FileNumbers::new(next_file)),
             limiter: limiter.clone(),
             delayed_writes,
+            total_memtable_bytes,
             switched: last_sequence,
         });
         Ok(Self {

@@ -40,6 +40,8 @@ pub(super) struct FlushSignals {
     failed: AtomicU8,
     /// Frozen epochs allowed to wait for flushes.
     max_frozen: usize,
+    /// The most bytes the newest tables may hold together; zero sets no ceiling.
+    total_bytes: u64,
     /// Paces writes while the levels ask for it; none paces nothing.
     delay: Option<RateLimiter>,
     /// What the levels ask of writers, as a [`Pressure`] code, published by the installer.
@@ -58,9 +60,10 @@ const FAILED_FLUSH: u8 = 1;
 const FAILED_COMPACTION: u8 = 2;
 
 impl FlushSignals {
-    /// Signals letting `max_frozen` epochs wait for flushes and pacing writes to
-    /// `delayed_writes` bytes a second.
-    pub(super) fn new(max_frozen: u32, delayed_writes: u64) -> Self {
+    /// Signals letting `max_frozen` epochs wait for flushes, pacing writes to `delayed_writes`
+    /// bytes a second, and treating the newest tables as full once they hold `total_bytes`
+    /// together (zero: never).
+    pub(super) fn new(max_frozen: u32, delayed_writes: u64, total_bytes: u64) -> Self {
         Self {
             pending: AtomicBool::new(false),
             wake: Notify::new(),
@@ -70,6 +73,7 @@ impl FlushSignals {
             flushed: AtomicU64::new(0),
             failed: AtomicU8::new(FAILED_NONE),
             max_frozen: usize::try_from(max_frozen).unwrap_or(usize::MAX),
+            total_bytes,
             delay: RateLimiter::new(delayed_writes, SLOWDOWN_BURST),
             pressure: AtomicU8::new(Pressure::None.code()),
             #[cfg(test)]
@@ -259,7 +263,15 @@ impl FlushSignals {
         frozen >= self.max_frozen && self.newest_is_full(view)
     }
 
+    /// Whether a newest table of `view` is full, or the newest tables together have reached
+    /// the database's ceiling.
     fn newest_is_full(&self, view: &View) -> bool {
         view.newest_tables().any(Memtable::is_full)
+            || (self.total_bytes != 0
+                && view
+                    .newest_tables()
+                    .map(Memtable::approximate_bytes)
+                    .fold(0_u64, u64::saturating_add)
+                    >= self.total_bytes)
     }
 }
