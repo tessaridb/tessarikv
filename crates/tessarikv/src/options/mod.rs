@@ -11,6 +11,7 @@ mod db;
 mod keyspace;
 mod keyspace_bounds;
 mod keyspace_builder;
+mod keyspaces;
 mod read;
 mod transaction;
 mod write;

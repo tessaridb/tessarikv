@@ -64,13 +64,11 @@ impl Version {
     }
 
     /// The keyspaces added and not dropped, by id, with their names; not the default keyspace.
-    #[cfg(test)]
     pub(crate) fn keyspaces(&self) -> impl Iterator<Item = (u32, &str)> {
         self.names.iter().map(|(id, name)| (*id, name.as_str()))
     }
 
     /// The next keyspace id to hand out.
-    #[cfg(test)]
     pub(crate) fn next_keyspace(&self) -> u32 {
         self.next_keyspace
     }

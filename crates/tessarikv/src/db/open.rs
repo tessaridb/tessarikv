@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tessarikv_constants::{COMMIT_RING_SLOTS, LEVELS};
+use tessarikv_format::{KeyspaceRecord, ManifestEdit};
 use tessarikv_sync::Sequencer;
 
 use super::Db;
@@ -74,6 +75,7 @@ impl Db {
                 let number = number.checked_add(1).ok_or(Error::SequenceExhausted)?;
                 let mut manifest =
                     ManifestStore::create(Arc::clone(&storage), &path, &version, number)?;
+                reconcile_keyspaces(&mut manifest, &options)?;
                 let last = recovered.last_sequence.max(flushed);
                 let replayed = recovered.last_sequence > flushed;
                 if replayed {
@@ -154,6 +156,48 @@ impl Db {
             _lock: Some(lock),
         })
     }
+}
+
+/// Refuses options that leave out a keyspace the database holds, and adds the keyspaces they
+/// name that it does not hold when they ask for that, refusing them otherwise.
+fn reconcile_keyspaces(manifest: &mut ManifestStore, options: &DbOptions) -> Result<()> {
+    let refuse = |reason| Error::InvalidArgument {
+        what: "opening a database",
+        reason,
+    };
+    let version = manifest.version();
+    let named = |held: &str| options.keyspaces().iter().any(|(name, _)| name == held);
+    if version.keyspaces().any(|(_, held)| !named(held)) {
+        return Err(refuse("it holds a keyspace the options do not name"));
+    }
+    let missing: Vec<&str> = options
+        .keyspaces()
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| !version.keyspaces().any(|(_, held)| held == *name))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    if !options.create_missing_keyspaces() {
+        return Err(refuse("the options name a keyspace it does not hold"));
+    }
+    let mut next = version.next_keyspace().max(1);
+    let mut added = Vec::with_capacity(missing.len());
+    for name in missing {
+        added.push(KeyspaceRecord {
+            id: next,
+            name: name.to_owned(),
+        });
+        next = next
+            .checked_add(1)
+            .ok_or_else(|| refuse("its keyspace ids are exhausted"))?;
+    }
+    manifest.append(&ManifestEdit {
+        added_keyspaces: added,
+        next_keyspace: Some(next),
+        ..ManifestEdit::default()
+    })
 }
 
 /// Opens every table file `version` names, newest first, reading their data blocks through

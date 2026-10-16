@@ -267,3 +267,6 @@ pub const SKIPLIST_BRANCHING: u32 = 4;
 /// Committed batches that may wait in the queue to the log writer; a writer that finds it full
 /// waits for room. Also the most the log writer takes from the queue for one write.
 pub const LOG_QUEUE_ENTRIES: usize = 1024;
+
+/// Longest keyspace name, in bytes.
+pub const MAX_KEYSPACE_NAME_BYTES: usize = 255;

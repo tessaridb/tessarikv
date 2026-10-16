@@ -54,6 +54,8 @@ mod flush_tests;
 #[cfg(test)]
 mod iterator_tests;
 #[cfg(test)]
+mod keyspace_open_tests;
+#[cfg(test)]
 mod kill_tests;
 #[cfg(test)]
 mod level0_stall_tests;
