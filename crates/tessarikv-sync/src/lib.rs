@@ -20,6 +20,7 @@
 
 mod append_buffer;
 mod arena;
+mod clock_cache;
 mod error;
 mod sequencer;
 mod shim;
@@ -28,6 +29,7 @@ mod slot_directory;
 mod snapshots;
 
 pub use append_buffer::{AppendReader, AppendWriter, append_buffer};
+pub use clock_cache::{Admission, ClockCache};
 pub use error::{ArenaError, BufferError};
 pub use sequencer::{Claim, Sequencer, Switch, next_epoch};
 pub use skiplist::{BytewiseComparator, Cursor, CursorPosition, Insert, KeyComparator, SkipList};

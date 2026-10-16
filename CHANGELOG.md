@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format follows
 - Append-only byte buffer with one writer and concurrent wait-free readers.
 - `SkipList`: an insert-only lock-free skiplist with entries in a lock-free arena, ordered by a
   pluggable `KeyComparator`, with forward and backward cursors.
+- `ClockCache`: a byte-bounded cache with wait-free lookups and inserts, evicting entries not read since the
+  clock last passed them; a value read stays valid after its entry is evicted.
 - `Sequencer`: lock-free sequence-number claims for concurrent commits, with a visible watermark that only covers
   completed batches.
 - `WriteBatch`: an atomic, ordered list of puts and deletes across keyspaces, with a versioned encoding whose decoder

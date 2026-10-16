@@ -182,3 +182,57 @@ impl ByteCells {
         Some(word)
     }
 }
+
+/// A value that the caller's protocol hands from thread to thread, checked for data races under
+/// `loom`.
+pub(crate) struct Cell<T> {
+    #[cfg(not(loom))]
+    inner: std::cell::UnsafeCell<T>,
+    #[cfg(loom)]
+    inner: loom::cell::UnsafeCell<T>,
+}
+
+impl<T> Cell<T> {
+    /// A cell holding `value`.
+    pub(crate) fn new(value: T) -> Self {
+        Self {
+            #[cfg(not(loom))]
+            inner: std::cell::UnsafeCell::new(value),
+            #[cfg(loom)]
+            inner: loom::cell::UnsafeCell::new(value),
+        }
+    }
+
+    /// Runs `visit` over the value.
+    ///
+    /// # Safety
+    ///
+    /// Every write to the value happens-before this call, and none runs concurrently with it.
+    pub(crate) unsafe fn with<R>(&self, visit: impl FnOnce(&T) -> R) -> R {
+        #[cfg(not(loom))]
+        {
+            // SAFETY: no write runs concurrently, per the caller's contract.
+            visit(unsafe { &*self.inner.get() })
+        }
+        #[cfg(loom)]
+        // SAFETY: as above; loom checks the claim.
+        self.inner.with(|value| visit(unsafe { &*value }))
+    }
+
+    /// Runs `change` over the value, exclusively.
+    ///
+    /// # Safety
+    ///
+    /// Every other access to the value happens-before this call or after it; none runs
+    /// concurrently with it.
+    pub(crate) unsafe fn with_mut<R>(&self, change: impl FnOnce(&mut T) -> R) -> R {
+        #[cfg(not(loom))]
+        {
+            // SAFETY: this access is exclusive, per the caller's contract.
+            change(unsafe { &mut *self.inner.get() })
+        }
+        #[cfg(loom)]
+        // SAFETY: as above; loom checks the claim.
+        self.inner.with_mut(|value| change(unsafe { &mut *value }))
+    }
+}
