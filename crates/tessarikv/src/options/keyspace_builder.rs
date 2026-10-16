@@ -1,5 +1,7 @@
 //! The builder of [`KeyspaceOptions`]: every field settable, checked once by `build()`.
 
+use tessarikv_format::Compression;
+
 use super::compaction::CompactionStyle;
 use super::keyspace::KeyspaceOptions;
 use super::keyspace_bounds::validate;
@@ -106,6 +108,18 @@ impl KeyspaceOptionsBuilder {
     /// Sets [`KeyspaceOptions::target_file_bytes`].
     pub const fn target_file_bytes(mut self, value: u64) -> Self {
         self.options.target_file_bytes = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::compression`].
+    pub const fn compression(mut self, value: Compression) -> Self {
+        self.options.compression = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::bottommost_compression`].
+    pub const fn bottommost_compression(mut self, value: Option<Compression>) -> Self {
+        self.options.bottommost_compression = value;
         self
     }
 

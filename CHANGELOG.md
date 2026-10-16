@@ -22,7 +22,8 @@ All notable changes to this project are documented here. The format follows
 - `WriteBatch`: an atomic, ordered list of puts and deletes across keyspaces, with a versioned encoding whose decoder
   refuses truncated, oversized or malformed input.
 - Table files: `TableBuilder` writes data blocks, a bloom filter, an index, a properties block and a versioned footer,
-  each block sealed with a CRC-32C and optionally LZ4-compressed; `Table` opens one and `TableIter` seeks and walks it,
+  each block sealed with a CRC-32C and compressed with LZ4, Snappy, Zstandard or Deflate when that saves an
+  eighth; `Table` opens one and `TableIter` seeks and walks it,
   stopping with an error on a damaged block.
 - Bloom filter blocked by cache line: one line per lookup, no false negatives, about 1 % false positives at ten bits
   per key; a filter whose size or probe count does not add up is refused.
@@ -83,6 +84,8 @@ All notable changes to this project are documented here. The format follows
 - Universal compaction: `CompactionStyle::Universal` (or `CompactionStyle::universal()`) treats each level-0 table and
   the bottom level as sorted runs; the newest runs merge by size ratio (or, past the trigger, the adjacent runs with the
   fewest bytes among those enough to go under it), and everything merges into the bottom once the runs above it hold `max_size_amplification_percent` of it.
+- Table compression per keyspace: `KeyspaceOptions::compression` (LZ4 by default) for flushes and compactions, and
+  `KeyspaceOptions::bottommost_compression` for tables written to the bottom level; Deflate levels above 10 are refused.
 - Level-0 stalls: `KeyspaceOptions::level0_slowdown_trigger` (20) paces writes to
   `DbOptions::delayed_write_bytes_per_second` (16 MiB/s) and
   `level0_stop_trigger` (36) holds writes until a compaction takes level 0 under it; `no_slowdown` writes are refused

@@ -81,6 +81,9 @@ pub const DEFAULT_BLOOM_BITS_PER_KEY: u32 = 10;
 /// Zero bits per key means no filter.
 pub const MAX_BLOOM_BITS_PER_KEY: u32 = 64;
 
+/// The highest Deflate level a keyspace may compress its tables with.
+pub const MAX_DEFLATE_LEVEL: u8 = 10;
+
 /// Default number of level-0 tables that starts a compaction of level 0.
 pub const DEFAULT_LEVEL0_COMPACTION_TRIGGER: u32 = 4;
 

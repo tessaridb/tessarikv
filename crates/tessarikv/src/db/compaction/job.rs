@@ -81,7 +81,7 @@ impl Job {
             to: Destination {
                 storage: Arc::clone(&flusher.storage),
                 dir: flusher.dir.clone(),
-                options: table_options(&flusher.keyspace)?,
+                options: table_options(&flusher.keyspace, pick.output_level)?,
                 // A merge within level 0 writes one table: one run takes the place of those merged.
                 target_bytes: if pick.output_level == 0 {
                     u64::MAX

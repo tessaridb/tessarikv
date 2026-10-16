@@ -1,7 +1,9 @@
 //! The bounds every keyspace option is checked against, and how the level-0 triggers relate.
 
-use super::compaction::CompactionStyle;
 use tessarikv_constants as limits;
+use tessarikv_format::Compression;
+
+use super::compaction::CompactionStyle;
 
 use super::KeyspaceOptions;
 use super::bounds::check_range;
@@ -136,5 +138,22 @@ pub(super) fn validate(options: &KeyspaceOptions) -> Result<()> {
         limits::MIN_TARGET_FILE_BYTES,
         limits::MAX_TARGET_FILE_BYTES,
     )?;
+    check_codec("keyspace.compression.level", options.compression())?;
+    if let Some(bottom) = options.bottommost_compression() {
+        check_codec("keyspace.bottommost_compression.level", bottom)?;
+    }
     Ok(())
+}
+
+/// Checks the level of a Deflate codec; the other codecs have no setting to check.
+fn check_codec(option: &'static str, codec: Compression) -> Result<()> {
+    match codec {
+        Compression::Deflate { level } => check_range(
+            option,
+            u64::from(level),
+            0,
+            u64::from(limits::MAX_DEFLATE_LEVEL),
+        ),
+        _ => Ok(()),
+    }
 }

@@ -1,6 +1,7 @@
 //! Options for one keyspace: its memtables and the tables it writes.
 
-use tessarikv_constants as limits;
+use tessarikv_constants::{self as limits, LEVELS};
+use tessarikv_format::Compression;
 
 use super::compaction::CompactionStyle;
 use super::keyspace_builder::KeyspaceOptionsBuilder;
@@ -24,6 +25,8 @@ pub struct KeyspaceOptions {
     pub(super) level_base_bytes: u64,
     pub(super) level_size_multiplier: u32,
     pub(super) target_file_bytes: u64,
+    pub(super) compression: Compression,
+    pub(super) bottommost_compression: Option<Compression>,
 }
 
 impl Default for KeyspaceOptions {
@@ -45,6 +48,8 @@ impl Default for KeyspaceOptions {
             level_base_bytes: limits::DEFAULT_LEVEL_BASE_BYTES,
             level_size_multiplier: limits::DEFAULT_LEVEL_SIZE_MULTIPLIER,
             target_file_bytes: limits::DEFAULT_TARGET_FILE_BYTES,
+            compression: Compression::Lz4,
+            bottommost_compression: None,
         }
     }
 }
@@ -199,5 +204,29 @@ impl KeyspaceOptions {
     #[must_use]
     pub const fn target_file_bytes(&self) -> u64 {
         self.target_file_bytes
+    }
+
+    /// How tables are compressed, except those written to the bottom level when
+    /// [`Self::bottommost_compression`] names another codec. A block is stored compressed only
+    /// when that saves at least an eighth of it.
+    #[must_use]
+    pub const fn compression(&self) -> Compression {
+        self.compression
+    }
+
+    /// How tables written to the bottom level are compressed, where most of a keyspace's data
+    /// ends up and is rewritten least often: a slower codec with a better ratio pays off there.
+    /// `None` compresses them like the other levels.
+    #[must_use]
+    pub const fn bottommost_compression(&self) -> Option<Compression> {
+        self.bottommost_compression
+    }
+
+    /// The codec of a table written to `level`.
+    pub(crate) fn compression_at(&self, level: usize) -> Compression {
+        match self.bottommost_compression {
+            Some(bottom) if level.saturating_add(1) == LEVELS => bottom,
+            _ => self.compression,
+        }
     }
 }

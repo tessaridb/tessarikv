@@ -28,5 +28,5 @@ pub use options::{
     KeyspaceOptionsBuilder, ReadOptions, StorageMode, WalRecovery, WriteOptions,
 };
 pub use storage::{MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile};
-pub use tessarikv_format::{BatchEntry, WriteBatch};
+pub use tessarikv_format::{BatchEntry, Compression, WriteBatch};
 pub use tessarikv_types::{KeyspaceId, SequenceNumber};

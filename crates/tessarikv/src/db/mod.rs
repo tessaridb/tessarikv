@@ -37,6 +37,8 @@ mod compaction_model_tests;
 #[cfg(test)]
 mod compaction_tests;
 #[cfg(test)]
+mod compression_tests;
+#[cfg(test)]
 mod crash_step_tests;
 #[cfg(test)]
 mod fifo_tests;

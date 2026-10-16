@@ -1,7 +1,8 @@
 //! Keyspace options: defaults, the bounds each field accepts, and the order of the level-0
 //! triggers.
 
-use tessarikv_constants as limits;
+use tessarikv_constants::{self as limits, LEVELS};
+use tessarikv_format::Compression;
 
 use super::KeyspaceOptions;
 use super::tests::{Edge, assert_refused, narrow};
@@ -225,5 +226,55 @@ fn compaction_may_not_owe_more_before_writes_slow_than_before_they_stop() {
             .build()
             .is_ok(),
         "equal limits"
+    );
+}
+
+#[test]
+fn tables_compress_with_lz4_and_the_bottom_level_like_the_others_by_default() {
+    let options = KeyspaceOptions::default();
+    assert_eq!(options.compression(), Compression::Lz4);
+    assert_eq!(options.bottommost_compression(), None);
+    for level in 0..LEVELS {
+        assert_eq!(
+            options.compression_at(level),
+            Compression::Lz4,
+            "level {level}"
+        );
+    }
+}
+
+#[test]
+fn the_bottom_level_takes_its_own_codec_and_every_other_level_the_keyspace_codec() {
+    let options = KeyspaceOptions::builder()
+        .compression(Compression::Snappy)
+        .bottommost_compression(Some(Compression::Zstd))
+        .build()
+        .expect("valid");
+    let chosen: Vec<_> = (0..LEVELS)
+        .map(|level| options.compression_at(level))
+        .collect();
+    let mut expected = vec![Compression::Snappy; LEVELS - 1];
+    expected.push(Compression::Zstd);
+    assert_eq!(chosen, expected);
+}
+
+#[test]
+fn a_deflate_level_above_ten_is_refused_for_either_codec_option() {
+    let deflate = |level| Compression::Deflate { level };
+    let top = KeyspaceOptions::builder().compression(deflate(limits::MAX_DEFLATE_LEVEL));
+    let bottom = KeyspaceOptions::builder().bottommost_compression(Some(deflate(0)));
+    assert!(top.build().is_ok() && bottom.build().is_ok());
+    let past = limits::MAX_DEFLATE_LEVEL + 1;
+    assert_refused(
+        KeyspaceOptions::builder()
+            .compression(deflate(past))
+            .build(),
+        "keyspace.compression.level",
+    );
+    assert_refused(
+        KeyspaceOptions::builder()
+            .bottommost_compression(Some(deflate(past)))
+            .build(),
+        "keyspace.bottommost_compression.level",
     );
 }

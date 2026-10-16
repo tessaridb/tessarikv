@@ -216,7 +216,7 @@ impl Flusher {
         let job = Job {
             storage: Arc::clone(&self.storage),
             dir: self.dir.clone(),
-            options: table_options(&self.keyspace)?,
+            options: table_options(&self.keyspace, 0)?,
             table: Arc::clone(&oldest.table),
             flushed: oldest.flushed,
             numbers: Arc::clone(&self.numbers),

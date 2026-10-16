@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tessarikv_format::{Compression, ManifestEdit, TableMeta, TableOptions};
+use tessarikv_format::{ManifestEdit, TableMeta, TableOptions};
 
 use super::block_cache::BlockCache;
 use super::table_blocks::open_table;
@@ -126,8 +126,8 @@ pub(super) fn table_path(dir: &Path, id: u64) -> PathBuf {
     dir.join(format!("{id:020}.sst"))
 }
 
-/// How flushed tables of a keyspace are laid out.
-pub(super) fn table_options(keyspace: &KeyspaceOptions) -> Result<TableOptions> {
+/// How the tables a keyspace writes to `level` are laid out.
+pub(super) fn table_options(keyspace: &KeyspaceOptions, level: usize) -> Result<TableOptions> {
     let invalid = |option| Error::InvalidOptions {
         option,
         reason: "does not fit this platform's address size".to_owned(),
@@ -138,6 +138,6 @@ pub(super) fn table_options(keyspace: &KeyspaceOptions) -> Result<TableOptions> 
         restart_interval: usize::try_from(keyspace.block_restart_interval())
             .map_err(|_| invalid("keyspace.block_restart_interval"))?,
         bloom_bits_per_key: keyspace.bloom_bits_per_key(),
-        compression: Compression::Lz4,
+        compression: keyspace.compression_at(level),
     })
 }
