@@ -13,7 +13,7 @@ use super::tables::build;
 use super::view::{TableFile, View};
 use crate::Error;
 use crate::memtable::Memtable;
-use crate::storage::{MemoryStorage, Storage as _};
+use crate::storage::{MemoryStorage, Storage};
 
 /// One write: a key and its new value, or `None` for a delete.
 pub(super) type Op = (u8, Option<u16>);
@@ -77,6 +77,17 @@ pub(super) fn table_file(
     id: u64,
     cache: &Arc<BlockCache>,
 ) -> TableFile {
+    table_file_in(&MemoryStorage::new(), bytes, built, id, cache)
+}
+
+/// As [`table_file`], written to and read from `storage`.
+pub(super) fn table_file_in(
+    storage: &dyn Storage,
+    bytes: Vec<u8>,
+    built: &super::tables::BuiltTable,
+    id: u64,
+    cache: &Arc<BlockCache>,
+) -> TableFile {
     let meta = TableMeta {
         keyspace: 0,
         level: 0,
@@ -87,12 +98,11 @@ pub(super) fn table_file(
         min_sequence: built.min_sequence,
         max_sequence: built.max_sequence,
     };
-    let storage = MemoryStorage::new();
     let path = PathBuf::from(format!("tables/{id}.sst"));
     let mut written = storage.create(&path).unwrap();
     written.append(&bytes).unwrap();
     drop(written);
-    let (table, blocks) = open_table(&storage, &path, id, cache, None).unwrap();
+    let (table, blocks) = open_table(storage, &path, id, cache, None).unwrap();
     TableFile {
         meta: Arc::new(meta),
         table,
@@ -116,8 +126,18 @@ pub(super) fn built(
 
 /// The table file built from `table`, numbered `id`, read through `cache`.
 pub(super) fn file(table: &Memtable, id: u64, cache: &Arc<BlockCache>) -> TableFile {
+    file_in(&MemoryStorage::new(), table, id, cache)
+}
+
+/// As [`file`], written to and read from `storage`.
+pub(super) fn file_in(
+    storage: &dyn Storage,
+    table: &Memtable,
+    id: u64,
+    cache: &Arc<BlockCache>,
+) -> TableFile {
     let (built, bytes) = built(table, options());
-    table_file(bytes, &built, id, cache)
+    table_file_in(storage, bytes, &built, id, cache)
 }
 
 /// A scan page's range: `[start, ..)` with up to `limit` entries.

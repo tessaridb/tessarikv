@@ -59,8 +59,9 @@ All notable changes to this project are documented here. The format follows
   version 2 and table files to format version 2 (a range-delete block); version 1 of both is still read.
 - Block cache: a table file keeps its index, filter and properties in memory and reads data blocks on demand
   through a cache of `DbOptions::block_cache_bytes` (zero disables it) whose lookups and inserts never wait, sized
-  for the keyspace's block size; a block that is not cached is read on a
-  blocking thread, and `ReadOptions::fill_cache = false` leaves the cache as it was. `Table::open_with` opens a
+  for the keyspace's block size; a block that is not cached is read on the caller's thread when the storage can
+  read it without blocking (`ReadableFile::try_read_at`: always for memory, pages the file system already holds on
+  Linux) and on a blocking thread otherwise, and `ReadOptions::fill_cache = false` leaves the cache as it was. `Table::open_with` opens a
   table through positional reads with its data blocks served by a `BlockSource`, and `TableIter::pending` /
   `resume` let a walk wait for a block. A block read whose thread stops returns `Error::ReadFailed`.
 - Leveled compaction: level 0 goes whole into the base level once it holds

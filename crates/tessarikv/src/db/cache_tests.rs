@@ -4,6 +4,7 @@
 
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::task::{Context, Waker};
 
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
@@ -13,10 +14,11 @@ use super::block_cache::BlockCache;
 use super::flush_tests::{PATH, key, until, value};
 use super::iterator::DbIterator;
 use super::read::{get_in, scan_in};
-use super::read_tests::{file, from, user_key};
+use super::read_tests::{file_in, from, user_key};
 use super::view::View;
 use crate::log::fault::FaultStorage;
 use crate::memtable::Memtable;
+use crate::storage::counted::CountedStorage;
 use crate::{DbOptions, KeyspaceOptions, ReadOptions, WriteBatch, WriteOptions};
 
 const WRITES: u32 = 300;
@@ -93,7 +95,8 @@ fn flushed(cache: &Arc<BlockCache>) -> View {
             .insert(sequence, ValueKind::Value, &user_key(index), &[index; 30])
             .unwrap();
     }
-    let file = file(&table, 1, cache);
+    // Storage that never reads without blocking, so a block not in the cache makes a move wait.
+    let file = file_in(&CountedStorage::new(false), &table, 1, cache);
     View::new(0, Memtable::new())
         .with_next_table()
         .after_flush(0, Some(file))
@@ -183,4 +186,47 @@ async fn a_move_dropped_while_it_waits_for_storage_leaves_the_iterator_not_valid
     assert_eq!(iterator.key(), user_key(0).as_slice());
     iterator.seek_to_last().await.unwrap();
     assert_eq!(iterator.key(), user_key(39).as_slice());
+}
+
+/// Reads of every key after a reopen with no block cache, through `storage`.
+async fn reopened_reads(storage: CountedStorage) -> (u64, u64) {
+    let db = Db::open_with_storage(PATH, options(1024 * 1024), Arc::new(storage.clone()))
+        .await
+        .unwrap();
+    for index in 0..WRITES {
+        let mut batch = WriteBatch::new();
+        batch
+            .put(KeyspaceId::DEFAULT, &key(index), &value(index))
+            .unwrap();
+        db.write(&batch, &WriteOptions::default()).await.unwrap();
+    }
+    until("tables flushed", || db.view.load().files(0).count() > 2).await;
+    db.close().await.unwrap();
+    let db = Db::open_with_storage(PATH, options(0), Arc::new(storage.clone()))
+        .await
+        .unwrap();
+    // Relaxed: the counters are read on this task, after the reads they count.
+    let reads = &storage.reads;
+    let inline = reads.inline.load(Ordering::Relaxed);
+    let blocking = reads.blocking.load(Ordering::Relaxed);
+    assert_all_readable(&db).await;
+    let made = (
+        reads.inline.load(Ordering::Relaxed) - inline,
+        reads.blocking.load(Ordering::Relaxed) - blocking,
+    );
+    db.close().await.unwrap();
+    made
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_block_that_can_be_read_without_blocking_is_read_inline_and_any_other_is_handed_off() {
+    let (inline, blocking) = reopened_reads(CountedStorage::new(true)).await;
+    assert!(inline > 0, "no block read inline");
+    assert_eq!(
+        blocking, 0,
+        "{blocking} blocks handed off with inline reads available"
+    );
+    let (inline, blocking) = reopened_reads(CountedStorage::new(false)).await;
+    assert_eq!(inline, 0);
+    assert!(blocking > 0, "no block read where blocking is allowed");
 }

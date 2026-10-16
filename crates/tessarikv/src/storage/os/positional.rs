@@ -26,3 +26,20 @@ pub(super) fn read_exact_at(
     }
     Ok(())
 }
+
+/// Fills `buf` from `offset` with `preadv2(RWF_NOWAIT)`, which reads only what the page cache
+/// already holds; `false` for a short read or any refusal, so the caller reads again where it
+/// may wait and that read reports any real error.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(super) fn read_exact_at_nowait(file: &File, offset: u64, buf: &mut [u8]) -> bool {
+    use rustix::io::{IoSliceMut, ReadWriteFlags, preadv2};
+    let wanted = buf.len();
+    let mut slices = [IoSliceMut::new(buf)];
+    preadv2(file, &mut slices, offset, ReadWriteFlags::NOWAIT).is_ok_and(|read| read == wanted)
+}
+
+/// No read on this platform promises not to wait for the device.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub(super) fn read_exact_at_nowait(_file: &File, _offset: u64, _buf: &mut [u8]) -> bool {
+    false
+}

@@ -1,12 +1,13 @@
 //! The data blocks of one table file: answered from the block cache when they are there, read
-//! from storage on a blocking thread when they are not.
+//! from storage when they are not.
 //!
 //! A table's walk asks [`TableBlocks`] for each data block it reaches. A block in the cache is
 //! answered at once, on the caller's thread; a block that is not makes the walk wait, and the
-//! reader then calls [`TableBlocks::load`], which reads and verifies the block on a blocking
-//! thread so the runtime's workers never wait for storage. A read whose caller is dropped still
-//! finishes its one block on that thread (a blocking task cannot be stopped), and its result is
-//! discarded.
+//! reader then calls [`TableBlocks::load`]. The block is read on the caller's thread when the
+//! storage can read it without blocking (memory, or a page the file system already holds), and
+//! on a blocking thread otherwise, so the runtime's workers never wait for a device. A read
+//! whose caller is dropped still finishes its one block on that thread (a blocking task cannot
+//! be stopped), and its result is discarded.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -48,8 +49,9 @@ impl BlockSource for TableBlocks {
 }
 
 impl TableBlocks {
-    /// The block at `handle`, read from storage and verified on a blocking thread, and kept in
-    /// the cache unless `fill_cache` is false.
+    /// The block at `handle`, read from storage and verified, and kept in the cache unless
+    /// `fill_cache` is false. A read the storage can make without blocking is made here, on the
+    /// caller's thread; any other is made on a blocking thread.
     ///
     /// # Errors
     ///
@@ -60,10 +62,15 @@ impl TableBlocks {
         handle: BlockHandle,
         fill_cache: bool,
     ) -> Result<Block> {
-        let blocks = Arc::clone(self);
-        let block = tokio::task::spawn_blocking(move || blocks.read(handle))
-            .await
-            .map_err(|_| Error::ReadFailed)??;
+        let block = match self.read_inline(handle)? {
+            Some(block) => block,
+            None => {
+                let blocks = Arc::clone(self);
+                tokio::task::spawn_blocking(move || blocks.read(handle))
+                    .await
+                    .map_err(|_| Error::ReadFailed)??
+            }
+        };
         if fill_cache {
             self.cache.insert(self.key(handle), block.clone());
         }
@@ -103,23 +110,40 @@ impl TableBlocks {
 
     /// Reads and verifies the block at `handle`. Runs on a blocking thread.
     fn read(&self, handle: BlockHandle) -> Result<Block> {
-        let corrupt = |detail: &str| Error::Corruption {
-            what: "table",
-            path: Some(self.path.clone()),
-            offset: Some(handle.offset()),
-            detail: detail.to_owned(),
-        };
-        // The handle comes from a verified index, but the file is still untrusted: nothing is
-        // allocated for a block that does not fit inside it.
+        let mut sealed = self.buffer(handle)?;
+        self.file.read_at(handle.offset(), &mut sealed)?;
+        self.unseal(&sealed)
+    }
+
+    /// Reads and verifies the block at `handle` if the storage can do it without blocking;
+    /// `None` when it cannot.
+    fn read_inline(&self, handle: BlockHandle) -> Result<Option<Block>> {
+        let mut sealed = self.buffer(handle)?;
+        if !self.file.try_read_at(handle.offset(), &mut sealed)? {
+            return Ok(None);
+        }
+        self.unseal(&sealed).map(Some)
+    }
+
+    /// A buffer for the sealed block at `handle`. The handle comes from a verified index, but
+    /// the file is still untrusted: nothing is allocated for a block that does not fit inside it.
+    fn buffer(&self, handle: BlockHandle) -> Result<Vec<u8>> {
         let size = handle
             .offset()
             .checked_add(handle.size())
             .filter(|end| *end <= self.len)
             .and_then(|_| usize::try_from(handle.size()).ok())
-            .ok_or_else(|| corrupt("a block handle points past the file"))?;
-        let mut sealed = vec![0; size];
-        self.file.read_at(handle.offset(), &mut sealed)?;
-        unseal_block(&sealed, compare_internal)
+            .ok_or_else(|| Error::Corruption {
+                what: "table",
+                path: Some(self.path.clone()),
+                offset: Some(handle.offset()),
+                detail: "a block handle points past the file".to_owned(),
+            })?;
+        Ok(vec![0; size])
+    }
+
+    fn unseal(&self, sealed: &[u8]) -> Result<Block> {
+        unseal_block(sealed, compare_internal)
             .map_err(|error| format_error(&error, Some(&self.path)))
     }
 

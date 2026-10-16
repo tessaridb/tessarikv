@@ -182,6 +182,11 @@ impl ReadableFile for MemoryReadable {
             .map_err(|error| buffer_error(&self.path, error))
     }
 
+    /// Memory never waits: the read is always made here.
+    fn try_read_at(&self, offset: u64, buf: &mut [u8]) -> Result<bool> {
+        self.read_at(offset, buf).map(|()| true)
+    }
+
     fn len(&self) -> Result<u64> {
         Ok(self.reader.len())
     }

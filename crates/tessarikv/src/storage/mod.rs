@@ -11,6 +11,8 @@ mod memory;
 mod os;
 
 #[cfg(test)]
+pub(crate) mod counted;
+#[cfg(test)]
 mod tests;
 
 use std::path::Path;
@@ -124,6 +126,20 @@ pub trait ReadableFile: Send + Sync {
     ///
     /// [`crate::Error::ShortRead`] when the file ends first; the backend's I/O failure otherwise.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()>;
+
+    /// Fills `buf` from `offset` only if that cannot wait for a device, and says whether it did.
+    /// `false` means the read could block, or the backend cannot tell: the caller then reads with
+    /// [`ReadableFile::read_at`] where blocking is allowed. A caller on an async runtime's worker
+    /// uses this first, so a block already in memory costs no hand-off to another thread. The
+    /// default never tries.
+    ///
+    /// # Errors
+    ///
+    /// As [`ReadableFile::read_at`], for a backend that answers in memory.
+    fn try_read_at(&self, offset: u64, buf: &mut [u8]) -> Result<bool> {
+        let _ = (offset, buf);
+        Ok(false)
+    }
 
     /// The file's current length.
     ///
