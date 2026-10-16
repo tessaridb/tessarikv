@@ -53,8 +53,26 @@ impl Db {
         options: &WriteOptions,
         check: Option<Check<'_>>,
     ) -> Result<SequenceNumber> {
+        // The default keyspace is always held, so only a batch naming another loads the view.
+        let mut view = None;
         for entry in batch {
-            Self::check_keyspace(entry.keyspace)?;
+            let keyspace = entry.keyspace;
+            if keyspace == KeyspaceId::DEFAULT {
+                continue;
+            }
+            if !view
+                .get_or_insert_with(|| self.view.load())
+                .holds(keyspace.get())
+            {
+                return Err(Error::UnknownKeyspace {
+                    keyspace: keyspace.get(),
+                });
+            }
+            if self.installer.is_some() {
+                return Err(Error::Unsupported {
+                    what: "writing to a keyspace beside the default one on storage",
+                });
+            }
         }
         if batch.is_empty() {
             return self.visible_sequence();
@@ -121,10 +139,22 @@ impl Db {
         claim.complete(applied)
     }
 
-    /// Inserts `batch` from sequence `first` into the in-memory table of `epoch`.
+    /// Inserts `batch` from sequence `first` into the in-memory tables of `epoch`, each entry
+    /// into its keyspace's.
     fn apply(&self, epoch: u8, first: u64, batch: &WriteBatch) -> Result<()> {
         let view = self.view.load();
-        apply(view.table(KeyspaceId::DEFAULT.get(), epoch)?, first, batch)
+        let mut sequence = first;
+        for entry in batch {
+            let number = SequenceNumber::new(sequence).map_err(|_| Error::SequenceExhausted)?;
+            view.table(entry.keyspace.get(), epoch)?.insert(
+                number,
+                entry.kind,
+                entry.key,
+                entry.value.unwrap_or_default(),
+            )?;
+            sequence = sequence.checked_add(1).ok_or(Error::SequenceExhausted)?;
+        }
+        Ok(())
     }
 
     /// Claims one sequence number per entry of `batch`.

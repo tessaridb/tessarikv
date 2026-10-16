@@ -7,17 +7,17 @@ use tessarikv_types::KeyspaceId;
 
 use super::Transaction;
 use super::write_set::Own;
-use crate::{Db, ReadOptions, Result, ScanPage};
+use crate::{ReadOptions, Result, ScanPage};
 
 impl Transaction<'_> {
     /// Up to `limit` live entries of `keyspace` with keys in `[start, end)` (unbounded above
     /// when `end` is `None`) as this transaction sees them: the database as it was when the
     /// transaction began, with the transaction's own puts, deletes and range deletes applied. A
-    /// full page names the key the next page starts at, as [`Db::scan`] does.
+    /// full page names the key the next page starts at, as [`crate::Db::scan`] does.
     ///
     /// # Errors
     ///
-    /// As [`Db::scan`].
+    /// As [`crate::Db::scan`].
     pub async fn scan(
         &mut self,
         keyspace: KeyspaceId,
@@ -26,7 +26,7 @@ impl Transaction<'_> {
         limit: usize,
         options: &ReadOptions,
     ) -> Result<ScanPage> {
-        Db::check_keyspace(keyspace)?;
+        self.db.check_keyspace(keyspace)?;
         let page = self
             .merged_page(keyspace, start, end, limit, options)
             .await?;

@@ -81,7 +81,7 @@ impl Db {
     /// [`crate::Error::Corruption`] for a damaged range-delete block in a table file, and the
     /// errors of [`Db::snapshot`].
     pub fn iter(&self, keyspace: KeyspaceId, options: &ReadOptions) -> Result<DbIterator<'_>> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         let snapshot = self.snapshot()?;
         let sequence = snapshot.sequence();
         DbIterator::new(

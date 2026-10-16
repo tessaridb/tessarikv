@@ -23,7 +23,7 @@ impl Db {
         start: &[u8],
         end: Option<&[u8]>,
     ) -> Result<u64> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         let at = |key: &[u8]| {
             let mut internal = Vec::with_capacity(key.len().saturating_add(8));
             encode_internal(key, seek_trailer(SequenceNumber::MAX), &mut internal);

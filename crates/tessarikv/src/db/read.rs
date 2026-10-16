@@ -32,7 +32,7 @@ impl Db {
         key: &[u8],
         options: &ReadOptions,
     ) -> Result<Option<Vec<u8>>> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         // The view before the sequence: a compaction publishes its view only after it read
         // the visible sequence it keeps versions for, so a reader of that view reads at or
         // above it. The other way round, a compaction could drop a version this read needs.
@@ -49,7 +49,7 @@ impl Db {
         snapshot: SequenceNumber,
         options: &ReadOptions,
     ) -> Result<Option<Vec<u8>>> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         // A guard, not a shared count: holding it costs other readers nothing.
         let view = self.view.load();
         get_in(&view, keyspace, key, snapshot, options.fill_cache).await
@@ -70,7 +70,7 @@ impl Db {
         limit: usize,
         options: &ReadOptions,
     ) -> Result<ScanPage> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         // The view before the sequence, as in [`Db::get`].
         let view = self.view.load();
         let snapshot = self.visible_sequence()?;
@@ -88,7 +88,7 @@ impl Db {
         snapshot: SequenceNumber,
         options: &ReadOptions,
     ) -> Result<ScanPage> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         let view = self.view.load();
         let range = ScanRange { start, end, limit };
         scan_in(&view, keyspace, range, snapshot, options.fill_cache).await

@@ -52,7 +52,7 @@ fn a_point_read_consults_the_level_zero_files_holding_the_key_and_one_file_per_d
         holding(&[8, 9], 1, 5, 30),
         holding(&[0, 2, 4, 6, 8, 9], 2, 6, 1),
     ];
-    let view = View::recovered(Memtable::new(), files);
+    let view = View::recovered(vec![(0, Memtable::new())], std::sync::Arc::new([]), files);
     let consulted = |key: u8| -> Vec<u64> {
         view.candidates(0, &user_key(key))
             .map(|file| file.meta.id)
@@ -104,7 +104,7 @@ proptest! {
         push(table_of(middle, first_of(1), &|key| key < 6), 1, &mut files);
         push(table_of(middle, first_of(1), &|key| key >= 6), 1, &mut files);
         push(table_of(oldest, first_of(0), &|_| true), 2, &mut files);
-        let view = View::recovered(Memtable::new(), files);
+        let view = View::recovered(vec![(0, Memtable::new())], std::sync::Arc::new([]), files);
         for snapshot in 0..=u64::try_from(ops.len()).unwrap() {
             let mut expected = BTreeMap::new();
             for (key, value) in ops.iter().take(usize::try_from(snapshot).unwrap()) {
@@ -128,7 +128,7 @@ fn a_table_merged_within_level_zero_takes_the_place_of_the_runs_it_merged() {
         holding(&[1, 2], 0, 2, 200),
         holding(&[1, 2], 0, 1, 100),
     ];
-    let view = View::recovered(Memtable::new(), files);
+    let view = View::recovered(vec![(0, Memtable::new())], std::sync::Arc::new([]), files);
     let merged = holding(&[1, 2], 0, 9, 300);
     let after = view.after_compaction(0, &[3, 2], vec![merged]);
     let order: Vec<u64> = after.files(0).map(|file| file.meta.id).collect();

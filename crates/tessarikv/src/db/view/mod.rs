@@ -33,7 +33,12 @@ pub(crate) struct View {
     /// Table files ordered by keyspace, then level; level 0 newest first, every other level by
     /// key.
     files: Vec<TableFile>,
+    /// The keyspaces beside the default one, by id, with their names.
+    names: Names,
 }
+
+/// The keyspaces a view serves beside the default one: id and name, by id.
+pub(crate) type Names = Arc<[(u32, String)]>;
 
 /// A table file a view reads, what the manifest records about it, and where its data blocks
 /// come from.
@@ -52,6 +57,7 @@ struct EpochTables {
 
 impl View {
     /// A view of one table of the default keyspace holding epoch `epoch`.
+    #[cfg(test)]
     pub(crate) fn new(epoch: u8, table: Memtable) -> Self {
         Self {
             tables: vec![EpochTables {
@@ -59,18 +65,44 @@ impl View {
                 keyspaces: vec![(0, Arc::new(table))],
             }],
             files: Vec::new(),
+            names: Arc::new([]),
         }
     }
 
-    /// A view of `table`, holding epoch 0, over `files`: the view of a database just opened.
+    /// The view of a database just opened: `tables` holds one empty table per keyspace, the
+    /// default one included, for epoch 0; `names` names the keyspaces beside the default one.
     /// Within each keyspace and level the files keep the order given, which is newest first in
     /// level 0 and by key in every other level.
-    pub(crate) fn recovered(table: Memtable, mut files: Vec<TableFile>) -> Self {
+    pub(crate) fn recovered(
+        mut tables: Vec<(u32, Memtable)>,
+        names: Names,
+        mut files: Vec<TableFile>,
+    ) -> Self {
+        tables.sort_by_key(|(keyspace, _)| *keyspace);
         files.sort_by_key(|file| (file.meta.keyspace, file.meta.level));
         Self {
+            tables: vec![EpochTables {
+                epoch: 0,
+                keyspaces: tables
+                    .into_iter()
+                    .map(|(keyspace, table)| (keyspace, Arc::new(table)))
+                    .collect(),
+            }],
             files,
-            ..Self::new(0, table)
+            names,
         }
+    }
+
+    /// The id of the keyspace named `name`: `default` is the default keyspace.
+    #[cfg(test)]
+    pub(crate) fn keyspace_named(&self, name: &str) -> Option<u32> {
+        if name == "default" {
+            return Some(0);
+        }
+        self.names
+            .iter()
+            .find(|(_, held)| held == name)
+            .map(|(id, _)| *id)
     }
 
     /// This view with the table files numbered in `removed` replaced by `added`, the outputs of
@@ -101,6 +133,7 @@ impl View {
         Self {
             tables: self.shared_tables(),
             files,
+            names: Arc::clone(&self.names),
         }
     }
 

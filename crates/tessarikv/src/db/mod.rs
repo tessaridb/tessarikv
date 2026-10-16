@@ -21,6 +21,7 @@ mod flush_job;
 mod flush_signals;
 mod installer;
 mod iterator;
+mod keyspaces;
 mod merge;
 mod multi_get;
 mod open;
@@ -55,6 +56,8 @@ mod flush_tests;
 mod iterator_tests;
 #[cfg(test)]
 mod keyspace_open_tests;
+#[cfg(test)]
+mod keyspace_tests;
 #[cfg(test)]
 mod kill_tests;
 #[cfg(test)]
@@ -93,10 +96,9 @@ use tessarikv_constants::COMMIT_RING_SLOTS;
 #[cfg(test)]
 use tessarikv_sync::Switch;
 use tessarikv_sync::{Sequencer, SnapshotRegistry};
-use tessarikv_types::{KeyspaceId, SequenceNumber};
+use tessarikv_types::SequenceNumber;
 
 use crate::log::LogWriter;
-use crate::memtable::Memtable;
 use crate::storage::{OsStorage, Storage, StorageLock};
 use crate::{DbOptions, Error, Result, StorageMode};
 use view::View;
@@ -168,10 +170,15 @@ impl Db {
             StorageMode::Memory => Ok(Self {
                 sequencer: Arc::new(Sequencer::new(0, COMMIT_RING_SLOTS)),
                 commits: commits::Commits::new(options.serializable_transactions()),
-                view: Arc::new(ArcSwap::from_pointee(View::new(
-                    0,
-                    Memtable::sized(options.default_keyspace().memtable_bytes()),
-                ))),
+                view: Arc::new(ArcSwap::from_pointee({
+                    // In memory the named keyspaces take ids in the order given.
+                    let named = options.keyspaces().iter().zip(1_u32..);
+                    let (tables, names) = keyspaces::tables_for(
+                        &options,
+                        named.map(|((name, _), id)| (id, name.as_str())),
+                    );
+                    View::recovered(tables, names, Vec::new())
+                })),
                 snapshots: Arc::new(SnapshotRegistry::new()),
                 #[cfg(test)]
                 switching: std::sync::atomic::AtomicBool::new(false),
@@ -217,17 +224,6 @@ impl Db {
             None => Ok(()),
         };
         flushed.and(logged)
-    }
-
-    /// Refuses a keyspace this database does not hold.
-    pub(crate) fn check_keyspace(keyspace: KeyspaceId) -> Result<()> {
-        if keyspace == KeyspaceId::DEFAULT {
-            Ok(())
-        } else {
-            Err(Error::UnknownKeyspace {
-                keyspace: keyspace.get(),
-            })
-        }
     }
 
     /// Starts a new in-memory table: later claims carry the next epoch and land in it, while

@@ -133,7 +133,7 @@ impl Transaction<'_> {
         key: &[u8],
         options: &ReadOptions,
     ) -> Result<Option<Vec<u8>>> {
-        Db::check_keyspace(keyspace)?;
+        self.db.check_keyspace(keyspace)?;
         match self.writes.lookup(keyspace, key) {
             Own::Value(value) => Ok(Some(value.to_vec())),
             Own::Deleted => Ok(None),
@@ -173,7 +173,7 @@ impl Transaction<'_> {
     /// [`Error::TooLarge`] for a key or value longer than a batch entry may be, as
     /// [`crate::WriteBatch::put`] refuses them.
     pub fn put(&mut self, keyspace: KeyspaceId, key: &[u8], value: &[u8]) -> Result<()> {
-        Db::check_keyspace(keyspace)?;
+        self.db.check_keyspace(keyspace)?;
         check_size("key", key.len(), MAX_KEY_BYTES)?;
         check_size("value", value.len(), MAX_VALUE_BYTES)?;
         self.writes.put(keyspace, key, value);
@@ -186,7 +186,7 @@ impl Transaction<'_> {
     ///
     /// As [`Transaction::put`].
     pub fn delete(&mut self, keyspace: KeyspaceId, key: &[u8]) -> Result<()> {
-        Db::check_keyspace(keyspace)?;
+        self.db.check_keyspace(keyspace)?;
         check_size("key", key.len(), MAX_KEY_BYTES)?;
         self.writes.delete(keyspace, key);
         Ok(())
@@ -200,7 +200,7 @@ impl Transaction<'_> {
     /// [`Error::InvalidArgument`] when `start` is not below `end`, and as [`Transaction::put`]
     /// for the keyspace and the two keys.
     pub fn delete_range(&mut self, keyspace: KeyspaceId, start: &[u8], end: &[u8]) -> Result<()> {
-        Db::check_keyspace(keyspace)?;
+        self.db.check_keyspace(keyspace)?;
         if start >= end {
             return Err(Error::InvalidArgument {
                 what: "range delete",

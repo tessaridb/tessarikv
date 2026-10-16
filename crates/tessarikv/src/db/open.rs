@@ -93,9 +93,11 @@ impl Db {
                         files.insert(0, file);
                     }
                 }
+                let (tables, names) =
+                    super::keyspaces::tables_for(&options, manifest.version().keyspaces());
                 Ok::<_, Error>((
                     lock,
-                    View::recovered(Memtable::sized(memtable_bytes), files),
+                    View::recovered(tables, names, files),
                     recovered,
                     manifest,
                     last,

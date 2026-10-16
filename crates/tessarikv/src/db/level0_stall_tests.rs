@@ -44,7 +44,7 @@ fn view_with(tables: u64) -> View {
             file(&table, id, &cache)
         })
         .collect();
-    View::recovered(Memtable::new(), files)
+    View::recovered(vec![(0, Memtable::new())], std::sync::Arc::new([]), files)
 }
 
 fn refusal(result: crate::Result<()>) -> &'static str {

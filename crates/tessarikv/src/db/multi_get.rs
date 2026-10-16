@@ -21,7 +21,7 @@ impl Db {
         keys: impl IntoIterator<Item = K>,
         options: &ReadOptions,
     ) -> Result<Vec<Option<Vec<u8>>>> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         // The view before the sequence, as in `Db::get`: one of each for every key.
         let view = self.view.load();
         let snapshot = self.visible_sequence()?;
@@ -36,7 +36,7 @@ impl Db {
         snapshot: SequenceNumber,
         options: &ReadOptions,
     ) -> Result<Vec<Option<Vec<u8>>>> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         let view = self.view.load();
         read_all(&view, keyspace, keys, snapshot, options).await
     }

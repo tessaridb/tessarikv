@@ -39,6 +39,7 @@ impl View {
         Self {
             tables,
             files: self.files.clone(),
+            names: Arc::clone(&self.names),
         }
     }
 
@@ -66,7 +67,11 @@ impl View {
             let front = files.partition_point(|older| older.meta.keyspace < keyspace);
             files.insert(front, file);
         }
-        Ok(Self { tables, files })
+        Ok(Self {
+            tables,
+            files,
+            names: Arc::clone(&self.names),
+        })
     }
 
     /// The table of `keyspace` holding the writes of `epoch`.
@@ -116,6 +121,13 @@ impl View {
             .first()
             .into_iter()
             .flat_map(|newest| newest.keyspaces.iter().map(|(_, table)| table.as_ref()))
+    }
+
+    /// Whether the view serves `keyspace`.
+    pub(crate) fn holds(&self, keyspace: u32) -> bool {
+        self.tables
+            .first()
+            .is_some_and(|newest| Self::of(newest, keyspace).is_some())
     }
 
     /// How many epochs have in-memory tables: the newest and those frozen behind it.

@@ -31,7 +31,7 @@ impl Db {
         start: &[u8],
         end: Option<&[u8]>,
     ) -> Result<()> {
-        Self::check_keyspace(keyspace)?;
+        self.check_keyspace(keyspace)?;
         let Some(installer) = &self.installer else {
             return Ok(());
         };
