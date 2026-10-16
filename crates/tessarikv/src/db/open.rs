@@ -77,6 +77,7 @@ impl Db {
                 let mut manifest =
                     ManifestStore::create(Arc::clone(&storage), &path, &version, number)?;
                 reconcile_keyspaces(&mut manifest, &options)?;
+                super::options_file::record(storage.as_ref(), &path, &options, number)?;
                 let last = recovered.last_sequence.max(flushed);
                 let replayed = recovered.last_sequence > flushed;
                 if replayed {

@@ -28,6 +28,7 @@ mod merge;
 mod multi_get;
 mod multi_scan;
 mod open;
+mod options_file;
 mod prefixes;
 mod pressure;
 mod rate_limiter;
@@ -92,6 +93,8 @@ mod multi_scan_tests;
 mod open_files_tests;
 #[cfg(test)]
 mod open_tests;
+#[cfg(test)]
+mod options_file_tests;
 #[cfg(test)]
 mod pressure_tests;
 #[cfg(test)]
