@@ -31,6 +31,7 @@ mod merge;
 mod multi_get;
 mod multi_scan;
 mod open;
+mod open_memory;
 mod options_file;
 mod prefixes;
 mod pressure;
@@ -148,7 +149,6 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
-use tessarikv_constants::COMMIT_RING_SLOTS;
 use tessarikv_sync::{Sequencer, SnapshotRegistry};
 use tessarikv_types::SequenceNumber;
 
@@ -224,28 +224,7 @@ impl Db {
     /// fails, and [`Error::Unsupported`] outside a tokio runtime.
     pub async fn open(path: impl AsRef<Path>, options: DbOptions) -> Result<Self> {
         match options.storage() {
-            StorageMode::Memory => Ok(Self {
-                sequencer: Arc::new(Sequencer::new(0, COMMIT_RING_SLOTS)),
-                commits: commits::Commits::new(options.serializable_transactions()),
-                view: Arc::new(ArcSwap::from_pointee({
-                    // In memory the named keyspaces take ids in the order given.
-                    let named = options.keyspaces().iter().zip(1_u32..);
-                    let (tables, names) = keyspaces::tables_for(
-                        &options,
-                        named.map(|((name, _), id)| (id, name.as_str())),
-                    );
-                    View::recovered(tables, names, Vec::new())
-                })),
-                snapshots: Arc::new(SnapshotRegistry::new()),
-                #[cfg(test)]
-                switching: std::sync::atomic::AtomicBool::new(false),
-                #[cfg(test)]
-                limiter: None,
-                log: None,
-                installer: None,
-                statistics: options.statistics().then(|| Arc::new(Statistics::new())),
-                _lock: None,
-            }),
+            StorageMode::Memory => Ok(Self::open_in_memory(&options)),
             StorageMode::Os => Self::open_with_storage(path, options, Arc::new(OsStorage)).await,
         }
     }
