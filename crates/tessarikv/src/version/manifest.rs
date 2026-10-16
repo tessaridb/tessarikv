@@ -11,13 +11,21 @@
 //! On recovery the valid prefix of the manifest is applied; a torn last frame was never
 //! acknowledged and is dropped. Opening always moves to a new manifest, so nothing is ever
 //! appended after a torn frame.
+//!
+//! In an encrypted database a manifest starts with a seal header of its own, and each edit is
+//! sealed as the unit at the offset of its frame; an edit failing authentication under a checksum
+//! that holds was changed, and recovery fails.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tessarikv_format::{FrameReader, LogRead, ManifestEdit, encode_frame, frame_bytes};
+use tessarikv_format::{
+    FRAME_HEADER_BYTES, FileKind, FileSealer, FrameReader, LogRead, ManifestEdit,
+    SEAL_HEADER_BYTES, encode_frame, frame_bytes,
+};
 
 use super::Version;
+use crate::sealing::Sealing;
 use crate::storage::{Storage, WritableFile, read_all};
 use crate::{Error, Result};
 
@@ -35,11 +43,14 @@ pub(crate) struct ManifestStore {
     number: u64,
     file: Box<dyn WritableFile>,
     version: Arc<Version>,
+    /// The manifest's key, when the database is encrypted.
+    sealer: Option<Arc<FileSealer>>,
 }
 
 impl ManifestStore {
-    /// Starts manifest `number` in `dir` holding `version`, makes it current, and removes the
-    /// manifest it replaces. Runs on a blocking thread.
+    /// Starts manifest `number` in `dir` holding `version`, encrypted under a key of its own
+    /// when there is `sealing`, makes it current, and removes the manifest it replaces. Runs on a
+    /// blocking thread.
     ///
     /// # Errors
     ///
@@ -49,10 +60,19 @@ impl ManifestStore {
         dir: &Path,
         version: &Version,
         number: u64,
+        sealing: Option<&Sealing>,
     ) -> Result<Self> {
         let previous = read_current(storage.as_ref(), dir)?;
         let mut file = storage.create(&manifest_path(dir, number))?;
-        append_edit(file.as_mut(), number, &version.as_edit())?;
+        let sealer = match sealing {
+            Some(sealing) => {
+                let (header, sealer) = sealing.new_file(FileKind::Manifest)?;
+                file.append(&header.encode())?;
+                Some(sealer)
+            }
+            None => None,
+        };
+        append_edit(file.as_mut(), number, &version.as_edit(), sealer.as_deref())?;
         let temporary = dir.join(CURRENT_TEMPORARY);
         let mut current = storage.create(&temporary)?;
         current.append(format!("{}\n", manifest_name(number)).as_bytes())?;
@@ -67,6 +87,7 @@ impl ManifestStore {
             number,
             file,
             version: Arc::new(version.clone()),
+            sealer,
         })
     }
 
@@ -84,7 +105,12 @@ impl ManifestStore {
     /// so its writer must stop installing.
     pub(crate) fn append(&mut self, edit: &ManifestEdit) -> Result<()> {
         let next = self.version.apply(edit)?;
-        append_edit(self.file.as_mut(), self.number, edit)?;
+        append_edit(
+            self.file.as_mut(),
+            self.number,
+            edit,
+            self.sealer.as_deref(),
+        )?;
         self.version = Arc::new(next);
         Ok(())
     }
@@ -97,15 +123,39 @@ impl ManifestStore {
     /// [`Error::Corruption`] when `CURRENT` or an edit is damaged or contradicts the version,
     /// [`Error::NotFound`] when the manifest `CURRENT` names is missing, and whatever storage
     /// returns.
-    pub(crate) fn recover(storage: &dyn Storage, dir: &Path) -> Result<Option<(Version, u64)>> {
+    pub(crate) fn recover(
+        storage: &dyn Storage,
+        dir: &Path,
+        sealing: Option<&Sealing>,
+    ) -> Result<Option<(Version, u64)>> {
         let Some(number) = read_current(storage, dir)? else {
             return Ok(None);
         };
         let path = manifest_path(dir, number);
         let bytes = read_all(storage, &path, "manifest")?;
-        let mut frames = FrameReader::new(&bytes, number);
+        let (start, sealer) = match sealing {
+            Some(sealing) => (
+                SEAL_HEADER_BYTES,
+                Some(sealing.open_file(&bytes, FileKind::Manifest, &path)?),
+            ),
+            None => (0, None),
+        };
+        let mut frames = FrameReader::new(bytes.get(start..).unwrap_or_default(), number);
         let mut version = Version::empty();
+        let mut at = u64::try_from(start).unwrap_or(u64::MAX);
         while let LogRead::Frame(payload) = frames.next_frame() {
+            let opened = match &sealer {
+                Some(sealer) => Some(sealer.open(at, payload).map_err(|_| Error::Corruption {
+                    what: "manifest",
+                    path: Some(path.clone()),
+                    offset: Some(at),
+                    detail: "an edit fails authentication".to_owned(),
+                })?),
+                None => None,
+            };
+            let frame = payload.len().saturating_add(FRAME_HEADER_BYTES);
+            at = at.saturating_add(u64::try_from(frame).unwrap_or(u64::MAX));
+            let payload = opened.as_deref().unwrap_or(payload);
             let edit = ManifestEdit::decode(payload).map_err(|error| Error::Corruption {
                 what: "manifest",
                 path: Some(path.clone()),
@@ -126,10 +176,23 @@ impl ManifestStore {
     }
 }
 
-/// Frames `edit` as a record of manifest `number`, appends it and syncs.
-fn append_edit(file: &mut dyn WritableFile, number: u64, edit: &ManifestEdit) -> Result<()> {
+/// Frames `edit` as a record of manifest `number`, sealed as the unit at the frame's offset
+/// when the manifest has a `sealer`, appends it and syncs.
+fn append_edit(
+    file: &mut dyn WritableFile,
+    number: u64,
+    edit: &ManifestEdit,
+    sealer: Option<&FileSealer>,
+) -> Result<()> {
     let mut payload = Vec::new();
     edit.encode(&mut payload);
+    if let Some(sealer) = sealer {
+        payload = sealer
+            .seal(file.len(), &payload)
+            .map_err(|_| Error::Unsupported {
+                what: "a manifest edit larger than a sealed unit",
+            })?;
+    }
     // A manifest edit is far below the frame limit: it holds a few table descriptions.
     let too_large = |_| Error::Unsupported {
         what: "a manifest edit larger than a log frame holds",

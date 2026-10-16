@@ -23,6 +23,7 @@ mod flush_signals;
 mod flushes;
 mod installer;
 mod iterator;
+mod key_check;
 mod keyspaces;
 mod merge;
 mod multi_get;
@@ -34,7 +35,6 @@ mod pressure;
 mod rate_limiter;
 mod read;
 mod recover;
-mod sealing;
 mod snapshot;
 mod table_blocks;
 mod table_versions;
@@ -56,6 +56,8 @@ mod compaction_tests;
 mod compression_tests;
 #[cfg(test)]
 mod crash_step_tests;
+#[cfg(test)]
+mod encrypted_files_tests;
 #[cfg(test)]
 mod encrypted_log_tests;
 #[cfg(test)]

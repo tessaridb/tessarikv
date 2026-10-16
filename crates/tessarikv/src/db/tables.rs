@@ -14,9 +14,9 @@ use tessarikv_types::{
     seek_trailer,
 };
 
-use super::sealing::Sealing;
 use super::view::TableFile;
 use crate::memtable::Memtable;
+use crate::sealing::Sealing;
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 

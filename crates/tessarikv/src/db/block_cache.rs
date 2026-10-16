@@ -18,8 +18,8 @@ use std::sync::Arc;
 use tessarikv_format::Block;
 use tessarikv_sync::ClockCache;
 
-use super::sealing::Sealing;
 use crate::Result;
+use crate::sealing::Sealing;
 use crate::storage::{ReadableFile, Storage};
 
 #[cfg(test)]

@@ -30,7 +30,7 @@ async fn open(storage: &FaultStorage, names: &[&str], create_missing: bool) -> c
 }
 
 fn held(storage: &FaultStorage) -> Vec<(u32, String)> {
-    let (version, _) = ManifestStore::recover(storage, std::path::Path::new(PATH))
+    let (version, _) = ManifestStore::recover(storage, std::path::Path::new(PATH), None)
         .expect("recovered")
         .expect("a manifest");
     version

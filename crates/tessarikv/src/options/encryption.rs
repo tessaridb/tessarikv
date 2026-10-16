@@ -59,11 +59,12 @@ impl PartialEq for Encryption {
 impl Eq for Encryption {}
 
 impl DbOptions {
-    /// Encryption at rest; `None` (the default) writes files in the clear. Table files and log
-    /// segments are then encrypted and authenticated, each table file and each open's log under
-    /// a key of its own derived from the provider's root key, and a database encrypted once opens
-    /// only with its key. File names, sizes, the sizes of the blocks and log frames in them, and
-    /// the sequence number of each logged batch stay visible.
+    /// Encryption at rest; `None` (the default) writes files in the clear. Every file holding
+    /// data or metadata (tables, log segments, manifests and the options record) is then
+    /// encrypted and authenticated, each table file, manifest and open's log under a key of its
+    /// own derived from the provider's root key, and a database encrypted once opens only with
+    /// its key. File names, sizes, the sizes of the blocks, frames and edits in them, and the
+    /// sequence number of each logged batch stay visible.
     #[must_use]
     pub const fn encryption(&self) -> Option<&Encryption> {
         self.encryption.as_ref()

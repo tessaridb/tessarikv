@@ -10,25 +10,25 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tessarikv_constants::{COMMIT_RING_SLOTS, LEVELS};
+use tessarikv_constants::COMMIT_RING_SLOTS;
 use tessarikv_format::{FileKind, KeyspaceRecord, ManifestEdit};
 use tessarikv_sync::Sequencer;
 
 use super::Db;
 use super::block_cache::BlockCache;
 use super::commits::Commits;
-use super::flush_job::{FileNumbers, Job, table_options, table_path};
+use super::flush_job::{FileNumbers, Job, table_options};
 use super::installer::{Flusher, Installer};
+use super::key_check::check_key;
 use super::keyspaces::options_of;
 use super::rate_limiter::RateLimiter;
 use super::recover::recover;
-use super::sealing::{Sealing, check_key};
-use super::table_blocks::open_table;
-use super::view::{TableFile, View};
+use super::view::View;
 use crate::log::LogWriter;
+use crate::sealing::Sealing;
 use crate::storage::Storage;
 use crate::version::Version;
-use crate::version::manifest::ManifestStore;
+use crate::version::manifest::{CURRENT, ManifestStore};
 use crate::{DbOptions, Error, Result};
 
 /// The file whose presence marks a directory as holding a database.
@@ -72,15 +72,18 @@ impl Db {
             let cache = Arc::clone(&cache);
             tokio::task::spawn_blocking(move || {
                 let lock = prepare(storage.as_ref(), &path, &options)?;
-                let found = ManifestStore::recover(storage.as_ref(), &path)?;
-                check_key(storage.as_ref(), &path, cache.sealing(), found.is_some())?;
+                // The key is checked before any encrypted file is read.
+                let existing = storage.exists(&path.join(CURRENT))?;
+                check_key(storage.as_ref(), &path, cache.sealing(), existing)?;
+                let found = ManifestStore::recover(storage.as_ref(), &path, cache.sealing())?;
                 // One key for every log segment this open writes; a new open, a new salt.
                 let log_seal = cache
                     .sealing()
                     .map(|sealing| sealing.new_file(FileKind::Log))
                     .transpose()?;
                 let (version, number) = found.unwrap_or_else(|| (Version::empty(), 0));
-                let mut files = restore_tables(storage.as_ref(), &path, &version, &cache)?;
+                let mut files =
+                    super::table_blocks::restore_tables(storage.as_ref(), &path, &version, &cache)?;
                 let (replay, _) = super::keyspaces::tables_for(&options, version.keyspaces());
                 let flushed = version.flushed_sequence();
                 let recovered = recover(
@@ -92,10 +95,21 @@ impl Db {
                     cache.sealing(),
                 )?;
                 let number = number.checked_add(1).ok_or(Error::SequenceExhausted)?;
-                let mut manifest =
-                    ManifestStore::create(Arc::clone(&storage), &path, &version, number)?;
+                let mut manifest = ManifestStore::create(
+                    Arc::clone(&storage),
+                    &path,
+                    &version,
+                    number,
+                    cache.sealing(),
+                )?;
                 reconcile_keyspaces(&mut manifest, &options)?;
-                super::options_file::record(storage.as_ref(), &path, &options, number)?;
+                super::options_file::record(
+                    storage.as_ref(),
+                    &path,
+                    &options,
+                    number,
+                    cache.sealing(),
+                )?;
                 let last = recovered.last_sequence.max(flushed);
                 let replayed = recovered.last_sequence > flushed;
                 if replayed {
@@ -232,40 +246,6 @@ fn reconcile_keyspaces(manifest: &mut ManifestStore, options: &DbOptions) -> Res
         next_keyspace: Some(next),
         ..ManifestEdit::default()
     })
-}
-
-/// Opens every table file `version` names, newest first, reading their data blocks through
-/// `cache`, and removes the table files it does not name: those a crash left between writing a
-/// table and naming it in the manifest. Runs on a blocking thread.
-fn restore_tables(
-    storage: &dyn Storage,
-    dir: &Path,
-    version: &Version,
-    cache: &Arc<BlockCache>,
-) -> Result<Vec<TableFile>> {
-    let mut files = Vec::new();
-    let keyspaces = std::iter::once(0).chain(version.keyspaces().map(|(id, _)| id));
-    for keyspace in keyspaces {
-        for meta in (0..LEVELS).flat_map(|level| version.tables(keyspace, level)) {
-            let path = table_path(dir, meta.id);
-            let (table, blocks) = open_table(storage, &path, meta.id, cache, None)?;
-            files.push(TableFile {
-                meta: Arc::clone(meta),
-                table,
-                blocks,
-            });
-        }
-    }
-    for name in storage.list(dir)? {
-        let named = name
-            .strip_suffix(".sst")
-            .and_then(|stem| stem.parse::<u64>().ok())
-            .map(|id| files.iter().any(|file| file.meta.id == id));
-        if named == Some(false) {
-            storage.remove(&dir.join(&name))?;
-        }
-    }
-    Ok(files)
 }
 
 /// Checks whether a database exists at `path` against `options`, creates one when asked, and

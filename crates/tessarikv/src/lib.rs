@@ -17,6 +17,7 @@ mod error;
 mod log;
 mod memtable;
 mod options;
+mod sealing;
 mod storage;
 mod tombstones;
 mod transaction;

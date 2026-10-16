@@ -4,10 +4,15 @@
 //! so a later open's file sorts after an earlier one's. The file names every option, database-wide
 //! and per keyspace, as the code holds them: it is a record for people and audits to read, not a
 //! format to parse, and the engine never reads it back. It is written beside its final name,
-//! synced, then renamed, so it is never seen half written; the two newest are kept.
+//! synced, then renamed, so it is never seen half written; the two newest are kept. In an
+//! encrypted database it is sealed like every other file: a seal header, then the text as one
+//! sealed unit.
 
 use std::path::Path;
 
+use tessarikv_format::{FileKind, SEAL_HEADER_BYTES};
+
+use crate::sealing::{Sealing, corruption};
 use crate::storage::Storage;
 use crate::{DbOptions, Result};
 
@@ -29,6 +34,7 @@ pub(super) fn record(
     dir: &Path,
     options: &DbOptions,
     number: u64,
+    sealing: Option<&Sealing>,
 ) -> Result<()> {
     let name = format!("{PREFIX}{number:020}");
     let writing = dir.join(format!("{name}{WRITING}"));
@@ -36,7 +42,18 @@ pub(super) fn record(
         "# The options this database was opened with; for reading, not parsing.\n{options:#?}\n"
     );
     let mut file = storage.create(&writing)?;
-    file.append(text.as_bytes())?;
+    match sealing {
+        Some(sealing) => {
+            let (header, sealer) = sealing.new_file(FileKind::Options)?;
+            let at = u64::try_from(SEAL_HEADER_BYTES).unwrap_or(u64::MAX);
+            let sealed = sealer
+                .seal(at, text.as_bytes())
+                .map_err(|error| corruption(&writing, &error))?;
+            file.append(&header.encode())?;
+            file.append(&sealed)?;
+        }
+        None => file.append(text.as_bytes())?,
+    }
     file.sync()?;
     drop(file);
     storage.rename(&writing, &dir.join(&name))?;

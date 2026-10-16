@@ -1,20 +1,15 @@
-//! Encryption at rest in the engine: the key of each file, and the key check every open makes.
+//! The key check every open of an encrypted database makes before it reads anything else.
 //!
-//! A file is encrypted under a key of its own, derived from a caller's root key and the random
-//! salt of the seal header it starts with; the header names the root key's id, so a file always
-//! opens with the key it was written under. New files use the id the options name.
-//!
-//! An encrypted database holds a key-check file, written when the database is created: a header
-//! and one sealed unit. Every open reads it first, so a wrong or missing key is refused before
-//! any other file is read, and a database written without encryption is never mistaken for an
-//! encrypted one, or the other way round.
+//! An encrypted database holds a key-check file, written when the database is created: a seal
+//! header and one sealed unit. Every open reads it first, so a wrong or missing key is refused
+//! before any other file is read, and a database written without encryption is never mistaken
+//! for an encrypted one, or the other way round.
 
 use std::path::Path;
-use std::sync::Arc;
 
-use tessarikv_format::{Cipher, FileKind, FileSealer, RootKey, SEAL_HEADER_BYTES, SealHeader};
+use tessarikv_format::{FileKind, SEAL_HEADER_BYTES, SealHeader};
 
-use crate::options::Encryption;
+use crate::sealing::{Sealing, corruption};
 use crate::storage::{Storage, read_all};
 use crate::{Error, Result};
 
@@ -24,52 +19,6 @@ const KEY_CHECK: &str = "KEYCHECK";
 const KEY_CHECK_WRITING: &str = "KEYCHECK.writing";
 /// What the key-check file seals.
 const KEY_CHECK_TEXT: &[u8] = b"tessarikv key check";
-
-/// How the engine encrypts the files it writes and opens the ones it reads.
-#[derive(Debug)]
-pub(crate) struct Sealing {
-    encryption: Encryption,
-    cipher: Cipher,
-}
-
-impl Sealing {
-    /// Sealing under `encryption`, with the cipher this processor runs fastest.
-    pub(crate) fn new(encryption: &Encryption) -> Self {
-        Self {
-            encryption: encryption.clone(),
-            cipher: Cipher::preferred(),
-        }
-    }
-
-    /// The header and key of a new file of `kind`, under the current key id.
-    pub(crate) fn new_file(&self, kind: FileKind) -> Result<(SealHeader, Arc<FileSealer>)> {
-        let key_id = self.encryption.key_id();
-        let header = SealHeader::generate(self.cipher, key_id).map_err(|_| Error::Unsupported {
-            what: "encrypting a file without the operating system's random source",
-        })?;
-        let root = self.root_key(key_id)?;
-        Ok((header, Arc::new(FileSealer::new(&root, &header, kind))))
-    }
-
-    /// The key of the file of `kind` at `path`, which starts with `header`.
-    pub(crate) fn open_file(
-        &self,
-        header: &[u8],
-        kind: FileKind,
-        path: &Path,
-    ) -> Result<Arc<FileSealer>> {
-        let header = SealHeader::decode(header).map_err(|error| corruption(path, &error))?;
-        let root = self.root_key(header.key_id)?;
-        Ok(Arc::new(FileSealer::new(&root, &header, kind)))
-    }
-
-    fn root_key(&self, key_id: u32) -> Result<RootKey> {
-        self.encryption
-            .provider()
-            .root_key(key_id)
-            .ok_or(Error::KeyNotFound { key_id })
-    }
-}
 
 /// Checks the key of the database in `dir` against its key-check file, writing that file when
 /// an encrypted database is created; `existing` tells whether the database already holds data.
@@ -130,13 +79,4 @@ fn write_key_check(storage: &dyn Storage, dir: &Path, sealing: &Sealing) -> Resu
 /// Where the key-check file's sealed unit starts: right after its header.
 fn position() -> u64 {
     u64::try_from(SEAL_HEADER_BYTES).unwrap_or(u64::MAX)
-}
-
-fn corruption(path: &Path, error: &tessarikv_format::Error) -> Error {
-    Error::Corruption {
-        what: "encrypted file",
-        path: Some(path.to_path_buf()),
-        offset: None,
-        detail: error.to_string(),
-    }
 }

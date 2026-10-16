@@ -26,9 +26,9 @@ use tessarikv_format::{
 };
 use tessarikv_types::SequenceNumber;
 
-use super::sealing::Sealing;
 use crate::log::{FinishedSegment, segment_path};
 use crate::memtable::Memtable;
+use crate::sealing::Sealing;
 use crate::storage::{Storage, read_all};
 use crate::{Error, Result, WalRecovery};
 
