@@ -5,8 +5,10 @@
 //! ```
 //!
 //! A key's 64-bit hash picks one line from its high half, and its probes are bits of that line
-//! picked by double hashing from its low half, so a lookup costs one cache miss however many
-//! probes it makes. A filter answers only "certainly absent" or "possibly present": a key that
+//! picked from its low half, so a lookup costs one cache miss however many probes it makes. Each
+//! probe remixes the low half and takes its top nine bits; tables written before format version
+//! 3 stepped through the line by double hashing instead, which correlates the probes and keeps
+//! extra bits per key from lowering the false-positive rate, and are still read that way. A filter answers only "certainly absent" or "possibly present": a key that
 //! was added always tests present.
 //!
 //! The hash is part of the format: changing it would make existing filters reject keys they hold.
@@ -27,6 +29,21 @@ const TRAILER_BYTES: usize = 5;
 
 /// The most probes a filter may make.
 const MAX_PROBES: u8 = 30;
+
+/// An odd multiplier near 2^32 / phi: each multiplication spreads the low bits into the top ones.
+const PROBE_MIX: u32 = 0x9e37_79b9;
+
+/// Shift keeping the top nine bits of a remix: a bit of the 512-bit line.
+const PROBE_SHIFT: u32 = 23;
+
+/// How a filter picks the bits of a key within its line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Probing {
+    /// Double hashing: a start and a step from the low half (format versions 1 and 2).
+    Stepped,
+    /// Successive multiplicative remixes of the low half (format version 3).
+    Remixed,
+}
 
 /// Collects the hashes of the keys of one table, then lays out its filter.
 #[derive(Debug)]
@@ -52,6 +69,11 @@ impl BloomBuilder {
 
     /// The filter of every key added; the builder is empty again afterwards.
     pub fn finish(&mut self) -> Vec<u8> {
+        self.finish_probing(Probing::Remixed)
+    }
+
+    /// As [`BloomBuilder::finish`], picking each key's bits by `probing`.
+    pub(crate) fn finish_probing(&mut self, probing: Probing) -> Vec<u8> {
         let keys = u64::try_from(self.hashes.len()).unwrap_or(u64::MAX);
         let bits = keys.saturating_mul(u64::from(self.bits_per_key));
         let lines = bits
@@ -65,7 +87,7 @@ impl BloomBuilder {
         let mut filter = vec![0_u8; size];
         for key_hash in self.hashes.drain(..) {
             let line = line_of(key_hash, line_count);
-            for bit in bits_of(key_hash, probes) {
+            for bit in bits_of(key_hash, probes, probing) {
                 set(&mut filter, line, bit);
             }
         }
@@ -81,16 +103,22 @@ pub struct BloomFilter {
     bytes: Vec<u8>,
     line_count: u32,
     probes: u8,
+    probing: Probing,
 }
 
 impl BloomFilter {
-    /// Decodes `bytes` as a filter.
+    /// Decodes `bytes` as a filter [`BloomBuilder`] wrote.
     ///
     /// # Errors
     ///
     /// [`Error::Truncated`] for fewer bytes than a trailer; [`Error::Malformed`] when the line
     /// count does not match the bytes or the probe count is out of range.
     pub fn new(bytes: Vec<u8>) -> Result<Self> {
+        Self::with_probing(bytes, Probing::Remixed)
+    }
+
+    /// Decodes `bytes` as a filter whose bits were picked by `probing`.
+    pub(crate) fn with_probing(bytes: Vec<u8>, probing: Probing) -> Result<Self> {
         let malformed = |reason| Error::Malformed {
             what: "filter",
             reason,
@@ -121,6 +149,7 @@ impl BloomFilter {
             bytes,
             line_count: count,
             probes,
+            probing,
         })
     }
 
@@ -128,7 +157,7 @@ impl BloomFilter {
     pub fn may_contain(&self, key: &[u8]) -> bool {
         let key_hash = hash(key);
         let line = line_of(key_hash, self.line_count);
-        bits_of(key_hash, self.probes).all(|bit| is_set(&self.bytes, line, bit))
+        bits_of(key_hash, self.probes, self.probing).all(|bit| is_set(&self.bytes, line, bit))
     }
 }
 
@@ -148,11 +177,18 @@ fn line_of(key_hash: u64, line_count: u32) -> usize {
     usize::try_from(line).unwrap_or(0)
 }
 
-/// The bits of a key within its line: double hashing over the low half of its hash.
-fn bits_of(key_hash: u64, probes: u8) -> impl Iterator<Item = u32> {
+/// The bits of a key within its line, picked from the low half of its hash by `probing`.
+fn bits_of(key_hash: u64, probes: u8, probing: Probing) -> impl Iterator<Item = u32> {
     let low = u32::try_from(key_hash & 0xFFFF_FFFF).unwrap_or(0);
     let step = low.rotate_right(17) | 1;
-    (0..u32::from(probes)).map(move |probe| low.wrapping_add(probe.wrapping_mul(step)) % LINE_BITS)
+    let mut mixed = low;
+    (0..u32::from(probes)).map(move |probe| match probing {
+        Probing::Stepped => low.wrapping_add(probe.wrapping_mul(step)) % LINE_BITS,
+        Probing::Remixed => {
+            mixed = mixed.wrapping_mul(PROBE_MIX);
+            mixed >> PROBE_SHIFT
+        }
+    })
 }
 
 fn set(filter: &mut [u8], line: usize, bit: u32) {

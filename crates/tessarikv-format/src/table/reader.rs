@@ -107,7 +107,7 @@ impl Table {
             Ok(Self {
                 source,
                 index: Block::new(index, compare)?,
-                filter: Arc::new(BloomFilter::new(filter)?),
+                filter: Arc::new(BloomFilter::with_probing(filter, footer.probing)?),
                 filter_key,
                 compare,
                 entries,

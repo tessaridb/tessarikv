@@ -73,3 +73,37 @@ fn the_hash_is_fixed_by_the_format() {
     assert_ne!(hash(b"a"), hash(b"b"));
     assert_eq!(hash(b"tessarikv"), 0x_5478_0536_bd47_3e92);
 }
+
+#[test]
+fn more_bits_per_key_buy_the_rate_the_layout_promises() {
+    // A 512-bit line holding a Poisson share of the keys, k = 14 at 20 bits per key, passes an
+    // absent key with probability sum over n of P(n) * (1 - (1 - 1/512)^(14n))^14: about 2.2e-4,
+    // some 22 of 100 000. Probes that depend on each other plateau far above it.
+    let present: Vec<Vec<u8>> = (0..10_000_u32)
+        .map(|n| format!("present-{n}").into_bytes())
+        .collect();
+    let filter = build(&present, 20);
+    let false_positives = (0..100_000_u32)
+        .filter(|n| filter.may_contain(format!("absent-{n}").as_bytes()))
+        .count();
+    assert!(
+        false_positives < 60,
+        "{false_positives} of 100000 absent keys passed"
+    );
+}
+
+#[test]
+fn a_filter_written_with_stepped_probes_finds_every_key_read_the_same_way() {
+    // Tables written before format version 3 hold such filters.
+    let present: Vec<Vec<u8>> = (0..5_000_u32)
+        .map(|n| format!("present-{n}").into_bytes())
+        .collect();
+    let mut builder = BloomBuilder::new(10);
+    for key in &present {
+        builder.add(key);
+    }
+    let filter =
+        BloomFilter::with_probing(builder.finish_probing(Probing::Stepped), Probing::Stepped)
+            .expect("a built filter decodes");
+    assert!(present.iter().all(|key| filter.may_contain(key)));
+}

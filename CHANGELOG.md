@@ -28,7 +28,8 @@ All notable changes to this project are documented here. The format follows
 - In-memory tables carry a lock-free whole-key filter sized from `KeyspaceOptions::memtable_bytes`, so a read of a
   key the table does not hold skips its walk.
 - Bloom filter blocked by cache line: one line per lookup, no false negatives, about 1 % false positives at ten bits
-  per key; a filter whose size or probe count does not add up is refused.
+  per key and about 0.02 % at twenty; a filter whose size or probe count does not add up is refused. Table files
+  move to format version 3, whose filters pick each probe independently; versions 1 and 2 are still read.
 - Table block format: sorted entries with shared key prefixes and restart points, a builder that refuses keys out of
   order, and an iterator that seeks by binary search and stops with an error on a damaged entry.
 - Log frame codec: CRC-32C checksummed frames tagged with their log number (the checksum covers the payload first,

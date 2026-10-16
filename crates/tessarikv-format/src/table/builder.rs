@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 
 use super::block::{BlockBuilder, Compare};
-use super::filter::BloomBuilder;
+use super::filter::{BloomBuilder, Probing};
 use super::handle::{Footer, write_block};
 use super::{Compression, TableOptions};
 use crate::error::{Error, Result};
@@ -175,6 +175,7 @@ impl TableBuilder {
             filter,
             index,
             properties,
+            probing: Probing::Remixed,
         };
         self.out.extend_from_slice(&footer.encode());
         Ok(self.out)

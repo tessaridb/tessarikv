@@ -13,6 +13,7 @@
 //!
 //! A handle is `[offset: u64][size: u64]`, the size including the block's 5-byte seal.
 
+use super::filter::Probing;
 use super::{Compression, codec};
 use crate::error::{Error, Result};
 
@@ -20,9 +21,12 @@ use crate::error::{Error, Result};
 pub const FOOTER_BYTES: usize = 64;
 
 /// The table format this build writes and reads.
-pub(super) const FORMAT_VERSION: u32 = 2;
+pub(super) const FORMAT_VERSION: u32 = 3;
 
-/// The first version, without range deletes; still read.
+/// The second version, whose filters step through a line by double hashing; still read.
+const FORMAT_VERSION_2: u32 = 2;
+
+/// The first version, also without range deletes; still read.
 const FORMAT_VERSION_1: u32 = 1;
 
 /// Identifies a table file.
@@ -98,15 +102,22 @@ pub(super) struct Footer {
     pub(super) filter: BlockHandle,
     pub(super) index: BlockHandle,
     pub(super) properties: BlockHandle,
+    /// How the filter picks a key's bits, which the format version decides.
+    pub(super) probing: Probing,
 }
 
 impl Footer {
+    /// The footer's bytes, under the version its filter's probing belongs to.
     pub(super) fn encode(self) -> [u8; FOOTER_BYTES] {
+        let version = match self.probing {
+            Probing::Remixed => FORMAT_VERSION,
+            Probing::Stepped => FORMAT_VERSION_2,
+        };
         let mut bytes = [0; FOOTER_BYTES];
         bytes[0..16].copy_from_slice(&self.filter.encode());
         bytes[16..32].copy_from_slice(&self.index.encode());
         bytes[32..48].copy_from_slice(&self.properties.encode());
-        bytes[48..52].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes[48..52].copy_from_slice(&version.to_le_bytes());
         let checksum = crc32c::crc32c(&bytes[..FOOTER_CHECKSUM_AT]);
         bytes[52..56].copy_from_slice(&checksum.to_le_bytes());
         bytes[56..64].copy_from_slice(&MAGIC.to_le_bytes());
@@ -148,22 +159,27 @@ impl Footer {
             });
         }
         let version = u32_at(48);
-        if version != FORMAT_VERSION && version != FORMAT_VERSION_1 {
-            return Err(match u8::try_from(version) {
-                Ok(version) => Error::UnsupportedVersion {
-                    what: "table",
-                    version,
-                },
-                Err(_) => Error::Malformed {
-                    what: "table",
-                    reason: "format version out of range",
-                },
-            });
-        }
+        let probing = match version {
+            FORMAT_VERSION => Probing::Remixed,
+            FORMAT_VERSION_2 | FORMAT_VERSION_1 => Probing::Stepped,
+            _ => {
+                return Err(match u8::try_from(version) {
+                    Ok(version) => Error::UnsupportedVersion {
+                        what: "table",
+                        version,
+                    },
+                    Err(_) => Error::Malformed {
+                        what: "table",
+                        reason: "format version out of range",
+                    },
+                });
+            }
+        };
         Ok(Self {
             filter: BlockHandle::decode(bytes.get(0..16).unwrap_or_default())?,
             index: BlockHandle::decode(bytes.get(16..32).unwrap_or_default())?,
             properties: BlockHandle::decode(bytes.get(32..48).unwrap_or_default())?,
+            probing,
         })
     }
 }

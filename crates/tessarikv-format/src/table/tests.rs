@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 
 use super::codec_tests::EVERY;
+use super::filter::Probing;
+use super::handle::Footer;
 use super::*;
 use crate::error::{Error, Result};
 
@@ -138,11 +140,24 @@ fn a_truncated_file_or_an_unknown_version_is_refused() {
         Err(Error::Truncated { .. })
     ));
     assert!(matches!(
-        open(with_version(&bytes, 3)),
-        Err(Error::UnsupportedVersion { version: 3, .. })
+        open(with_version(&bytes, 4)),
+        Err(Error::UnsupportedVersion { version: 4, .. })
     ));
     // The first version, which has no range deletes, still opens.
     assert!(open(with_version(&bytes, 1)).is_ok());
+}
+
+#[test]
+fn the_format_version_decides_how_the_filter_is_probed() {
+    let bytes = build(&sample(), Compression::None);
+    let probing = |version| {
+        Footer::decode(&with_version(&bytes, version))
+            .unwrap()
+            .probing
+    };
+    assert_eq!(probing(3), Probing::Remixed);
+    assert_eq!(probing(2), Probing::Stepped);
+    assert_eq!(probing(1), Probing::Stepped);
 }
 
 /// `bytes` with the footer's format version replaced and the footer resealed.
