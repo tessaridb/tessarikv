@@ -39,6 +39,7 @@ fn applying_edits_builds_the_table_set_newest_level_zero_first() {
             next_file: Some(3),
             added: vec![table(0, 1, (b"a", b"m"), (1, 10))],
             removed: vec![],
+            ..ManifestEdit::default()
         })
         .unwrap()
         .apply(&add(vec![table(0, 2, (b"c", b"z"), (11, 20))]))
@@ -82,6 +83,7 @@ fn edits_contradicting_the_version_are_refused() {
             next_file: Some(5),
             added: vec![table(1, 1, (b"a", b"f"), (1, 5))],
             removed: vec![],
+            ..ManifestEdit::default()
         })
         .unwrap();
     let refused = [

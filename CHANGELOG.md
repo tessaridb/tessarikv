@@ -44,8 +44,9 @@ All notable changes to this project are documented here. The format follows
   table before the open returns and its log removed, so no log outlives a reopen. `Db::close` syncs and releases it.
 - `Db`: an in-memory database with async `open`, atomic batch `write`, `get` and paged `scan` at a
   consistent snapshot; a scan never shows part of a batch.
-- `ManifestEdit`: a versioned record of tables added and removed, the flushed sequence and the next file
-  number; unknown versions and fields, repeated fields and lengths past the record are refused.
+- `ManifestEdit`: a versioned record of tables added and removed, keyspaces added (`KeyspaceRecord`) and dropped,
+  the flushed sequence and the next file and keyspace numbers; unknown versions and fields, repeated fields, lengths
+  past the record and keyspace names that are not UTF-8 are refused.
 - `Db::snapshot`: a `Snapshot` reads `get` and `scan` at a fixed point in history until it is dropped.
 - `Db::begin`: a `Transaction` reads at the snapshot it began at and sees its own puts, deletes and range deletes,
   rolls back to a `Savepoint`, and commits everything as one atomic batch; dropping it writes nothing. New errors

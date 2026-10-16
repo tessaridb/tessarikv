@@ -10,8 +10,11 @@
 //! | 2 | next file | u64: the next file number to hand out |
 //! | 3 | added table | keyspace u32, level u8, id u64, size u64, min and max sequence u64, smallest and largest internal key |
 //! | 4 | removed table | keyspace u32, level u8, id u64 |
+//! | 5 | added keyspace | id u32, name (UTF-8, varint length) |
+//! | 6 | dropped keyspace | id u32 |
+//! | 7 | next keyspace | u32: the next keyspace id to hand out |
 //!
-//! A scalar field appears at most once; tables may repeat. An unknown version or tag is refused,
+//! A scalar field appears at most once; tables and keyspaces may repeat. An unknown version or tag is refused,
 //! never skipped: an edit this build does not understand cannot be applied safely. Lengths are
 //! checked against the bytes left before anything is allocated. Integrity is the frame's
 //! checksum's job; this layer refuses what a valid checksum cannot rule out.
@@ -29,6 +32,18 @@ const FLUSHED_SEQUENCE: u8 = 1;
 const NEXT_FILE: u8 = 2;
 const ADDED_TABLE: u8 = 3;
 const REMOVED_TABLE: u8 = 4;
+const ADDED_KEYSPACE: u8 = 5;
+const DROPPED_KEYSPACE: u8 = 6;
+const NEXT_KEYSPACE: u8 = 7;
+
+/// A keyspace as the manifest records it when it is added.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyspaceRecord {
+    /// Its id, never reused.
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+}
 
 /// A table file as the manifest records it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,6 +88,12 @@ pub struct ManifestEdit {
     pub added: Vec<TableMeta>,
     /// Tables the edit removes.
     pub removed: Vec<TableRef>,
+    /// Keyspaces the edit adds.
+    pub added_keyspaces: Vec<KeyspaceRecord>,
+    /// Keyspaces the edit drops, by id.
+    pub dropped_keyspaces: Vec<u32>,
+    /// The next keyspace id to hand out.
+    pub next_keyspace: Option<u32>,
 }
 
 impl ManifestEdit {
@@ -102,6 +123,19 @@ impl ManifestEdit {
             put_u32(out, table.keyspace);
             out.push(table.level);
             put_u64(out, table.id);
+        }
+        for keyspace in &self.added_keyspaces {
+            out.push(ADDED_KEYSPACE);
+            put_u32(out, keyspace.id);
+            put_key(out, keyspace.name.as_bytes());
+        }
+        for id in &self.dropped_keyspaces {
+            out.push(DROPPED_KEYSPACE);
+            put_u32(out, *id);
+        }
+        if let Some(id) = self.next_keyspace {
+            out.push(NEXT_KEYSPACE);
+            put_u32(out, id);
         }
     }
 
@@ -140,6 +174,15 @@ impl ManifestEdit {
                     level: input.byte("manifest edit level")?,
                     id: input.u64()?,
                 }),
+                ADDED_KEYSPACE => edit.added_keyspaces.push(KeyspaceRecord {
+                    id: input.u32()?,
+                    name: String::from_utf8(input.key()?).map_err(|_| Error::Malformed {
+                        what: "manifest edit",
+                        reason: "a keyspace name is not UTF-8",
+                    })?,
+                }),
+                DROPPED_KEYSPACE => edit.dropped_keyspaces.push(input.u32()?),
+                NEXT_KEYSPACE => set_once(&mut edit.next_keyspace, input.u32()?)?,
                 _ => {
                     return Err(Error::Malformed {
                         what: "manifest edit",
@@ -158,7 +201,7 @@ fn put_key(out: &mut Vec<u8>, key: &[u8]) {
     out.extend_from_slice(key);
 }
 
-fn set_once(slot: &mut Option<u64>, value: u64) -> Result<()> {
+fn set_once<T>(slot: &mut Option<T>, value: T) -> Result<()> {
     if slot.replace(value).is_some() {
         return Err(Error::Malformed {
             what: "manifest edit",

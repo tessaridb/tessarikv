@@ -32,6 +32,7 @@ fn flush(id: u64, sequence: u64) -> ManifestEdit {
         next_file: Some(id + 1),
         added: vec![table(id, sequence)],
         removed: vec![],
+        ..ManifestEdit::default()
     }
 }
 

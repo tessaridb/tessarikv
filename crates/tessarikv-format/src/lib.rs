@@ -28,7 +28,7 @@ pub use log::{
     EndKind, FRAME_HEADER_BYTES, FrameReader, LogEnd, LogRead, concat_checksum, encode_frame,
     frame_bytes, frame_header, payload_checksum,
 };
-pub use manifest::{ManifestEdit, TableMeta, TableRef};
+pub use manifest::{KeyspaceRecord, ManifestEdit, TableMeta, TableRef};
 pub use table::block::{Block, BlockBuilder, BlockIter, Compare};
 pub use table::filter::{BloomBuilder, BloomFilter, hash as key_hash};
 pub use table::{

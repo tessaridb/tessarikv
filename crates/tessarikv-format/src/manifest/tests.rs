@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 
-use super::{ManifestEdit, TableMeta, TableRef};
+use super::{KeyspaceRecord, ManifestEdit, TableMeta, TableRef};
 use crate::Error;
 
 fn table() -> impl Strategy<Value = TableMeta> {
@@ -30,17 +30,36 @@ fn table() -> impl Strategy<Value = TableMeta> {
         )
 }
 
+fn keyspaces() -> impl Strategy<Value = (Vec<KeyspaceRecord>, Vec<u32>, Option<u32>)> {
+    (
+        proptest::collection::vec((any::<u32>(), ".{0,12}"), 0..3),
+        proptest::collection::vec(any::<u32>(), 0..3),
+        proptest::option::of(any::<u32>()),
+    )
+        .prop_map(|(added, dropped, next)| {
+            let added = added
+                .into_iter()
+                .map(|(id, name)| KeyspaceRecord { id, name })
+                .collect();
+            (added, dropped, next)
+        })
+}
+
 fn edit() -> impl Strategy<Value = ManifestEdit> {
     (
         proptest::option::of(any::<u64>()),
         proptest::option::of(any::<u64>()),
         proptest::collection::vec(table(), 0..4),
         proptest::collection::vec((any::<u32>(), 0_u8..7, any::<u64>()), 0..4),
+        keyspaces(),
     )
         .prop_map(
-            |(flushed_sequence, next_file, added, removed)| ManifestEdit {
+            |(flushed_sequence, next_file, added, removed, keyspaces)| ManifestEdit {
                 flushed_sequence,
                 next_file,
+                added_keyspaces: keyspaces.0,
+                dropped_keyspaces: keyspaces.1,
+                next_keyspace: keyspaces.2,
                 added,
                 removed: removed
                     .into_iter()
@@ -143,6 +162,19 @@ fn an_overlong_integer_is_malformed_not_truncated() {
         ManifestEdit::decode(&bytes),
         Err(Error::Malformed {
             reason: "longer than its type",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_keyspace_name_that_is_not_text_is_refused() {
+    // version, added-keyspace tag, id 3, a two-byte name that is not UTF-8.
+    let bytes = [1, 5, 3, 2, 0xFF, 0xFE];
+    assert!(matches!(
+        ManifestEdit::decode(&bytes),
+        Err(Error::Malformed {
+            reason: "a keyspace name is not UTF-8",
             ..
         })
     ));

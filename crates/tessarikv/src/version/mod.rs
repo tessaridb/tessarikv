@@ -8,9 +8,15 @@
 //!
 //! Level 0 holds flushed tables newest first, and their key ranges may overlap. Every other level
 //! holds tables sorted by key with ranges that never overlap.
+//!
+//! The default keyspace, id 0, always exists; every other keyspace is added by an edit naming its
+//! id and name and dropped by one that removes its last tables with it. Ids are handed out in
+//! order and never reused, names are unique, and a table belongs to a keyspace the version holds.
 
 pub(crate) mod manifest;
 
+#[cfg(test)]
+mod keyspace_tests;
 #[cfg(test)]
 mod manifest_tests;
 #[cfg(test)]
@@ -21,7 +27,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tessarikv_constants::LEVELS;
-use tessarikv_format::{ManifestEdit, TableMeta};
+use tessarikv_format::{KeyspaceRecord, ManifestEdit, TableMeta};
 use tessarikv_types::compare_internal;
 
 use crate::{Error, Result};
@@ -33,6 +39,9 @@ pub(crate) struct Version {
     keyspaces: BTreeMap<u32, Levels>,
     flushed_sequence: u64,
     next_file: u64,
+    /// The keyspaces added and not dropped, by id; the default keyspace is not listed.
+    names: BTreeMap<u32, String>,
+    next_keyspace: u32,
 }
 
 /// The tables of one keyspace, per level.
@@ -52,6 +61,18 @@ impl Version {
     /// The next file number to hand out.
     pub(crate) fn next_file(&self) -> u64 {
         self.next_file
+    }
+
+    /// The keyspaces added and not dropped, by id, with their names; not the default keyspace.
+    #[cfg(test)]
+    pub(crate) fn keyspaces(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.names.iter().map(|(id, name)| (*id, name.as_str()))
+    }
+
+    /// The next keyspace id to hand out.
+    #[cfg(test)]
+    pub(crate) fn next_keyspace(&self) -> u32 {
+        self.next_keyspace
     }
 
     /// The tables of `level` in `keyspace`: newest first in level 0, by key elsewhere.
@@ -75,6 +96,16 @@ impl Version {
                 .map(|table| TableMeta::clone(table))
                 .collect(),
             removed: Vec::new(),
+            added_keyspaces: self
+                .names
+                .iter()
+                .map(|(id, name)| KeyspaceRecord {
+                    id: *id,
+                    name: name.clone(),
+                })
+                .collect(),
+            dropped_keyspaces: Vec::new(),
+            next_keyspace: Some(self.next_keyspace),
         }
     }
 
@@ -97,6 +128,15 @@ impl Version {
             }
             next.next_file = file;
         }
+        if let Some(id) = edit.next_keyspace {
+            if id < next.next_keyspace {
+                return Err(corrupt("the next keyspace id goes back"));
+            }
+            next.next_keyspace = id;
+        }
+        for keyspace in &edit.added_keyspaces {
+            next.add_keyspace(keyspace)?;
+        }
         for removed in &edit.removed {
             let tables = next
                 .keyspaces
@@ -112,7 +152,42 @@ impl Version {
         for added in &edit.added {
             next.add(added)?;
         }
+        for id in &edit.dropped_keyspaces {
+            next.drop_keyspace(*id)?;
+        }
         Ok(next)
+    }
+
+    /// Adds a keyspace, checking its id is fresh and its name free.
+    fn add_keyspace(&mut self, keyspace: &KeyspaceRecord) -> Result<()> {
+        if keyspace.id == 0 || keyspace.id >= self.next_keyspace {
+            return Err(corrupt(
+                "a keyspace id is the default's or not handed out yet",
+            ));
+        }
+        if self.names.contains_key(&keyspace.id) {
+            return Err(corrupt("a keyspace is added twice"));
+        }
+        if self.names.values().any(|name| *name == keyspace.name) {
+            return Err(corrupt("a keyspace name is taken"));
+        }
+        self.names.insert(keyspace.id, keyspace.name.clone());
+        Ok(())
+    }
+
+    /// Drops a keyspace whose tables the same edit removed.
+    fn drop_keyspace(&mut self, id: u32) -> Result<()> {
+        if id == 0 || self.names.remove(&id).is_none() {
+            return Err(corrupt("a dropped keyspace is not one the version holds"));
+        }
+        let holds_tables = self
+            .keyspaces
+            .remove(&id)
+            .is_some_and(|levels| levels.iter().any(|tables| !tables.is_empty()));
+        if holds_tables {
+            return Err(corrupt("a dropped keyspace keeps tables"));
+        }
+        Ok(())
     }
 
     /// Adds `table` to its level, keeping the level's order and checking its invariants.
@@ -124,6 +199,9 @@ impl Version {
         }
         if self.contains(table.id) {
             return Err(corrupt("a table is added twice"));
+        }
+        if table.keyspace != 0 && !self.names.contains_key(&table.keyspace) {
+            return Err(corrupt("a table's keyspace is not in the version"));
         }
         let level = usize::from(table.level);
         let tables = self
