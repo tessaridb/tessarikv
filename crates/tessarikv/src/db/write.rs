@@ -6,8 +6,8 @@ use tessarikv_sync::{Claim, Sequencer};
 use tessarikv_types::SequenceNumber;
 use tokio::sync::Notify;
 
-use super::Db;
 use super::recover::SEQUENCE_BYTES;
+use super::{Check, Db};
 use crate::log::{Frame, Record, Wait};
 use crate::memtable::Memtable;
 use crate::{Durability, Error, Result, WriteOptions};
@@ -43,14 +43,15 @@ impl Db {
         self.commit_batch(batch, options, None).await
     }
 
-    /// As [`Db::write`]; with a `snapshot`, the batch is a transaction's and is refused with
-    /// [`Error::Conflict`] when a write committed after that snapshot touched one of its keys
-    /// (see `commits`). A refused batch is not applied and reaches the log only as a skip.
+    /// As [`Db::write`]; with a `check`, the batch is a transaction's and is refused with
+    /// [`Error::Conflict`] when a write committed after its snapshot touched one of its keys or,
+    /// for a serializable one, something it read (see `commits`). A refused batch is not applied
+    /// and reaches the log only as a skip.
     pub(crate) async fn commit_batch(
         &self,
         batch: &WriteBatch,
         options: &WriteOptions,
-        snapshot: Option<u64>,
+        check: Option<Check<'_>>,
     ) -> Result<SequenceNumber> {
         for entry in batch {
             Self::check_keyspace(entry.keyspace)?;
@@ -62,7 +63,7 @@ impl Db {
             let claim = self.claim(batch)?;
             let accepted = self
                 .commits
-                .publish(&self.sequencer, &claim, batch, snapshot);
+                .publish(&self.sequencer, &claim, batch, check.as_ref());
             let claim = Completion::new(&self.sequencer, None, claim);
             if !accepted {
                 return claim.complete(Err(Error::Conflict));
@@ -95,7 +96,7 @@ impl Db {
         // longer than its synchronous publication.
         let accepted = self
             .commits
-            .publish(&self.sequencer, &claim, batch, snapshot);
+            .publish(&self.sequencer, &claim, batch, check.as_ref());
         let claim = Completion::new(&self.sequencer, completed, claim);
         let (first, last) = (claim.first(), claim.last());
         let logged = logged.filter(|_| accepted);

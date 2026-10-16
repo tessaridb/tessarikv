@@ -51,6 +51,7 @@ impl Db {
         let limiter =
             RateLimiter::new(options.compaction_bytes_per_second(), COMPACTION_BURST).map(Arc::new);
         let delayed_writes = options.delayed_write_bytes_per_second();
+        let serializable = options.serializable_transactions();
         let keyspace = options.default_keyspace().clone();
         let cache = Arc::new(BlockCache::new(
             options.block_cache_bytes(),
@@ -140,7 +141,7 @@ impl Db {
         });
         Ok(Self {
             sequencer,
-            commits: Commits::new(),
+            commits: Commits::new(serializable),
             view,
             snapshots,
             #[cfg(test)]

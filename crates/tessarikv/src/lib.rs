@@ -25,8 +25,9 @@ mod version;
 pub use db::{Db, DbIterator, ScanPage, Snapshot};
 pub use error::{Error, ErrorCategory, Result};
 pub use options::{
-    CompactionStyle, DbOptions, DbOptionsBuilder, Durability, KeyspaceOptions,
-    KeyspaceOptionsBuilder, ReadOptions, StorageMode, WalRecovery, WriteOptions,
+    CompactionStyle, DbOptions, DbOptionsBuilder, Durability, Isolation, KeyspaceOptions,
+    KeyspaceOptionsBuilder, ReadOptions, StorageMode, TransactionOptions, WalRecovery,
+    WriteOptions,
 };
 pub use storage::{MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile};
 pub use tessarikv_format::{BatchEntry, Compression, WriteBatch};

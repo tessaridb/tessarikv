@@ -45,6 +45,7 @@ pub struct DbOptions {
     background_threads: u32,
     compaction_bytes_per_second: u64,
     delayed_write_bytes_per_second: u64,
+    serializable_transactions: bool,
     default_keyspace: KeyspaceOptions,
 }
 
@@ -60,6 +61,7 @@ impl Default for DbOptions {
             background_threads: limits::DEFAULT_BACKGROUND_THREADS,
             compaction_bytes_per_second: 0,
             delayed_write_bytes_per_second: limits::DEFAULT_DELAYED_WRITE_BYTES_PER_SECOND,
+            serializable_transactions: false,
             default_keyspace: KeyspaceOptions::default(),
         }
     }
@@ -142,6 +144,15 @@ impl DbOptions {
         self.compaction_bytes_per_second
     }
 
+    /// Whether transactions may run serializable ([`crate::Isolation::Serializable`]); default
+    /// `false`. When set, every write also records the prefixes of the keys it writes, so a
+    /// serializable transaction can tell whether a range it read was written after it began; that
+    /// costs every write a few more atomic updates.
+    #[must_use]
+    pub const fn serializable_transactions(&self) -> bool {
+        self.serializable_transactions
+    }
+
     /// The rate writes go at, in bytes per second, while a keyspace's level 0 is past its
     /// slowdown trigger: each write waits for its own bytes, a millisecond's worth at once.
     #[must_use]
@@ -173,6 +184,12 @@ impl DbOptionsBuilder {
     /// Sets [`DbOptions::storage`].
     pub const fn storage(mut self, value: StorageMode) -> Self {
         self.options.storage = value;
+        self
+    }
+
+    /// Sets [`DbOptions::serializable_transactions`].
+    pub const fn serializable_transactions(mut self, value: bool) -> Self {
+        self.options.serializable_transactions = value;
         self
     }
 

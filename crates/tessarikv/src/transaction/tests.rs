@@ -44,7 +44,7 @@ async fn a_transaction_reads_its_own_writes_and_nobody_else_does_until_it_commit
 async fn a_transaction_reads_the_database_as_it_was_when_it_began() {
     let db = memory().await;
     put(&db, b"k", b"old").await;
-    let txn = db.begin().unwrap();
+    let mut txn = db.begin().unwrap();
     put(&db, b"k", b"new").await;
     let options = ReadOptions::default();
     assert_eq!(
@@ -117,7 +117,7 @@ fn key(k: u8) -> Vec<u8> {
 /// Every entry of `[start, end)` the transaction sees, read in pages of at most `limit`, each
 /// starting where the previous one said the next begins.
 async fn scan_all(
-    txn: &super::Transaction<'_>,
+    txn: &mut super::Transaction<'_>,
     start: &[u8],
     end: &[u8],
     limit: usize,
@@ -189,7 +189,7 @@ proptest! {
                     .range(key(low)..key(high))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                assert_eq!(scan_all(&txn, &key(low), &key(high), limit).await, expected, "scan after {step:?}");
+                assert_eq!(scan_all(&mut txn, &key(low), &key(high), limit).await, expected, "scan after {step:?}");
             }
             txn.commit(&WriteOptions::default()).await.unwrap();
             for k in 0_u8..8 {

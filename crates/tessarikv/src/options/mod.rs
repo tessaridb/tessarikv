@@ -12,6 +12,7 @@ mod keyspace;
 mod keyspace_bounds;
 mod keyspace_builder;
 mod read;
+mod transaction;
 mod write;
 
 #[cfg(test)]
@@ -26,4 +27,5 @@ pub use db::{DbOptions, DbOptionsBuilder, StorageMode, WalRecovery};
 pub use keyspace::KeyspaceOptions;
 pub use keyspace_builder::KeyspaceOptionsBuilder;
 pub use read::ReadOptions;
+pub use transaction::{Isolation, TransactionOptions};
 pub use write::{Durability, WriteOptions};

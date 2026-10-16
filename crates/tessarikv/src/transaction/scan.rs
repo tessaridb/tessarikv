@@ -19,7 +19,7 @@ impl Transaction<'_> {
     ///
     /// As [`Db::scan`].
     pub async fn scan(
-        &self,
+        &mut self,
         keyspace: KeyspaceId,
         start: &[u8],
         end: Option<&[u8]>,
@@ -27,6 +27,25 @@ impl Transaction<'_> {
         options: &ReadOptions,
     ) -> Result<ScanPage> {
         Db::check_keyspace(keyspace)?;
+        let page = self
+            .merged_page(keyspace, start, end, limit, options)
+            .await?;
+        if let Some(reads) = &mut self.reads {
+            // The range this page answered for: up to where the next page starts.
+            reads.range(keyspace, start, page.next.as_deref().or(end));
+        }
+        Ok(page)
+    }
+
+    /// The page [`Transaction::scan`] returns.
+    async fn merged_page(
+        &self,
+        keyspace: KeyspaceId,
+        start: &[u8],
+        end: Option<&[u8]>,
+        limit: usize,
+        options: &ReadOptions,
+    ) -> Result<ScanPage> {
         let mut page = ScanPage::default();
         let mut cursor = start.to_vec();
         loop {

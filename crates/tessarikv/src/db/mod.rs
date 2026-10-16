@@ -21,6 +21,7 @@ mod installer;
 mod iterator;
 mod merge;
 mod open;
+mod prefixes;
 mod rate_limiter;
 mod read;
 mod recover;
@@ -89,6 +90,7 @@ use crate::storage::{OsStorage, Storage, StorageLock};
 use crate::{DbOptions, Error, Result, StorageMode};
 use view::View;
 
+pub(crate) use commits::{Check, Reads};
 pub use iterator::DbIterator;
 pub use read::ScanPage;
 pub use snapshot::Snapshot;
@@ -154,7 +156,7 @@ impl Db {
         match options.storage() {
             StorageMode::Memory => Ok(Self {
                 sequencer: Arc::new(Sequencer::new(0, COMMIT_RING_SLOTS)),
-                commits: commits::Commits::new(),
+                commits: commits::Commits::new(options.serializable_transactions()),
                 view: Arc::new(ArcSwap::from_pointee(View::new(
                     0,
                     Memtable::sized(options.default_keyspace().memtable_bytes()),
@@ -250,5 +252,10 @@ impl Db {
     /// The snapshot a read takes: the highest sequence covering only completed batches.
     fn visible_sequence(&self) -> Result<SequenceNumber> {
         SequenceNumber::new(self.sequencer.visible()).map_err(|_| Error::SequenceExhausted)
+    }
+
+    /// Whether serializable transactions can run on this database.
+    pub(crate) fn checks_reads(&self) -> bool {
+        self.commits.serializable()
     }
 }

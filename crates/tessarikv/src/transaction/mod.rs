@@ -14,9 +14,13 @@
 //! commits, with no lock and no single committer: it waits only for commits that claimed their
 //! sequence numbers earlier to publish their keys, which they do before anything that can wait.
 //!
-//! What it does not guarantee: two transactions that each read what the other writes, and write
-//! disjoint keys, both commit (write skew), so a constraint spanning keys needs the keys written,
-//! not only read. Keys are compared by hash, so a commit is occasionally refused for a key it
+//! What snapshot isolation does not guarantee: two transactions that each read what the other
+//! writes, and write disjoint keys, both commit (write skew). A transaction begun with
+//! [`Isolation::Serializable`] (on a database opened with
+//! [`crate::DbOptions::serializable_transactions`]) is also refused when a key it read, or a key
+//! in a range it scanned, was written after it began; committed serializable transactions behave
+//! as if they ran one at a time, in commit order, and one that writes nothing is never refused.
+//! Snapshot transactions and plain writes are not checked for what they read. Keys are compared by hash, so a commit is occasionally refused for a key it
 //! did not share; and range deletes are checked conservatively: a transaction is refused when a
 //! range delete committed after it began, and its own range delete is refused when anything
 //! committed after it began.
@@ -27,12 +31,17 @@ mod write_set;
 #[cfg(test)]
 mod conflict_tests;
 #[cfg(test)]
+mod serializable_tests;
+#[cfg(test)]
 mod tests;
 
 use tessarikv_constants::{MAX_KEY_BYTES, MAX_VALUE_BYTES};
 use tessarikv_types::{KeyspaceId, SequenceNumber};
 
-use crate::{Db, Error, ReadOptions, Result, Snapshot, WriteOptions};
+use crate::db::{Check, Reads};
+use crate::{
+    Db, Error, Isolation, ReadOptions, Result, Snapshot, TransactionOptions, WriteOptions,
+};
 use write_set::{Own, WriteSet};
 
 /// A point a transaction can roll back to: the writes made before it.
@@ -61,19 +70,42 @@ pub struct Transaction<'db> {
     db: &'db Db,
     snapshot: Snapshot<'db>,
     writes: WriteSet,
+    /// What it read from its snapshot, when it is serializable.
+    reads: Option<Reads>,
 }
 
 impl Db {
-    /// Begins a transaction at the latest visible sequence.
+    /// Begins a transaction at the latest visible sequence, with [`Isolation::Snapshot`].
     ///
     /// # Errors
     ///
     /// As [`Db::snapshot`].
     pub fn begin(&self) -> Result<Transaction<'_>> {
+        self.begin_with(&TransactionOptions::default())
+    }
+
+    /// Begins a transaction at the latest visible sequence, as `options` ask.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] for [`Isolation::Serializable`] on a database opened without
+    /// [`crate::DbOptions::serializable_transactions`]; otherwise as [`Db::snapshot`].
+    pub fn begin_with(&self, options: &TransactionOptions) -> Result<Transaction<'_>> {
+        let reads = match options.isolation {
+            Isolation::Snapshot => None,
+            Isolation::Serializable if self.checks_reads() => Some(Reads::default()),
+            Isolation::Serializable => {
+                return Err(Error::InvalidArgument {
+                    what: "isolation",
+                    reason: "serializable transactions are not enabled for this database",
+                });
+            }
+        };
         Ok(Transaction {
             db: self,
             snapshot: self.snapshot()?,
             writes: WriteSet::default(),
+            reads,
         })
     }
 }
@@ -91,7 +123,7 @@ impl Transaction<'_> {
     ///
     /// As [`Db::get`].
     pub async fn get(
-        &self,
+        &mut self,
         keyspace: KeyspaceId,
         key: &[u8],
         options: &ReadOptions,
@@ -100,7 +132,12 @@ impl Transaction<'_> {
         match self.writes.lookup(keyspace, key) {
             Own::Value(value) => Ok(Some(value.to_vec())),
             Own::Deleted => Ok(None),
-            Own::Untouched => self.snapshot.get(keyspace, key, options).await,
+            Own::Untouched => {
+                if let Some(reads) = &mut self.reads {
+                    reads.key(keyspace, key);
+                }
+                self.snapshot.get(keyspace, key, options).await
+            }
         }
     }
 
@@ -173,9 +210,11 @@ impl Transaction<'_> {
     /// be run again), otherwise as [`Db::write`].
     pub async fn commit(self, options: &WriteOptions) -> Result<SequenceNumber> {
         let batch = self.writes.batch()?;
-        self.db
-            .commit_batch(&batch, options, Some(self.snapshot.sequence().get()))
-            .await
+        let check = Check {
+            snapshot: self.snapshot.sequence().get(),
+            reads: self.reads.as_ref(),
+        };
+        self.db.commit_batch(&batch, options, Some(check)).await
     }
 }
 

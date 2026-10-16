@@ -50,6 +50,9 @@ All notable changes to this project are documented here. The format follows
 - `Db::begin`: a `Transaction` reads at the snapshot it began at and sees its own puts, deletes and range deletes,
   rolls back to a `Savepoint`, and commits everything as one atomic batch; dropping it writes nothing. New errors
   `Error::TooLarge` and `Error::InvalidArgument`.
+- Serializable transactions: `DbOptions::serializable_transactions` (off by default) lets `Db::begin_with` run a
+  transaction with `Isolation::Serializable`; its commit is also refused when a key it read or a range it scanned
+  was written after it began. `Transaction::get` and `scan` now take `&mut self`.
 - `Transaction::scan`: pages of a range at the transaction's snapshot with its own puts, deletes and range deletes
   applied, paged like `Db::scan`.
 - Snapshot isolation: `Transaction::commit` is refused with `Error::Conflict` (retryable) when a write committed after
