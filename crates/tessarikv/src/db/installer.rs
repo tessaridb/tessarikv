@@ -36,6 +36,7 @@ use super::block_cache::BlockCache;
 use super::compaction::{self, Compactions};
 use super::flush_job::{FileNumbers, Job, table_options};
 use super::flush_signals::FlushSignals;
+use super::rate_limiter::RateLimiter;
 use super::view::{TableFile, View};
 use crate::log::LogRelease;
 use crate::memtable::Memtable;
@@ -59,6 +60,8 @@ pub(super) struct Flusher {
     pub(super) snapshots: Arc<SnapshotRegistry>,
     /// Table file numbers, shared by flushes and compactions.
     pub(super) numbers: Arc<FileNumbers>,
+    /// Paces compaction output, when the options ask for it.
+    pub(super) limiter: Option<Arc<RateLimiter>>,
 }
 
 /// A frozen table waiting for its flush.

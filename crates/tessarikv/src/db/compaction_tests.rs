@@ -91,3 +91,46 @@ async fn writes_compact_below_level_zero_and_every_value_reads_back() {
     }
     db.close().await.expect("closed");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paced_compactions_charge_the_limiter_and_unpaced_ones_have_none() {
+    let paced = options()
+        .to_builder()
+        .compaction_bytes_per_second(1 << 30)
+        .build()
+        .expect("valid");
+    let db = Db::open_with_storage(PATH, paced, Arc::new(FaultStorage::default()))
+        .await
+        .expect("opened");
+    let limiter = db.limiter.clone().expect("paced");
+    for index in 0..WRITES {
+        let mut batch = WriteBatch::new();
+        batch
+            .put(KeyspaceId::DEFAULT, &key(index % 300), &value(index))
+            .expect("small entry");
+        db.write(&batch, &WriteOptions::default())
+            .await
+            .expect("written");
+    }
+    until("tables below level 0", || {
+        db.view.load().files(0).any(|file| file.meta.level > 0)
+    })
+    .await;
+    let below: u64 = db
+        .view
+        .load()
+        .files(0)
+        .filter(|file| file.meta.level > 0)
+        .map(|file| file.meta.size)
+        .sum();
+    assert!(
+        limiter.charged() >= below,
+        "every table below level 0 was written by a compaction"
+    );
+    db.close().await.expect("closed");
+    let unpaced = Db::open_with_storage(PATH, options(), Arc::new(FaultStorage::default()))
+        .await
+        .expect("opened");
+    assert!(unpaced.limiter.is_none(), "zero paces nothing");
+    unpaced.close().await.expect("closed");
+}

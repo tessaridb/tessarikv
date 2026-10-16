@@ -140,6 +140,12 @@ pub const DEFAULT_BACKGROUND_THREADS: u32 = 4;
 /// Largest number of background threads the engine starts.
 pub const MAX_BACKGROUND_THREADS: u32 = 1024;
 
+/// Smallest compaction write rate; zero means compaction writes are not paced.
+pub const MIN_COMPACTION_BYTES_PER_SECOND: u64 = 1024 * 1024;
+
+/// Largest compaction write rate.
+pub const MAX_COMPACTION_BYTES_PER_SECOND: u64 = 1 << 40;
+
 /// The largest key the engine accepts (8 MiB).
 ///
 /// Keys are held in index blocks and compared on every seek; a key this large is already a

@@ -70,6 +70,8 @@ All notable changes to this project are documented here. The format follows
   Up to `KeyspaceOptions::max_compactions` (4) compactions run at once, none reading a table another
   reads or writing a range another writes in the same level, and each splits into up to
   `KeyspaceOptions::max_subcompactions` (4) key ranges merged on their own threads.
+  `DbOptions::compaction_bytes_per_second` paces compaction writes (a second's worth at once);
+  flushes are not paced.
 - Level-0 stalls: `KeyspaceOptions::level0_slowdown_trigger` (20) delays each write by a millisecond and
   `level0_stop_trigger` (36) holds writes until a compaction takes level 0 under it; `no_slowdown` writes are refused
   with `Error::WriteStalled` naming the trigger. Writers see `Error::CompactionFailed` after a failed compaction.

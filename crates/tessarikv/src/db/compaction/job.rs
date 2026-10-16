@@ -87,6 +87,7 @@ impl Job {
                 cache: Arc::clone(&flusher.cache),
                 keyspace: KEYSPACE,
                 level: u8::try_from(pick.output_level).map_err(|_| Error::CompactionFailed)?,
+                limiter: flusher.limiter.clone(),
             },
             inputs,
             deeper: levels

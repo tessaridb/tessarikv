@@ -44,11 +44,12 @@ fn db_defaults_are_the_documented_constants() {
         options.background_threads(),
         limits::DEFAULT_BACKGROUND_THREADS
     );
+    assert_eq!(options.compaction_bytes_per_second(), 0, "not paced");
 }
 
 #[test]
 fn db_bounds_accept_the_edges_and_refuse_past_them() {
-    let edges: [Edge<DbOptions>; 2] = [
+    let edges: [Edge<DbOptions>; 3] = [
         (
             "db.wal_segment_bytes",
             limits::MIN_WAL_SEGMENT_BYTES,
@@ -62,6 +63,16 @@ fn db_bounds_accept_the_edges_and_refuse_past_them() {
             |value| {
                 DbOptions::builder()
                     .background_threads(narrow(value))
+                    .build()
+            },
+        ),
+        (
+            "db.compaction_bytes_per_second",
+            limits::MIN_COMPACTION_BYTES_PER_SECOND,
+            limits::MAX_COMPACTION_BYTES_PER_SECOND,
+            |value| {
+                DbOptions::builder()
+                    .compaction_bytes_per_second(value)
                     .build()
             },
         ),

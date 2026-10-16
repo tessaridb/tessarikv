@@ -20,6 +20,7 @@ mod installer;
 mod iterator;
 mod merge;
 mod open;
+mod rate_limiter;
 mod read;
 mod recover;
 mod snapshot;
@@ -49,6 +50,8 @@ mod level0_stall_tests;
 mod level_tests;
 #[cfg(test)]
 mod range_delete_tests;
+#[cfg(test)]
+mod rate_limiter_tests;
 #[cfg(test)]
 mod read_tests;
 #[cfg(test)]
@@ -110,6 +113,9 @@ pub struct Db {
     /// Set while a switch runs, so switches never overlap.
     #[cfg(test)]
     switching: std::sync::atomic::AtomicBool,
+    /// The compaction pacer the installer was given, for tests to read.
+    #[cfg(test)]
+    limiter: Option<Arc<rate_limiter::RateLimiter>>,
     /// The write-ahead log; none for a database in memory.
     log: Option<LogWriter>,
     /// The flush installer; none for a database in memory.
@@ -143,6 +149,8 @@ impl Db {
                 snapshots: Arc::new(SnapshotRegistry::new()),
                 #[cfg(test)]
                 switching: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                limiter: None,
                 log: None,
                 installer: None,
                 _lock: None,

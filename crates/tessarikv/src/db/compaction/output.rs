@@ -14,6 +14,7 @@ use tessarikv_types::{Trailer, ValueKind, compare_internal, encode_internal};
 
 use crate::db::block_cache::BlockCache;
 use crate::db::flush_job::{FileNumbers, table_path};
+use crate::db::rate_limiter::RateLimiter;
 use crate::db::table_blocks::open_table;
 use crate::db::tables::{format_error, user_key};
 use crate::db::view::TableFile;
@@ -31,6 +32,8 @@ pub(crate) struct Destination {
     pub(crate) cache: Arc<BlockCache>,
     pub(crate) keyspace: u32,
     pub(crate) level: u8,
+    /// Paces the output files' writes, when compactions are paced.
+    pub(crate) limiter: Option<Arc<RateLimiter>>,
 }
 
 /// The tables written so far and the one being written.
@@ -138,6 +141,9 @@ impl<'a> Outputs<'a> {
             .map_err(|error| format_error(&error, None))?;
         let id = to.numbers.take()?;
         let path = table_path(&to.dir, id);
+        if let Some(limiter) = &to.limiter {
+            limiter.pace(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
         let mut file = to.storage.create(&path)?;
         file.append(&bytes)?;
         file.sync()?;

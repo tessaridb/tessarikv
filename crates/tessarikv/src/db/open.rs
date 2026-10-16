@@ -11,6 +11,7 @@ use super::Db;
 use super::block_cache::BlockCache;
 use super::flush_job::{FileNumbers, table_path};
 use super::installer::{Flusher, Installer};
+use super::rate_limiter::RateLimiter;
 use super::recover::recover;
 use super::table_blocks::open_table;
 use super::view::{TableFile, View};
@@ -37,6 +38,7 @@ impl Db {
     ) -> Result<Self> {
         let recovery = options.wal_recovery();
         let segment_bytes = options.wal_segment_bytes();
+        let limiter = RateLimiter::new(options.compaction_bytes_per_second()).map(Arc::new);
         let keyspace = options.default_keyspace().clone();
         let cache = Arc::new(BlockCache::new(
             options.block_cache_bytes(),
@@ -97,6 +99,7 @@ impl Db {
             cache,
             snapshots: Arc::clone(&snapshots),
             numbers: Arc::new(FileNumbers::new(next_file)),
+            limiter: limiter.clone(),
         });
         Ok(Self {
             sequencer,
@@ -104,6 +107,8 @@ impl Db {
             snapshots,
             #[cfg(test)]
             switching: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            limiter,
             log: Some(log),
             installer: Some(installer),
             _lock: Some(lock),

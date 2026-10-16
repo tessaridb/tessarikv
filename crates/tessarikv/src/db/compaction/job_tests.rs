@@ -9,6 +9,7 @@ use super::output::Destination;
 use super::retain::Retention;
 use crate::db::block_cache::BlockCache;
 use crate::db::flush_job::FileNumbers;
+use crate::db::rate_limiter::RateLimiter;
 use crate::db::read_tests::file;
 use crate::db::tables::{self, user_key};
 use crate::db::view::TableFile;
@@ -33,6 +34,7 @@ fn destination() -> Destination {
         cache: Arc::new(BlockCache::new(0, 256)),
         keyspace: 0,
         level: 6,
+        limiter: None,
     }
 }
 
@@ -216,4 +218,28 @@ fn a_compaction_split_into_parts_writes_what_one_part_writes() {
     // and 2), 30-49 three (tables 0-1, 2 and 3), 50-69 one.
     assert_eq!(entries.len(), 20 + 20 + 60 + 20, "every kept version");
     assert_eq!(written(&split), (entries, deletes));
+}
+
+#[test]
+fn a_paced_compaction_charges_its_limiter_every_byte_it_writes() {
+    let big = vec![3_u8; 600];
+    let entries: Vec<Entry<'_>> = (1..=30)
+        .map(|sequence| (&b"k"[..], sequence, Some(&big[..])))
+        .collect();
+    let limiter = Arc::new(RateLimiter::new(1 << 40).unwrap());
+    let outputs = Job {
+        to: Destination {
+            limiter: Some(Arc::clone(&limiter)),
+            ..destination()
+        },
+        inputs: vec![input(&entries, 1)],
+        deeper: Vec::new(),
+        retention: Retention::new(31, &(1..=30).collect::<Vec<_>>()),
+        parts: 1,
+    }
+    .run()
+    .unwrap();
+    let written: u64 = outputs.iter().map(|output| output.meta.size).sum();
+    assert!(written > 0);
+    assert_eq!(limiter.charged(), written);
 }

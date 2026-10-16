@@ -43,6 +43,7 @@ pub struct DbOptions {
     wal_recovery: WalRecovery,
     block_cache_bytes: u64,
     background_threads: u32,
+    compaction_bytes_per_second: u64,
     default_keyspace: KeyspaceOptions,
 }
 
@@ -56,6 +57,7 @@ impl Default for DbOptions {
             wal_recovery: WalRecovery::PointInTime,
             block_cache_bytes: limits::DEFAULT_BLOCK_CACHE_BYTES,
             background_threads: limits::DEFAULT_BACKGROUND_THREADS,
+            compaction_bytes_per_second: 0,
             default_keyspace: KeyspaceOptions::default(),
         }
     }
@@ -129,6 +131,14 @@ impl DbOptions {
     pub const fn background_threads(&self) -> u32 {
         self.background_threads
     }
+
+    /// The rate compactions write their output tables at, in bytes per second, with up to a
+    /// second's worth let through at once; zero (the default) does not pace them. Flushes are
+    /// never paced: they free the in-memory tables writes wait for.
+    #[must_use]
+    pub const fn compaction_bytes_per_second(&self) -> u64 {
+        self.compaction_bytes_per_second
+    }
 }
 
 /// Builds a validated [`DbOptions`].
@@ -181,6 +191,12 @@ impl DbOptionsBuilder {
         self
     }
 
+    /// Sets [`DbOptions::compaction_bytes_per_second`].
+    pub const fn compaction_bytes_per_second(mut self, value: u64) -> Self {
+        self.options.compaction_bytes_per_second = value;
+        self
+    }
+
     /// Sets [`DbOptions::default_keyspace`].
     pub fn default_keyspace(mut self, value: KeyspaceOptions) -> Self {
         self.options.default_keyspace = value;
@@ -213,6 +229,14 @@ impl DbOptionsBuilder {
             1,
             u64::from(limits::MAX_BACKGROUND_THREADS),
         )?;
+        if options.compaction_bytes_per_second != 0 {
+            check_range(
+                "db.compaction_bytes_per_second",
+                options.compaction_bytes_per_second,
+                limits::MIN_COMPACTION_BYTES_PER_SECOND,
+                limits::MAX_COMPACTION_BYTES_PER_SECOND,
+            )?;
+        }
         Ok(options)
     }
 }
