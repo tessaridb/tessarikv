@@ -63,6 +63,19 @@ impl Db {
             }
         }
     }
+
+    /// The sequence of the oldest snapshot still held, by a [`Snapshot`] or a
+    /// [`crate::Transaction`]; `None` when none is. Compaction keeps every version a held
+    /// snapshot can see, so one long-lived holder keeps old versions on disk for as long as it
+    /// lives: this is the number to watch. It walks every registered snapshot; call it as a
+    /// metric, not per request.
+    pub fn oldest_snapshot(&self) -> Option<SequenceNumber> {
+        let horizon = self.snapshots.horizon(self.sequencer.visible());
+        horizon
+            .snapshots()
+            .first()
+            .and_then(|&sequence| SequenceNumber::new(sequence).ok())
+    }
 }
 
 impl Snapshot<'_> {

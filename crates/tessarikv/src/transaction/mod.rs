@@ -5,7 +5,10 @@
 //! itself, which it reads as it wrote them. Its puts,
 //! deletes and range deletes stay inside it until [`Transaction::commit`] writes them as one
 //! atomic batch; dropping it without committing writes nothing. A savepoint marks a point the
-//! transaction can return to, forgetting what it wrote since.
+//! transaction can return to, forgetting what it wrote since. A transaction that only reads needs
+//! none of this: a [`crate::Snapshot`] is the isolated read-only transaction, and it is never
+//! refused. Every open transaction or snapshot holds back version cleanup from its sequence on
+//! ([`Db::oldest_snapshot`] reports the oldest), so long-lived ones cost disk space.
 //!
 //! Isolation is snapshot isolation, first committer wins: the commit is refused with
 //! [`Error::Conflict`] when a write committed after the transaction began, by another

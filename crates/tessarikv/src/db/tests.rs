@@ -221,3 +221,22 @@ async fn a_scan_sees_each_batch_whole() {
     writer.await.unwrap();
     let _ = SequenceNumber::MAX;
 }
+
+/// The oldest snapshot still held is what keeps old versions from compaction: it follows the
+/// holders as they come and go, transactions included.
+#[tokio::test]
+async fn the_oldest_held_snapshot_follows_its_holders() {
+    let db = Db::open("horizon", DbOptions::in_memory()).await.unwrap();
+    assert_eq!(db.oldest_snapshot(), None);
+    let mut batch = WriteBatch::new();
+    batch.put(KeyspaceId::DEFAULT, b"k", b"1").unwrap();
+    db.write(&batch, &WriteOptions::default()).await.unwrap();
+    let first = db.snapshot().unwrap();
+    db.write(&batch, &WriteOptions::default()).await.unwrap();
+    let txn = db.begin().unwrap();
+    assert_eq!(db.oldest_snapshot(), Some(first.sequence()));
+    drop(first);
+    assert_eq!(db.oldest_snapshot(), Some(txn.sequence()));
+    drop(txn);
+    assert_eq!(db.oldest_snapshot(), None);
+}
