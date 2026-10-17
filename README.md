@@ -21,8 +21,7 @@ It has no C or C++ dependency, exposes an async API on tokio, and runs on macOS,
 
 ## Status
 
-Early development. Version 0.0.1 is the first release on crates.io; the API and the on-disk format may change
-in any release before 1.0.
+Early development (0.0.x); the API and the on-disk format may change in any release before 1.0.
 
 | Part | State |
 |---|---|

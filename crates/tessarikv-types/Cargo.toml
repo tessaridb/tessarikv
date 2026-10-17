@@ -1,7 +1,7 @@
 [package]
 name = "tessarikv-types"
 description = "Shared value types of TessariKV: sequence numbers, keyspaces, internal keys"
-version.workspace = true
+version = "0.0.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

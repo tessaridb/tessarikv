@@ -27,7 +27,7 @@ use super::view::View;
 use crate::log::{LogExtras, LogWriter};
 use crate::sealing::Sealing;
 use crate::statistics::Statistics;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageLock};
 use crate::version::Version;
 use crate::version::manifest::{CURRENT, ManifestStore};
 use crate::{DbOptions, Error, Result};
@@ -157,6 +157,7 @@ impl Db {
             })??
         };
         let (lock, view, recovered, manifest, last_sequence, replayed, log_seal) = opened;
+        let lock: Arc<dyn StorageLock> = Arc::from(lock);
         let next_sequence = last_sequence
             .checked_add(1)
             .ok_or(Error::SequenceExhausted)?;
@@ -170,6 +171,7 @@ impl Db {
             LogExtras {
                 seal: log_seal,
                 statistics: statistics.clone(),
+                lock: Some(Arc::clone(&lock)),
             },
         )?;
         if replayed {
@@ -197,6 +199,7 @@ impl Db {
             delayed_writes,
             total_memtable_bytes,
             switched: last_sequence,
+            _lock: Arc::clone(&lock),
         });
         Ok(Self {
             sequencer,

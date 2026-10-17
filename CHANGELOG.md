@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-17
+
+### Fixed
+
+- A database dropped without `close` kept its directory locked until its running flush and
+  compaction finished; before, another database could open the directory while they still wrote it.
+
 ## [0.0.1] - 2026-10-17
 
 ### Added
@@ -173,5 +180,6 @@ All notable changes to this project are documented here. The format follows
   `Db::keyspace` and `Db::keyspaces` look them up. Each keyspace flushes, compacts and paces writes by its own options; a batch spanning keyspaces is
   recovered whole or not at all.
 
-[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/tessaridb/tessarikv/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/tessaridb/tessarikv/releases/tag/v0.0.1
