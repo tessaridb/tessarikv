@@ -68,6 +68,8 @@ mod crash_step_tests;
 #[cfg(test)]
 mod destroy_tests;
 #[cfg(test)]
+mod drop_tests;
+#[cfg(test)]
 mod encrypted_files_tests;
 #[cfg(test)]
 mod encrypted_log_tests;
@@ -201,8 +203,9 @@ pub struct Db {
     installer: Option<installer::Installer>,
     /// What the engine counts, when [`DbOptions::statistics`] is set.
     statistics: Option<Arc<Statistics>>,
-    /// Held for as long as the database is open.
-    _lock: Option<Box<dyn StorageLock>>,
+    /// The directory lock, shared with the background tasks: it is released when the last of
+    /// them ends, so no other database opens the directory while this one still writes there.
+    _lock: Option<Arc<dyn StorageLock>>,
 }
 
 impl Db {

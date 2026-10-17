@@ -42,7 +42,7 @@ use super::flushes::{Flushed, wait};
 use super::rate_limiter::RateLimiter;
 use super::view::View;
 use crate::log::LogRelease;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageLock};
 use crate::version::manifest::ManifestStore;
 use crate::{Error, KeyspaceOptions, Result};
 
@@ -72,6 +72,9 @@ pub(super) struct Flusher {
     pub(super) total_memtable_bytes: u64,
     /// Every sequence up to this one is in a frozen table or on table files.
     pub(super) switched: u64,
+    /// The directory lock, held until the task ends: a database dropped without closing lets
+    /// its running flush and compaction finish, and they still write the directory.
+    pub(super) _lock: Arc<dyn StorageLock>,
 }
 
 /// The installer task and the handles that steer it.

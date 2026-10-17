@@ -44,7 +44,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::statistics::Statistics;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageLock};
 use crate::{Error, Result};
 
 pub(crate) use frame::Frame;
@@ -133,6 +133,9 @@ pub(crate) struct LogWriter {
 pub(crate) struct LogExtras {
     pub(crate) seal: Option<(SealHeader, Arc<FileSealer>)>,
     pub(crate) statistics: Option<Arc<Statistics>>,
+    /// The directory lock, held until the writer task ends, which is after the handle is
+    /// dropped: the frames already queued are still written.
+    pub(crate) lock: Option<Arc<dyn StorageLock>>,
 }
 
 impl LogWriter {
@@ -155,7 +158,11 @@ impl LogWriter {
         finished: Vec<FinishedSegment>,
         extras: LogExtras,
     ) -> Result<Self> {
-        let LogExtras { seal, statistics } = extras;
+        let LogExtras {
+            seal,
+            statistics,
+            lock,
+        } = extras;
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Unsupported {
             what: "a database outside a tokio runtime",
         })?;
@@ -173,7 +180,10 @@ impl LogWriter {
         )
         .with_seal_header(seal.as_ref().map(|(header, _)| header.encode()))
         .with_statistics(statistics);
-        let task = runtime.spawn(writer.run(receiver, publisher));
+        let task = runtime.spawn(async move {
+            let _held = lock;
+            writer.run(receiver, publisher).await
+        });
         Ok(Self {
             entries,
             progress,
