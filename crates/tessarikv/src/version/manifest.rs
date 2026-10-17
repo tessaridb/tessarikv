@@ -19,12 +19,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tessarikv_constants::STORE_FORMAT;
 use tessarikv_format::{
     FRAME_HEADER_BYTES, FileKind, FileSealer, FrameReader, LogRead, ManifestEdit,
     SEAL_HEADER_BYTES, encode_frame, frame_bytes,
 };
 
 use super::Version;
+use super::store_format::check_store_format;
 use crate::sealing::Sealing;
 use crate::storage::{Storage, WritableFile, read_all};
 use crate::{Error, Result};
@@ -168,6 +170,7 @@ impl ManifestStore {
         let mut frames = FrameReader::new(bytes.get(start..).unwrap_or_default(), number);
         let mut version = Version::empty();
         let mut at = u64::try_from(start).unwrap_or(u64::MAX);
+        let mut first = true;
         while let LogRead::Frame(payload) = frames.next_frame() {
             let opened = match &sealer {
                 Some(sealer) => Some(sealer.open(at, payload).map_err(|_| Error::Corruption {
@@ -181,6 +184,9 @@ impl ManifestStore {
             let frame = payload.len().saturating_add(FRAME_HEADER_BYTES);
             at = at.saturating_add(u64::try_from(frame).unwrap_or(u64::MAX));
             let payload = opened.as_deref().unwrap_or(payload);
+            if std::mem::take(&mut first) {
+                check_store_format(payload, &path)?;
+            }
             let edit = ManifestEdit::decode(payload).map_err(|error| Error::Corruption {
                 what: "manifest",
                 path: Some(path.clone()),
@@ -196,6 +202,16 @@ impl ManifestStore {
                 },
                 other => other,
             })?;
+        }
+        if first {
+            // Every manifest is written with its first edit before it is made current, so one
+            // with none is damaged, never a store with nothing in it.
+            return Err(Error::Corruption {
+                what: "manifest",
+                path: Some(path),
+                offset: None,
+                detail: "the manifest holds no edit".to_owned(),
+            });
         }
         Ok(Some((version, number)))
     }
@@ -222,7 +238,9 @@ fn start(
         }
         None => None,
     };
-    append_edit(file.as_mut(), number, &version.as_edit(), sealer.as_deref())?;
+    let mut snapshot = version.as_edit();
+    snapshot.store_format = Some(STORE_FORMAT);
+    append_edit(file.as_mut(), number, &snapshot, sealer.as_deref())?;
     let temporary = dir.join(CURRENT_TEMPORARY);
     let mut current = storage.create(&temporary)?;
     current.append(format!("{}\n", manifest_name(number)).as_bytes())?;

@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 
-use super::{KeyspaceRecord, ManifestEdit, TableMeta, TableRef};
+use super::{KeyspaceRecord, ManifestEdit, TableMeta, TableRef, peek_store_format};
 use crate::Error;
 
 fn table() -> impl Strategy<Value = TableMeta> {
@@ -52,9 +52,11 @@ fn edit() -> impl Strategy<Value = ManifestEdit> {
         proptest::collection::vec(table(), 0..4),
         proptest::collection::vec((any::<u32>(), 0_u8..7, any::<u64>()), 0..4),
         keyspaces(),
+        proptest::option::of(any::<u32>()),
     )
         .prop_map(
-            |(flushed_sequence, next_file, added, removed, keyspaces)| ManifestEdit {
+            |(flushed_sequence, next_file, added, removed, keyspaces, store_format)| ManifestEdit {
+                store_format,
                 flushed_sequence,
                 next_file,
                 added_keyspaces: keyspaces.0,
@@ -175,6 +177,118 @@ fn a_keyspace_name_that_is_not_text_is_refused() {
         ManifestEdit::decode(&bytes),
         Err(Error::Malformed {
             reason: "a keyspace name is not UTF-8",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn an_edit_is_written_as_version_two_with_the_store_format_first() {
+    let mut bytes = Vec::new();
+    ManifestEdit {
+        flushed_sequence: Some(5),
+        store_format: Some(300),
+        ..ManifestEdit::default()
+    }
+    .encode(&mut bytes);
+    // Golden: version 2, store format tag 8 = 300 as a varint, then flushed sequence tag 1 = 5.
+    assert_eq!(bytes, [2, 8, 0xAC, 0x02, 1, 5]);
+}
+
+#[test]
+fn a_version_one_edit_still_decodes() {
+    assert_eq!(
+        ManifestEdit::decode(&[1, 1, 5, 2, 9]).unwrap(),
+        ManifestEdit {
+            flushed_sequence: Some(5),
+            next_file: Some(9),
+            ..ManifestEdit::default()
+        }
+    );
+}
+
+#[test]
+fn a_version_one_edit_knows_no_store_format_field() {
+    assert!(matches!(
+        ManifestEdit::decode(&[1, 8, 1]),
+        Err(Error::Malformed {
+            reason: "unknown field tag",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn the_store_format_is_read_from_the_prefix_alone() {
+    assert_eq!(peek_store_format(&[1, 1, 5]).unwrap(), None);
+    assert_eq!(
+        peek_store_format(&[2, 8, 0xAC, 0x02, 1, 5]).unwrap(),
+        Some(300)
+    );
+    // A later edit version keeps the same prefix, so its store format still reads; what follows
+    // is not looked at.
+    assert_eq!(peek_store_format(&[7, 8, 4, 0xEE, 0xEE]).unwrap(), Some(4));
+}
+
+#[test]
+fn a_prefix_without_the_store_format_is_refused() {
+    assert!(matches!(
+        peek_store_format(&[2, 1, 5]),
+        Err(Error::Malformed {
+            reason: "the first field is not the store format",
+            ..
+        })
+    ));
+    assert!(matches!(
+        peek_store_format(&[]),
+        Err(Error::Truncated { .. })
+    ));
+    assert!(matches!(
+        peek_store_format(&[2, 8]),
+        Err(Error::Truncated { .. })
+    ));
+}
+
+#[test]
+fn an_unknown_skippable_field_is_skipped() {
+    // version 2, a skippable tag 0x81 with three bytes, then flushed sequence 5.
+    assert_eq!(
+        ManifestEdit::decode(&[2, 0x81, 3, 0xAA, 0xBB, 0xCC, 1, 5]).unwrap(),
+        ManifestEdit {
+            flushed_sequence: Some(5),
+            ..ManifestEdit::default()
+        }
+    );
+}
+
+#[test]
+fn an_unknown_required_field_is_refused_in_version_two() {
+    assert!(matches!(
+        ManifestEdit::decode(&[2, 0x09, 0]),
+        Err(Error::Malformed {
+            reason: "unknown field tag",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_skippable_field_longer_than_the_edit_is_refused() {
+    assert!(matches!(
+        ManifestEdit::decode(&[2, 0x81, 9, 0xAA]),
+        Err(Error::Truncated {
+            what: "manifest edit skippable field",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_version_one_edit_knows_no_skippable_fields() {
+    assert!(matches!(
+        ManifestEdit::decode(&[1, 0x81, 0]),
+        Err(Error::Malformed {
+            reason: "unknown field tag",
             ..
         })
     ));

@@ -405,11 +405,11 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-constants"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "tessarikv-format"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-types"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "tessarikv-constants",
  "thiserror",

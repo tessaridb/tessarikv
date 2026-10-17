@@ -4,6 +4,14 @@
 //! has. Defaults that a user may change are the starting values of the options in the
 //! `tessarikv` crate; limits are hard bounds the format or the engine relies on.
 
+/// The store format this build writes, recorded at the start of every manifest.
+///
+/// It names the set of file layouts a database may hold. A build opens a store of this format
+/// or older, and refuses a later one at open, before reading its tables or logs. Format 0 is a
+/// store from before the format was recorded. A release that writes a layout an older build
+/// cannot read raises it; one that only adds a field older builds may skip does not.
+pub const STORE_FORMAT: u32 = 1;
+
 /// How many bits of an internal key's trailer hold the sequence number.
 ///
 /// The trailer is one `u64`: the sequence number in the high 56 bits and the value kind in the

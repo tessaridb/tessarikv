@@ -4,24 +4,26 @@
 
 # TessariKV
 
-**The future heart of TessariDB: an embedded key-value storage engine in pure Rust, lock-free first.**
+**The heart of TessariDB: an embedded key-value storage engine in pure Rust, lock-free first.**
 
 [![crates.io](https://img.shields.io/crates/v/tessarikv?style=flat-square)](https://crates.io/crates/tessarikv)
 [![docs.rs](https://img.shields.io/docsrs/tessarikv?style=flat-square)](https://docs.rs/tessarikv)
-[![status](https://img.shields.io/badge/status-early%20development-D98E33?style=flat-square)](#status)
+[![status](https://img.shields.io/badge/status-first%20release-2E9E6B?style=flat-square)](#status)
+[![file format](https://img.shields.io/badge/file%20format-stable-2E9E6B?style=flat-square)](#file-format)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-6B5FD1?style=flat-square)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.89-6B5FD1?style=flat-square)](#building)
 
 </div>
 
-TessariKV is an LSM tree written to become the storage layer under
-[TessariDB](https://github.com/tessaridb/tessaridb). Every shared structure on a read or write path is lock-free or
+TessariKV is the LSM tree under [TessariDB](https://github.com/tessaridb/tessaridb): every table, index, log and
+catalog TessariDB keeps lives in it. Every shared structure on a read or write path is lock-free or
 wait-free wherever a non-blocking form exists, so any number of tasks write and read at once without a global lock.
 It has no C or C++ dependency, exposes an async API on tokio, and runs on macOS, Linux and Windows.
 
 ## Status
 
-Early development (0.0.x); the API and the on-disk format may change in any release before 1.0.
+First release (0.1). The on-disk file format is stable from 0.1.0 (see [File format](#file-format)); the API may
+still change in a minor release before 1.0.
 
 | Part | State |
 |---|---|
@@ -39,6 +41,21 @@ Early development (0.0.x); the API and the on-disk format may change in any rele
 | Compaction | leveled (default), universal and FIFO; several compactions at once, each split into parallel parts; rate-limited output; `Db::compact_range` on demand; automatic compactions can be turned off per keyspace for bulk loads |
 | Backpressure | writes slow down, then stop, on level-0 size, pending compaction bytes and unflushed tables |
 | Keyspaces | independent sets of keys, each with its own options, in-memory tables, levels and compactions; named at open, created or dropped while running (`Db::create_keyspace`, `Db::drop_keyspace`); a batch may span several and stays atomic across crashes; every open records the options it runs with in `OPTIONS-<n>` |
+
+## File format
+
+Every file carries its own format version and a checksum, and every reader treats stored bytes as hostile input.
+On top of that, each database records one store format, at the start of every manifest:
+
+- a release reads its own store format and every earlier one, from 0.1.0 on;
+- a database written in a later format is refused at open with `Error::UnsupportedFormat` before its tables or
+  logs are read, never reported as corruption;
+- a release that writes a layout an older one cannot read raises the store format and says so in its changelog;
+  metadata that older releases may skip is added without raising it;
+- opening a database stamps the store format of the release that opened it, so take a `Db::checkpoint` before
+  moving a database to a newer release.
+
+Databases written by 0.0.x recorded no store format; they are format 0 and open in 0.1.0.
 
 ## Example
 

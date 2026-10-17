@@ -1,11 +1,13 @@
 //! Manifest edits: the changes to the set of table files that a flush or a compaction makes,
 //! recorded one per log frame so the set can be rebuilt after a crash.
 //!
-//! Format version 1, one edit per frame payload: a version byte, then fields, each a tag byte
+//! Format version 2, one edit per frame payload: a version byte, then fields, each a tag byte
 //! followed by its value. Integers are LEB128 varints; keys are a varint length and the bytes.
+//! Version 1 edits, written before the store format was recorded, are still read.
 //!
 //! | Tag | Field | Value |
 //! |---|---|---|
+//! | 8 | store format | u32: the store format of the database (version 2 only) |
 //! | 1 | flushed sequence | u64: every write at or below it is in a table file |
 //! | 2 | next file | u64: the next file number to hand out |
 //! | 3 | added table | keyspace u32, level u8, id u64, size u64, min and max sequence u64, smallest and largest internal key |
@@ -13,20 +15,31 @@
 //! | 5 | added keyspace | id u32, name (UTF-8, varint length) |
 //! | 6 | dropped keyspace | id u32 |
 //! | 7 | next keyspace | u32: the next keyspace id to hand out |
+//! | 128-255 | skippable | u32 length, then that many bytes this build does not need (version 2 only) |
 //!
-//! A scalar field appears at most once; tables and keyspaces may repeat. An unknown version or tag is refused,
-//! never skipped: an edit this build does not understand cannot be applied safely. Lengths are
-//! checked against the bytes left before anything is allocated. Integrity is the frame's
-//! checksum's job; this layer refuses what a valid checksum cannot rule out.
+//! A scalar field appears at most once; tables and keyspaces may repeat. An unknown version or a
+//! tag below 128 this build does not know is refused, never skipped: an edit this build does not
+//! understand cannot be applied safely. A tag of 128 or more marks a field that is safe to ignore,
+//! so a later release can add one without locking this release out. Lengths are checked against
+//! the bytes left before anything is allocated. Integrity is the frame's checksum's job; this
+//! layer refuses what a valid checksum cannot rule out.
+//!
+//! The first edit of every manifest begins with the version byte and then the store format field.
+//! That prefix is fixed for every later version too, so [`peek_store_format`] can tell a store
+//! written by a later release from a damaged one before anything else is decoded.
 
+mod input;
 #[cfg(test)]
 mod tests;
 
 use crate::error::{Error, Result};
-use crate::varint::{get_u32, get_u64, put_u32, put_u64};
+use crate::varint::{put_u32, put_u64};
+use input::{Input, put_key, set_once};
 
 /// The format version written.
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
+/// The first format version, which knows neither the store format nor skippable fields.
+const VERSION_1: u8 = 1;
 
 const FLUSHED_SEQUENCE: u8 = 1;
 const NEXT_FILE: u8 = 2;
@@ -35,6 +48,9 @@ const REMOVED_TABLE: u8 = 4;
 const ADDED_KEYSPACE: u8 = 5;
 const DROPPED_KEYSPACE: u8 = 6;
 const NEXT_KEYSPACE: u8 = 7;
+const STORE_FORMAT: u8 = 8;
+/// The bit that marks a field as safe to skip.
+const SKIPPABLE: u8 = 0x80;
 
 /// A keyspace as the manifest records it when it is added.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -80,6 +96,8 @@ pub struct TableRef {
 /// One change to the set of table files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ManifestEdit {
+    /// The store format of the database; the first edit of every manifest carries it.
+    pub store_format: Option<u32>,
     /// Every write at or below this sequence is in a table file once the edit is applied.
     pub flushed_sequence: Option<u64>,
     /// The next file number to hand out.
@@ -100,6 +118,10 @@ impl ManifestEdit {
     /// Appends the encoded edit to `out`.
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(VERSION);
+        if let Some(format) = self.store_format {
+            out.push(STORE_FORMAT);
+            put_u32(out, format);
+        }
         if let Some(sequence) = self.flushed_sequence {
             out.push(FLUSHED_SEQUENCE);
             put_u64(out, sequence);
@@ -148,15 +170,18 @@ impl ManifestEdit {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let mut input = Input { bytes };
         let version = input.byte("manifest edit version")?;
-        if version != VERSION {
+        if version != VERSION && version != VERSION_1 {
             return Err(Error::UnsupportedVersion {
                 what: "manifest edit",
                 version,
             });
         }
+        let later = version == VERSION;
         let mut edit = Self::default();
-        while !input.bytes.is_empty() {
+        while !input.is_empty() {
             match input.byte("manifest edit field")? {
+                STORE_FORMAT if later => set_once(&mut edit.store_format, input.u32()?)?,
+                tag if later && tag & SKIPPABLE != 0 => input.skip()?,
                 FLUSHED_SEQUENCE => set_once(&mut edit.flushed_sequence, input.u64()?)?,
                 NEXT_FILE => set_once(&mut edit.next_file, input.u64()?)?,
                 ADDED_TABLE => edit.added.push(TableMeta {
@@ -195,80 +220,29 @@ impl ManifestEdit {
     }
 }
 
-fn put_key(out: &mut Vec<u8>, key: &[u8]) {
-    // Keys longer than a u32 cannot be built: batch entries are bounded far below it.
-    put_u32(out, u32::try_from(key.len()).unwrap_or(u32::MAX));
-    out.extend_from_slice(key);
-}
-
-fn set_once<T>(slot: &mut Option<T>, value: T) -> Result<()> {
-    if slot.replace(value).is_some() {
-        return Err(Error::Malformed {
+/// The store format a manifest's first edit records, read from the edit's fixed prefix alone:
+/// `None` for a version 1 edit, which predates the field.
+///
+/// # Errors
+///
+/// [`Error::UnsupportedVersion`] for version 0, [`Error::Malformed`] when the first field is not
+/// the store format, and [`Error::Truncated`] when the prefix runs past the input.
+pub fn peek_store_format(bytes: &[u8]) -> Result<Option<u32>> {
+    let mut input = Input { bytes };
+    match input.byte("manifest edit version")? {
+        0 => Err(Error::UnsupportedVersion {
             what: "manifest edit",
-            reason: "a field given twice",
-        });
-    }
-    Ok(())
-}
-
-/// The bytes of an edit not yet decoded.
-struct Input<'a> {
-    bytes: &'a [u8],
-}
-
-impl<'a> Input<'a> {
-    fn byte(&mut self, what: &'static str) -> Result<u8> {
-        let (&first, rest) = self.bytes.split_first().ok_or(Error::Truncated {
-            what,
-            needed: 1,
-            available: 0,
-        })?;
-        self.bytes = rest;
-        Ok(first)
-    }
-
-    fn u32(&mut self) -> Result<u32> {
-        let (value, used) = get_u32(self.bytes).ok_or_else(|| self.bad_varint(5))?;
-        self.advance(used);
-        Ok(value)
-    }
-
-    fn u64(&mut self) -> Result<u64> {
-        let (value, used) = get_u64(self.bytes).ok_or_else(|| self.bad_varint(10))?;
-        self.advance(used);
-        Ok(value)
-    }
-
-    fn key(&mut self) -> Result<Vec<u8>> {
-        let len = usize::try_from(self.u32()?).unwrap_or(usize::MAX);
-        let (key, rest) = self
-            .bytes
-            .split_at_checked(len)
-            .ok_or_else(|| Error::Truncated {
-                what: "manifest edit key",
-                needed: u64::try_from(len).unwrap_or(u64::MAX),
-                available: u64::try_from(self.bytes.len()).unwrap_or(u64::MAX),
-            })?;
-        self.bytes = rest;
-        Ok(key.to_vec())
-    }
-
-    fn advance(&mut self, used: usize) {
-        self.bytes = self.bytes.get(used..).unwrap_or_default();
-    }
-
-    /// Why an integer of at most `max_bytes` bytes did not decode.
-    fn bad_varint(&self, max_bytes: usize) -> Error {
-        if self.bytes.len() >= max_bytes {
-            return Error::Malformed {
-                what: "manifest edit integer",
-                reason: "longer than its type",
-            };
-        }
-        Error::Truncated {
-            what: "manifest edit integer",
-            needed: 1,
-            available: u64::try_from(self.bytes.len()).unwrap_or(u64::MAX),
+            version: 0,
+        }),
+        VERSION_1 => Ok(None),
+        _ => {
+            if input.byte("manifest edit field")? != STORE_FORMAT {
+                return Err(Error::Malformed {
+                    what: "manifest edit",
+                    reason: "the first field is not the store format",
+                });
+            }
+            input.u32().map(Some)
         }
     }
 }
