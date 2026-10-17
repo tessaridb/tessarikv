@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-17
+
+The first release with a stable on-disk file format: a database written by 0.1.0 opens in every later release.
+
 ### Added
 
 - Store format: every manifest begins with the store format of its database (`STORE_FORMAT`, now 1), and an open
@@ -197,6 +201,7 @@ All notable changes to this project are documented here. The format follows
   `Db::keyspace` and `Db::keyspaces` look them up. Each keyspace flushes, compacts and paces writes by its own options; a batch spanning keyspaces is
   recovered whole or not at all.
 
-[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/tessaridb/tessarikv/compare/v0.0.2...v0.1.0
 [0.0.2]: https://github.com/tessaridb/tessarikv/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/tessaridb/tessarikv/releases/tag/v0.0.1
