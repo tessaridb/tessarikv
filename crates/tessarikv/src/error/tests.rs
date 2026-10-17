@@ -47,6 +47,11 @@ fn samples() -> Vec<Error> {
         },
         Error::Closed,
         Error::Conflict,
+        Error::UnsupportedFormat {
+            path: PathBuf::from("db/MANIFEST-00000000000000000001"),
+            found: 2,
+            newest: 1,
+        },
     ]
 }
 
@@ -75,6 +80,7 @@ fn every_variant_maps_to_its_category() {
             ErrorCategory::Conflict,
             ErrorCategory::ShutDown,
             ErrorCategory::Conflict,
+            ErrorCategory::Validation,
         ]
     );
 }
@@ -103,7 +109,8 @@ fn codes_are_stable_strings() {
             "write_stalled",
             "already_exists",
             "closed",
-            "conflict"
+            "conflict",
+            "unsupported_format"
         ]
     );
 }
@@ -115,7 +122,7 @@ fn only_transient_failures_are_retryable() {
         retryable,
         [
             false, false, true, false, false, false, false, false, false, false, false, false,
-            false, false, true, false, false, true
+            false, false, true, false, false, true, false
         ]
     );
     let interrupted = Error::Io {

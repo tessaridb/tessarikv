@@ -29,7 +29,7 @@ pub use log::{
     EndKind, FRAME_HEADER_BYTES, FrameReader, LogEnd, LogRead, concat_checksum, encode_frame,
     frame_bytes, frame_header, payload_checksum,
 };
-pub use manifest::{KeyspaceRecord, ManifestEdit, TableMeta, TableRef};
+pub use manifest::{KeyspaceRecord, ManifestEdit, TableMeta, TableRef, peek_store_format};
 pub use seal::{
     Cipher, FileKind, FileSealer, HEADER_BYTES as SEAL_HEADER_BYTES, ROOT_KEY_BYTES, RootKey,
     SealHeader, TAG_BYTES as SEAL_TAG_BYTES,

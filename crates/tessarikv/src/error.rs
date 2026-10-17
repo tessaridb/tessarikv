@@ -109,6 +109,17 @@ pub enum Error {
         /// What was asked for.
         what: &'static str,
     },
+    /// The database was written in a later store format than this build reads; it is refused
+    /// before its tables or logs are read. Open it with the release that wrote it, or a later one.
+    #[error("{path} is store format {found}; this build reads formats up to {newest}")]
+    UnsupportedFormat {
+        /// The manifest that records the format.
+        path: PathBuf,
+        /// The store format the database records.
+        found: u32,
+        /// The latest store format this build reads.
+        newest: u32,
+    },
     /// Every sequence number has been used; the database accepts no more writes.
     #[error("sequence numbers exhausted")]
     SequenceExhausted,
@@ -203,7 +214,9 @@ impl Error {
             Self::Locked { .. } => ErrorCategory::Unavailable,
             Self::InvalidOptions { .. } => ErrorCategory::Validation,
             Self::Corruption { .. } | Self::ShortRead { .. } => ErrorCategory::Corruption,
-            Self::UnknownKeyspace { .. } | Self::Unsupported { .. } => ErrorCategory::Validation,
+            Self::UnknownKeyspace { .. }
+            | Self::Unsupported { .. }
+            | Self::UnsupportedFormat { .. } => ErrorCategory::Validation,
             Self::Memtable { .. } | Self::SequenceExhausted | Self::ReadFailed => {
                 ErrorCategory::Internal
             }
@@ -230,6 +243,7 @@ impl Error {
             Self::ShortRead { .. } => "short_read",
             Self::UnknownKeyspace { .. } => "unknown_keyspace",
             Self::Unsupported { .. } => "unsupported",
+            Self::UnsupportedFormat { .. } => "unsupported_format",
             Self::SequenceExhausted => "sequence_exhausted",
             Self::Memtable { .. } => "memtable",
             Self::LogFailed => "log_failed",
@@ -262,6 +276,7 @@ impl Error {
             | Self::ShortRead { .. }
             | Self::UnknownKeyspace { .. }
             | Self::Unsupported { .. }
+            | Self::UnsupportedFormat { .. }
             | Self::SequenceExhausted
             | Self::Memtable { .. }
             | Self::LogFailed

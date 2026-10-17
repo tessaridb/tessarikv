@@ -14,11 +14,14 @@
 //! order and never reused, names are unique, and a table belongs to a keyspace the version holds.
 
 pub(crate) mod manifest;
+mod store_format;
 
 #[cfg(test)]
 mod keyspace_tests;
 #[cfg(test)]
 mod manifest_tests;
+#[cfg(test)]
+mod store_format_tests;
 #[cfg(test)]
 mod tests;
 
@@ -84,6 +87,7 @@ impl Version {
     /// One edit that rebuilds this version from an empty one.
     pub(crate) fn as_edit(&self) -> ManifestEdit {
         ManifestEdit {
+            store_format: None,
             flushed_sequence: Some(self.flushed_sequence),
             next_file: Some(self.next_file),
             added: self

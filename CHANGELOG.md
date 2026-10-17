@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Store format: every manifest begins with the store format of its database (`STORE_FORMAT`, now 1), and an open
+  refuses a database written in a later format with `Error::UnsupportedFormat` (code `unsupported_format`) before
+  it reads any of its tables or logs. A database from 0.0.x, which recorded none, is format 0 and opens.
+- Manifest edits may carry fields marked safe to skip, so a later release can add metadata without locking this
+  one out.
+
+### Changed
+
+- Manifest edits move to format version 2, which starts with the store format; version 1 edits are still read.
+  A database opened by this release no longer opens in 0.0.x; take a `Db::checkpoint` before an upgrade.
+
+### Fixed
+
+- A manifest holding no readable edit is refused as corruption; before, it opened as an empty database.
+
 ## [0.0.2] - 2026-10-17
 
 ### Fixed
