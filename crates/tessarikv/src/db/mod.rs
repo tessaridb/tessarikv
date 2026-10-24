@@ -44,6 +44,7 @@ mod table_versions;
 mod tables;
 mod verify;
 mod view;
+mod visibility;
 mod write;
 mod write_statistics;
 
@@ -145,6 +146,8 @@ mod table_tests;
 mod tests;
 #[cfg(test)]
 mod verify_tests;
+#[cfg(test)]
+mod write_visibility_tests;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -185,6 +188,8 @@ pub use snapshot::Snapshot;
 /// ```
 pub struct Db {
     sequencer: Arc<Sequencer>,
+    /// Wakes writers waiting for their batch to become visible (see `visibility`).
+    visibility: tokio::sync::Notify,
     /// What each commit wrote, for transactions' conflict checks.
     commits: commits::Commits,
     /// The tables reads consult and writes land in.

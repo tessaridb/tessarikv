@@ -2,6 +2,7 @@
 
 mod advance;
 mod publish;
+mod waiters;
 
 #[cfg(all(test, not(loom)))]
 mod tests;
@@ -33,6 +34,8 @@ use crate::shim::{AtomicU64, Ordering};
 /// | `complete` | the store marking the batch's ring slot ready; the batch becomes visible at the compare-and-swap on `visible` that passes it, by this thread or a later completer | lock-free once the slot is free |
 /// | `visible` | the Acquire load of `visible` | wait-free |
 /// | `watch` | the read-modify-write on `visible` | wait-free |
+/// | `covers` | the read-modify-write on `visible` | wait-free |
+/// | `add_waiter` / `remove_waiter` / `has_waiters` | the access to the waiter count | wait-free |
 /// | `publish` | the Release store of the claim's publication slot | wait-free once the slot is free |
 /// | `wait_published` | the last Acquire load (of a slot or of `visible`) that passes the target | blocking: on every earlier claim that has not published |
 ///
@@ -68,6 +71,14 @@ use crate::shim::{AtomicU64, Ordering};
 /// their order and synchronizes with the watcher's (and sees the target), or the watcher's
 /// read-modify-write comes later and reads the advanced value: a reached target is never missed.
 ///
+/// Waiting writers: a writer that must not return before its batch is visible counts itself
+/// with [`Sequencer::add_waiter`], then asks [`Sequencer::covers`], which reads `visible` with a
+/// read-modify-write; a completer asks [`Sequencer::has_waiters`] after its completion. This is
+/// the same chain as watching: either the advance that passes the batch comes later in
+/// `visible`'s order and synchronizes with the waiter's read-modify-write (so it sees the count),
+/// or the waiter's read-modify-write comes later and reads the advanced value. A waiter that is
+/// not yet covered is therefore always seen by the completer that covers it.
+///
 /// Publication: a second ring lets a writer announce, right after claiming and before anything
 /// that can wait, that it has published something about its batch (in the engine, the keys it
 /// writes), and lets a reader wait for every claim in a range of sequences to announce, without
@@ -87,6 +98,8 @@ pub struct Sequencer {
     visible: CachePadded<AtomicU64>,
     /// The sequence a waiter wants to learn `visible` reached; [`NO_TARGET`] for none.
     target: CachePadded<AtomicU64>,
+    /// How many writers wait for their batch to become visible.
+    waiters: CachePadded<AtomicU64>,
     slots: Box<[Slot]>,
     /// The publication ring, indexed like `slots`.
     published: Box<[Slot]>,
@@ -189,6 +202,7 @@ impl Sequencer {
             next: CachePadded::new(AtomicU64::new(last.saturating_add(1))),
             visible: CachePadded::new(AtomicU64::new(last)),
             target: CachePadded::new(AtomicU64::new(NO_TARGET)),
+            waiters: CachePadded::new(AtomicU64::new(0)),
             slots: ring(capacity),
             published: ring(capacity),
             mask: u64::try_from(capacity).map_or(1, |capacity| capacity.wrapping_sub(1)),

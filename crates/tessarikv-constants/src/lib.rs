@@ -258,6 +258,15 @@ pub const MAX_LOG_PAYLOAD_BYTES: usize = MAX_BATCH_BYTES + 8;
 /// the oldest commit still being applied before its completion waits.
 pub const COMMIT_RING_SLOTS: usize = 4096;
 
+/// Spins per round (each a CPU pause hint and one load of the visible sequence) of a writer
+/// whose batch completed behind a batch still being applied: the earlier batch is usually a few
+/// entries away from completing.
+pub const VISIBILITY_SPINS: u32 = 64;
+
+/// Times such a writer yields its task between rounds of spins, so an earlier writer queued on
+/// the same worker thread can run, before it parks until a completion wakes it.
+pub const VISIBILITY_YIELDS: u32 = 16;
+
 /// Buckets of the table that remembers, per hashed key, the newest commit that wrote it, which
 /// a committing transaction checks for writes after its snapshot (8 bytes each). Keys sharing a
 /// bucket may refuse a commit that wrote neither; more buckets make that rarer.

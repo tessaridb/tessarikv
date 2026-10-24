@@ -4,11 +4,11 @@ use tessarikv_constants::DIRECT_CHECKSUM_BYTES;
 use tessarikv_format::{
     FRAME_HEADER_BYTES, FileSealer, SEAL_TAG_BYTES, WriteBatch, concat_checksum, payload_checksum,
 };
-use tessarikv_sync::{Claim, Sequencer};
+use tessarikv_sync::Claim;
 use tessarikv_types::{KeyspaceId, SequenceNumber};
-use tokio::sync::Notify;
 
 use super::recover::SEQUENCE_BYTES;
+use super::visibility::Completion;
 use super::{Check, Db};
 use crate::log::{Frame, Record, Wait};
 use crate::{Durability, Error, Result, WriteOptions};
@@ -18,9 +18,11 @@ impl Db {
     /// number of the batch's last entry (for an empty batch, the latest visible sequence).
     ///
     /// Each entry takes the next sequence number in the order it was added, so a later entry
-    /// for the same key wins. On storage the write returns once the log holds the batch as
-    /// [`WriteOptions::durability`] asks, and only then becomes visible to reads; in memory every
-    /// level is the same, and nothing outlives the process.
+    /// for the same key wins. On storage the batch becomes visible to reads only once the log
+    /// holds it as [`WriteOptions::durability`] asks; in memory every level is the same, and
+    /// nothing outlives the process. The write returns once the batch is visible, so a read
+    /// issued after it returns sees it; when an earlier batch is still being applied, it waits
+    /// for that batch first.
     ///
     /// Dropping the returned future before it completes leaves the outcome open: the batch is
     /// not applied in this process, but it may already be in the log and reappear when the
@@ -78,12 +80,12 @@ impl Db {
             let accepted = self
                 .commits
                 .publish(&self.sequencer, &claim, batch, check.as_ref());
-            let claim = Completion::new(&self.sequencer, None, claim);
+            let claim = Completion::new(&self.sequencer, None, &self.visibility, claim);
             if !accepted {
                 return claim.complete(Err(Error::Conflict));
             }
             let applied = self.apply(claim.epoch(), claim.first(), batch);
-            return claim.complete(applied);
+            return self.readable(claim.complete(applied)).await;
         };
         let logged = match options.durability {
             Durability::Sync => Some((prepare(batch, log.sealer().is_some()), Wait::Durable)),
@@ -105,7 +107,7 @@ impl Db {
         let accepted = self
             .commits
             .publish(&self.sequencer, &claim, batch, check.as_ref());
-        let claim = Completion::new(&self.sequencer, completed, claim);
+        let claim = Completion::new(&self.sequencer, completed, &self.visibility, claim);
         let (first, last) = (claim.first(), claim.last());
         let logged = logged.filter(|_| accepted);
         let (record, built) =
@@ -127,7 +129,7 @@ impl Db {
         if let Some(installer) = installer {
             installer.signals.check(&self.view.load());
         }
-        claim.complete(applied)
+        self.readable(claim.complete(applied)).await
     }
 
     /// Inserts `batch` from sequence `first` into the in-memory tables of `epoch`, each entry
@@ -225,61 +227,5 @@ impl Prepared {
             )
         };
         Frame::with_checksum(self.bytes, checksum)
-    }
-}
-
-/// A claim that is completed when dropped, so a write abandoned while it waits on the log does
-/// not hold back every later batch.
-struct Completion<'a> {
-    sequencer: &'a Sequencer,
-    /// Woken when completing reaches the sequence a flush waits for.
-    completed: Option<&'a Notify>,
-    claim: Option<Claim>,
-}
-
-impl<'a> Completion<'a> {
-    fn new(sequencer: &'a Sequencer, completed: Option<&'a Notify>, claim: Claim) -> Self {
-        Self {
-            sequencer,
-            completed,
-            claim: Some(claim),
-        }
-    }
-
-    /// Completes the claim, once, waking a waiting flush when it reached its sequence.
-    fn finish(&mut self) {
-        if let Some(claim) = self.claim.take()
-            && self.sequencer.complete(claim)
-            && let Some(completed) = self.completed
-        {
-            completed.notify_one();
-        }
-    }
-
-    fn epoch(&self) -> u8 {
-        self.claim.as_ref().map_or(0, Claim::epoch)
-    }
-
-    fn first(&self) -> u64 {
-        self.claim.as_ref().map_or(0, Claim::first)
-    }
-
-    fn last(&self) -> u64 {
-        self.claim.as_ref().map_or(0, Claim::last)
-    }
-
-    /// Completes the claim whatever `applied` says, so later batches are not held back, and
-    /// returns the batch's last sequence number.
-    fn complete(mut self, applied: Result<()>) -> Result<SequenceNumber> {
-        let last = self.last();
-        self.finish();
-        applied?;
-        SequenceNumber::new(last).map_err(|_| Error::SequenceExhausted)
-    }
-}
-
-impl Drop for Completion<'_> {
-    fn drop(&mut self) {
-        self.finish();
     }
 }
