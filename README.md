@@ -13,6 +13,9 @@
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-6B5FD1?style=flat-square)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.89-6B5FD1?style=flat-square)](#building)
 
+[kv.tessaridb.com](https://kv.tessaridb.com) · [docs](https://docs.tessaridb.com/kv) ·
+[TessariDB](https://github.com/tessaridb/tessaridb)
+
 </div>
 
 TessariKV is the LSM tree under [TessariDB](https://github.com/tessaridb/tessaridb): every table, index, log and
