@@ -1,7 +1,7 @@
 [package]
 name = "tessarikv-constants"
 description = "Format constants, defaults and limits shared by the TessariKV crates"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
