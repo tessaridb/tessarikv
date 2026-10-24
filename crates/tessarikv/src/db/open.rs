@@ -203,6 +203,7 @@ impl Db {
         });
         Ok(Self {
             sequencer,
+            visibility: tokio::sync::Notify::new(),
             commits: Commits::new(serializable),
             view,
             snapshots,

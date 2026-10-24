@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-24
+
+### Fixed
+
+- `Db::write` and `Transaction::commit` return only once the batch is visible to reads. Before, a write that
+  finished while an earlier batch was still being applied could return first, and a read issued right after it
+  missed it. A writer now waits for the earlier batches; with nothing earlier pending the check costs one load.
+
 ## [0.1.0] - 2026-10-17
 
 The first release with a stable on-disk file format: a database written by 0.1.0 opens in every later release.

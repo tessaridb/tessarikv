@@ -175,3 +175,26 @@ fn a_published_claim_carries_its_writers_writes() {
         writer.join().unwrap();
     });
 }
+
+/// A writer waiting for its batch to become visible and the completer of the earlier batch never
+/// miss each other: either the waiter's check sees its batch covered, or the completer sees it
+/// waiting and wakes it (the store-then-load pair).
+#[test]
+fn a_waiting_writer_is_never_missed() {
+    loom::model(|| {
+        let sequencer = Arc::new(Sequencer::new(0, 4));
+        let earlier = sequencer.claim(1).unwrap();
+        let later = sequencer.claim(1).unwrap();
+        let other = Arc::clone(&sequencer);
+        let completer = loom::thread::spawn(move || {
+            other.complete(earlier);
+            other.has_waiters()
+        });
+        sequencer.complete(later);
+        sequencer.add_waiter();
+        let covered = sequencer.covers(2);
+        let woken = completer.join().unwrap();
+        sequencer.remove_waiter();
+        assert!(covered || woken, "the waiting writer was missed");
+    });
+}

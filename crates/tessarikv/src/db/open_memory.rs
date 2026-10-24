@@ -16,6 +16,7 @@ impl Db {
     pub(super) fn open_in_memory(options: &DbOptions) -> Self {
         Self {
             sequencer: Arc::new(Sequencer::new(0, COMMIT_RING_SLOTS)),
+            visibility: tokio::sync::Notify::new(),
             commits: commits::Commits::new(options.serializable_transactions()),
             view: Arc::new(ArcSwap::from_pointee({
                 // In memory the named keyspaces take ids in the order given.
