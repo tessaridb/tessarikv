@@ -129,6 +129,33 @@ async fn a_key_read_and_then_updated_or_range_deleted_refuses_the_reader() {
     drop(deleted);
 }
 
+/// Where writes record key prefixes, a transaction's own range delete is refused by a later write
+/// into its range and by a later range delete in its keyspace, not by writes elsewhere.
+#[tokio::test]
+async fn a_range_delete_is_refused_only_by_writes_into_its_range() {
+    let db = memory(true).await;
+    let mut clear = begin(&db, Isolation::Snapshot);
+    put(&db, b"z", b"elsewhere").await;
+    clear.delete_range(KS, b"a", b"b").expect("range");
+    clear
+        .commit(&WriteOptions::default())
+        .await
+        .expect("nothing was written into the range");
+    let mut overwritten = begin(&db, Isolation::Snapshot);
+    put(&db, b"a1", b"inside").await;
+    overwritten.delete_range(KS, b"a", b"b").expect("range");
+    assert_conflict(overwritten.commit(&WriteOptions::default()).await);
+
+    let mut ranged = begin(&db, Isolation::Snapshot);
+    let mut batch = WriteBatch::new();
+    batch.delete_range(KS, b"m", b"n").expect("range");
+    db.write(&batch, &WriteOptions::default())
+        .await
+        .expect("written");
+    ranged.delete_range(KS, b"a", b"b").expect("range");
+    assert_conflict(ranged.commit(&WriteOptions::default()).await);
+}
+
 #[tokio::test]
 async fn a_serializable_transaction_that_writes_nothing_always_commits() {
     let db = memory(true).await;

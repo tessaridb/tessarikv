@@ -20,6 +20,12 @@ All notable changes to this project are documented here. The format follows
   at 100 ms and doubles up to 30 s; `Db::compact_range` returns the error of the compaction it waited for. Failures
   are counted by the new `Ticker::CompactionFailures`. A failed manifest edit still stops writes.
 
+- A range delete committed after a transaction began refuses it only when its range may cover a key the transaction
+  writes, or reads under serializable isolation, in the same keyspace. Before, any range delete in any keyspace
+  refused every transaction begun before it. A transaction's own range delete is refused by a later write into its
+  range (with `serializable_transactions`) or a later range delete of its keyspace, as before by any later commit
+  without it.
+
 ### Fixed
 
 - Range deletes now free their space: a compaction drops the versions a newer range delete hides when no snapshot

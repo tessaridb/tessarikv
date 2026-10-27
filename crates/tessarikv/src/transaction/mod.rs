@@ -24,9 +24,13 @@
 //! in a range it scanned, was written after it began; committed serializable transactions behave
 //! as if they ran one at a time, in commit order, and one that writes nothing is never refused.
 //! Snapshot transactions and plain writes are not checked for what they read. Keys are compared by hash, so a commit is occasionally refused for a key it
-//! did not share; and range deletes are checked conservatively: a transaction is refused when a
-//! range delete committed after it began, and its own range delete is refused when anything
-//! committed after it began.
+//! did not share. A range delete committed after a transaction began refuses it when the range
+//! may cover a key it writes (or, serializable, read) in the same keyspace; keys are compared by
+//! their leading bytes there, so a key near the range's bounds may be refused too. A
+//! transaction's own range delete is refused when a range delete of its keyspace committed after
+//! it began, or when a write may have landed in its range since: any later commit, or, on a
+//! database opened with [`crate::DbOptions::serializable_transactions`], a later write into the
+//! range.
 
 mod scan;
 mod write_set;
