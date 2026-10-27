@@ -4,8 +4,9 @@
 use std::sync::Arc;
 
 use super::Db;
-use super::flush_tests::PATH;
+use super::flush_tests::{PATH, until};
 use crate::log::fault::FaultStorage;
+use crate::storage::Storage as _;
 use crate::{DbOptions, Histogram, KeyspaceId, ReadOptions, Ticker, WriteBatch, WriteOptions};
 
 fn options(statistics: bool) -> DbOptions {
@@ -91,6 +92,16 @@ async fn reads_of_a_table_file_count_the_cache_and_the_filter() {
     let db = open(&storage).await;
     put(&db, &[b"apple", b"cherry"]).await;
     db.flush().await.expect("flushed");
+    // The flush releases the log, which syncs and removes it in the background: let that finish
+    // so only the reads move the tickers.
+    until("the flushed log removed", || {
+        storage
+            .list(std::path::Path::new(PATH))
+            .expect("listable")
+            .iter()
+            .all(|name| !name.ends_with(".log"))
+    })
+    .await;
     let _ = db.statistics();
     let before = db.statistics().expect("statistics on");
     assert!(get(&db, b"apple").await.is_some());

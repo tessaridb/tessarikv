@@ -117,15 +117,8 @@ impl Segments {
 
     /// Finishes the current segment, synced, and moves to the next log number.
     fn roll(&mut self) -> Result<()> {
-        self.finish_current(true)
-    }
-
-    /// Finishes the current segment, synced when `sync`, and moves to the next log number.
-    fn finish_current(&mut self, sync: bool) -> Result<()> {
         self.append()?;
-        if let Some(mut file) = self.file.take()
-            && sync
-        {
+        if let Some(mut file) = self.file.take() {
             file.sync()?;
             self.count(Ticker::WalSyncs, 1);
         }
@@ -165,11 +158,12 @@ impl Segments {
     ///
     /// # Errors
     ///
-    /// The storage's error when the frames gathered for the current segment cannot be written.
+    /// The storage's error when the current segment cannot be synced as it is finished.
     pub(super) fn remove_through(&mut self, through: u64) -> Result<()> {
         if self.current_released(through) {
-            // Not synced: every frame in it is already held by a synced table.
-            self.finish_current(false)?;
+            // Synced although every frame is in a synced table: a segment whose removal fails, or
+            // is cut short by a crash, must not end the replay at a torn tail before later ones.
+            self.roll()?;
         }
         while let Some(segment) = self.finished.front().copied() {
             if segment.last > through {

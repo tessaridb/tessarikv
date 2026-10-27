@@ -19,7 +19,8 @@ impl Db {
     /// whole keyspace needs free space on the order of its size. A universal keyspace merges all
     /// its runs into the bottom level when any of them touches the range; a first-in-first-out
     /// keyspace never merges, so it only flushes. In memory there are no tables and it returns at
-    /// once.
+    /// once. After a compaction failed, the next one starts only once the wait that failure
+    /// imposed is over (at most 30 s), so the call may take that long first.
     ///
     /// # Errors
     ///

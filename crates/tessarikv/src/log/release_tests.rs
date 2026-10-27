@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use tessarikv_format::FRAME_HEADER_BYTES;
@@ -78,6 +79,35 @@ async fn a_release_of_every_frame_finishes_the_segment_being_written() {
     append(&log, 8, 8, record).await.expect("written");
     log.close().await.expect("closed");
     assert!(exists(&storage, 5), "segment 5 holds 8");
+}
+
+/// The segment being written is synced as it is finished for removal, before any segment goes:
+/// one that outlives its removal (a crash, a failed removal) holds no torn tail that would end
+/// the replay ahead of later segments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_released_segment_is_synced_before_anything_is_removed() {
+    let storage = FaultStorage::default();
+    let log = seven_frames(&storage).await;
+    let segment = segment_path(Path::new(DIR), 4);
+    let written = storage.bytes(&segment);
+    storage.capture_steps(Path::new(DIR), Arc::new(AtomicU64::new(0)));
+    log.releaser().release_through(7);
+    removed(&storage, 4).await;
+    let images = storage.take_images();
+    let first = images
+        .iter()
+        .find(|image| {
+            image.step.ends_with("power loss true")
+                && image.storage.exists(&segment).expect("checked")
+        })
+        .expect("a power-loss image taken while segment 4 was there");
+    assert_eq!(
+        first.storage.bytes(&segment),
+        written,
+        "segment 4 after a power loss at {}",
+        first.step
+    );
+    log.close().await.expect("closed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
