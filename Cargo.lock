@@ -837,6 +837,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessarikv-inspect"
+version = "0.1.2"
+dependencies = [
+ "tempfile",
+ "tessarikv",
+ "tessarikv-format",
+ "tessarikv-types",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "tessarikv-sync"
 version = "0.1.2"
 dependencies = [

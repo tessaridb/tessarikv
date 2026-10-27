@@ -1,0 +1,31 @@
+[package]
+name = "tessarikv-inspect"
+description = "Inspect TessariKV databases and table files: the manifest, a table's entries, live keys"
+version = "0.1.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[[bin]]
+name = "tessarikv-inspect"
+path = "src/main.rs"
+
+[dependencies]
+tessarikv = { path = "../tessarikv", version = "0.1.2" }
+tessarikv-format.workspace = true
+tessarikv-types.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

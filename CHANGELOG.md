@@ -46,6 +46,8 @@ All notable changes to this project are documented here. The format follows
   (code `merge_failed`).
 - `Db::set_keyspace_options`: replaces a keyspace's options while the database runs; work starting afterwards
   follows them. A change of compaction style or of in-memory table sizes is refused.
+- `tessarikv-inspect`, a command-line tool: `manifest`, `table` and `scan` print a database's manifest, a table
+  file's entries and its live keys, changing no file.
 - `Db::open_read_only`: opens a database without a lock and reads it as its files hold it, the batches in its
   log included; it changes no file, and every change is refused with the new `Error::ReadOnly` (code `read_only`).
 
