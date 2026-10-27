@@ -12,6 +12,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use super::segments::Segments;
 use super::syncs::{Syncs, durable, sync_beside};
 use super::{Entry, FinishedSegment, Wait};
+use crate::options::Reporter;
 use crate::statistics::Statistics;
 use crate::storage::Storage;
 use crate::{Error, Result};
@@ -95,6 +96,8 @@ pub(super) struct Writer {
     /// The files; lent to a blocking thread while it does I/O.
     segments: Option<Segments>,
     released: Arc<Released>,
+    /// Told when the log stops on a failure.
+    events: Option<Arc<Reporter>>,
 }
 
 impl Writer {
@@ -118,6 +121,7 @@ impl Writer {
                 finished,
             )),
             released,
+            events: None,
         }
     }
 
@@ -137,6 +141,12 @@ impl Writer {
         self
     }
 
+    /// Reports the failure that stops the log to `events`, when there are any.
+    pub(super) fn with_events(mut self, events: Option<Arc<Reporter>>) -> Self {
+        self.events = events;
+        self
+    }
+
     /// Serves entries until every sender is gone, then syncs and returns. A failure is
     /// published before it is returned, so no waiter is left waiting.
     pub(super) async fn run(
@@ -145,8 +155,11 @@ impl Writer {
         progress: watch::Sender<Progress>,
     ) -> Result<()> {
         let result = self.serve(&mut entries, &progress).await;
-        if result.is_err() {
+        if let Err(error) = &result {
             progress.send_modify(|progress| progress.failed = true);
+            if let Some(events) = &self.events {
+                events.background_error(error);
+            }
         }
         result
     }

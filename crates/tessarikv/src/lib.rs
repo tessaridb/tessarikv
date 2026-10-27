@@ -25,12 +25,14 @@ mod tombstones;
 mod transaction;
 mod version;
 
+pub use db::view::properties::KeyspaceProperties;
 pub use db::{Db, DbIterator, ScanPage, ScanRange, Snapshot};
 pub use error::{Error, ErrorCategory, Result};
 pub use options::{
-    CompactionFilter, CompactionStyle, DbOptions, DbOptionsBuilder, Durability, Encryption,
-    FilterDecision, Isolation, KeyProvider, KeyspaceOptions, KeyspaceOptionsBuilder, ReadOptions,
-    StorageMode, TransactionOptions, WalRecovery, WriteOptions,
+    CompactionCompleted, CompactionFilter, CompactionStyle, DbOptions, DbOptionsBuilder,
+    Durability, Encryption, EventListener, FilterDecision, FlushCompleted, Isolation, KeyProvider,
+    KeyspaceOptions, KeyspaceOptionsBuilder, ReadOptions, StallCondition, StorageMode,
+    TransactionOptions, WalRecovery, WriteOptions,
 };
 pub use statistics::{Histogram, HistogramSnapshot, StatisticsSnapshot, Ticker};
 pub use storage::{

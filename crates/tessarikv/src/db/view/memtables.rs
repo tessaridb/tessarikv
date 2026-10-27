@@ -39,6 +39,7 @@ impl View {
             tables,
             files: self.files.clone(),
             deletes: Arc::clone(&self.deletes),
+            levels: Arc::clone(&self.levels),
             names: Arc::clone(&self.names),
             next_keyspace: self.next_keyspace,
         }
@@ -65,6 +66,7 @@ impl View {
             tables,
             files: self.files.clone(),
             deletes: Arc::clone(&self.deletes),
+            levels: Arc::clone(&self.levels),
             names: names.into(),
             next_keyspace: self.next_keyspace.max(id.saturating_add(1)),
         })
@@ -88,6 +90,7 @@ impl View {
         let view = Self {
             tables: self.shared_tables(),
             deletes: super::deletions::gather(&files),
+            levels: super::levels::gather(&files),
             files,
             names: names.into(),
             next_keyspace: self.next_keyspace,
@@ -127,6 +130,7 @@ impl View {
         Ok(Self {
             tables,
             deletes: super::deletions::gather(&files),
+            levels: super::levels::gather(&files),
             files,
             names: Arc::clone(&self.names),
             next_keyspace: self.next_keyspace,

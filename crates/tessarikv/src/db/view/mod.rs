@@ -16,7 +16,11 @@
 //! last reader holding it lets go.
 
 mod deletions;
+mod levels;
 mod memtables;
+pub(crate) mod properties;
+#[cfg(test)]
+mod properties_tests;
 
 use std::sync::Arc;
 
@@ -38,6 +42,8 @@ pub(crate) struct View {
     files: Vec<TableFile>,
     /// The range deletes of the table files, by keyspace.
     deletes: Arc<[deletions::FileDeletes]>,
+    /// The files and bytes of each level, by keyspace.
+    levels: Arc<[(u32, levels::LevelFigures)]>,
     /// The keyspaces beside the default one, by id, with their names.
     names: Names,
     /// Above every keyspace id this view has held: ids are never handed out twice.
@@ -97,6 +103,7 @@ impl View {
             }],
             files: Vec::new(),
             deletes: Arc::new([]),
+            levels: Arc::new([]),
             names: Arc::new([]),
             next_keyspace: 1,
         }
@@ -127,6 +134,7 @@ impl View {
                     .collect(),
             }],
             deletes: deletions::gather(&files),
+            levels: levels::gather(&files),
             files,
             names,
             next_keyspace,
@@ -177,6 +185,7 @@ impl View {
         Self {
             tables: self.shared_tables(),
             deletes: deletions::gather(&files),
+            levels: levels::gather(&files),
             files,
             names: Arc::clone(&self.names),
             next_keyspace: self.next_keyspace,

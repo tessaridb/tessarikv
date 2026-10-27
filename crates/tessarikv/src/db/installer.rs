@@ -43,6 +43,7 @@ use super::flushes::{Flushed, wait};
 use super::rate_limiter::RateLimiter;
 use super::view::View;
 use crate::log::LogRelease;
+use crate::options::Reporter;
 use crate::storage::{Storage, StorageLock};
 use crate::version::manifest::ManifestStore;
 use crate::{Error, KeyspaceOptions, Result};
@@ -73,6 +74,8 @@ pub(super) struct Flusher {
     pub(super) total_memtable_bytes: u64,
     /// Every sequence up to this one is in a frozen table or on table files.
     pub(super) switched: u64,
+    /// Told about flushes, compactions, stalls and the failure that stops the database.
+    pub(super) events: Option<Arc<Reporter>>,
     /// The directory lock, held until the task ends: a database dropped without closing lets
     /// its running flush and compaction finish, and they still write the directory.
     pub(super) _lock: Arc<dyn StorageLock>,
@@ -100,11 +103,14 @@ impl Installer {
             .map(|(_, options)| options.max_immutable_memtables())
             .min()
             .unwrap_or(1);
-        let signals = Arc::new(FlushSignals::new(
-            max_frozen,
-            flusher.delayed_writes,
-            flusher.total_memtable_bytes,
-        ));
+        let signals = Arc::new(
+            FlushSignals::new(
+                max_frozen,
+                flusher.delayed_writes,
+                flusher.total_memtable_bytes,
+            )
+            .with_events(flusher.events.clone()),
+        );
         // Everything at or below the last switch is on table files when the database opens.
         signals.set_flushed(flusher.switched);
         let (shutdown, stop) = watch::channel(false);
@@ -165,7 +171,12 @@ async fn run(
             finished = wait(&mut running), if running.is_some() => {
                 running = None;
                 match finished.and_then(|flushed| flusher.install(&mut frozen, flushed)) {
-                    Ok(through) => signals.set_flushed(through),
+                    Ok(flushed) => {
+                        signals.set_flushed(flushed.flushed_sequence);
+                        if let Some(events) = &flusher.events {
+                            events.listener().flush_completed(&flushed);
+                        }
+                    }
                     Err(error) => {
                         signals.fail(&error);
                         return Err(error);
@@ -239,6 +250,7 @@ async fn settle(
     match stepped.await {
         Ok(published) => {
             signals.set_load(flusher.load());
+            signals.set_owed(flusher.owed_by_keyspace());
             if published {
                 signals.installed();
             }

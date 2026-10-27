@@ -25,6 +25,7 @@ use super::rate_limiter::RateLimiter;
 use super::recover::recover;
 use super::view::View;
 use crate::log::{LogExtras, LogWriter};
+use crate::options::Reporter;
 use crate::sealing::Sealing;
 use crate::statistics::Statistics;
 use crate::storage::{Storage, StorageLock};
@@ -63,6 +64,7 @@ impl Db {
             .encryption()
             .map(|encryption| Arc::new(Sealing::new(encryption, options.encryption_cipher())));
         let statistics = options.statistics().then(|| Arc::new(Statistics::new()));
+        let events = Reporter::of(&options);
         let cache = Arc::new(
             BlockCache::new(options.block_cache_bytes(), keyspace.block_bytes())
                 .with_open_files(options.max_open_files(), Arc::clone(&storage))
@@ -172,6 +174,7 @@ impl Db {
                 seal: log_seal,
                 statistics: statistics.clone(),
                 lock: Some(Arc::clone(&lock)),
+                events: events.clone(),
             },
         )?;
         if replayed {
@@ -199,6 +202,7 @@ impl Db {
             delayed_writes,
             total_memtable_bytes,
             switched: last_sequence,
+            events,
             _lock: Arc::clone(&lock),
         });
         Ok(Self {

@@ -141,6 +141,7 @@ pub(crate) struct LogExtras {
     /// The directory lock, held until the writer task ends, which is after the handle is
     /// dropped: the frames already queued are still written.
     pub(crate) lock: Option<Arc<dyn StorageLock>>,
+    pub(crate) events: Option<Arc<crate::options::Reporter>>,
 }
 
 impl LogWriter {
@@ -167,6 +168,7 @@ impl LogWriter {
             seal,
             statistics,
             lock,
+            events,
         } = extras;
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Unsupported {
             what: "a database outside a tokio runtime",
@@ -184,7 +186,8 @@ impl LogWriter {
             Arc::clone(&released),
         )
         .with_seal_header(seal.as_ref().map(|(header, _)| header.encode()))
-        .with_statistics(statistics);
+        .with_statistics(statistics)
+        .with_events(events);
         let task = runtime.spawn(async move {
             let _held = lock;
             writer.run(receiver, publisher).await

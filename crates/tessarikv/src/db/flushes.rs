@@ -14,7 +14,7 @@ use super::view::TableFile;
 use crate::log::LogWriter;
 use crate::memtable::Memtable;
 use crate::version::manifest::ManifestStore;
-use crate::{Error, Result};
+use crate::{Error, FlushCompleted, Result};
 
 /// The frozen tables of an epoch, one per keyspace, waiting for their flush.
 pub(super) struct Frozen {
@@ -104,21 +104,31 @@ impl Flusher {
     }
 
     /// Publishes the view in which the flushed file replaces the oldest frozen table, and
-    /// releases the log it covers; returns the sequence now on table files.
+    /// releases the log it covers; returns what it installed.
     pub(super) fn install(
         &mut self,
         frozen: &mut VecDeque<Frozen>,
         flushed: Flushed,
-    ) -> Result<u64> {
+    ) -> Result<FlushCompleted> {
         let (manifest, written) = flushed;
         self.manifest = Some(manifest);
         let files = written?;
+        let completed = FlushCompleted {
+            tables: u32::try_from(files.len()).unwrap_or(u32::MAX),
+            bytes: files
+                .iter()
+                .fold(0, |bytes: u64, file| bytes.saturating_add(file.meta.size)),
+            flushed_sequence: 0,
+        };
         let oldest = frozen.pop_front().ok_or(Error::FlushFailed)?;
         let current = self.view.load_full();
         self.view
             .store(Arc::new(current.after_flush(oldest.epoch, files)?));
         self.log.release_through(oldest.flushed);
-        Ok(oldest.flushed)
+        Ok(FlushCompleted {
+            flushed_sequence: oldest.flushed,
+            ..completed
+        })
     }
 }
 

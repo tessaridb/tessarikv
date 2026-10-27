@@ -45,7 +45,7 @@ mod table_blocks;
 mod table_versions;
 mod tables;
 mod verify;
-mod view;
+pub(crate) mod view;
 mod visibility;
 mod write;
 mod write_statistics;

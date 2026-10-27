@@ -17,6 +17,11 @@ All notable changes to this project are documented here. The format follows
 - `CompactionFilter`, `FilterDecision` and `KeyspaceOptionsBuilder::compaction_filter`: compaction asks a
   keyspace's filter about the newest value of each key it writes that no held snapshot can read, and a removed value
   becomes a delete at its version. The options record names the filter.
+- `Db::properties` and `KeyspaceProperties`: a keyspace's files and bytes per level, the bytes compaction owes, an
+  estimate of its live bytes and its in-memory table bytes, read without walking the table files.
+- `EventListener` and `DbOptionsBuilder::event_listener`: the engine reports flushes and compactions once installed
+  (`FlushCompleted`, `CompactionCompleted`), each change of what it asks of writers (`StallCondition`), and, once,
+  the failure that stops the database.
 
 ### Changed
 

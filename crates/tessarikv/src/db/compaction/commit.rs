@@ -9,7 +9,7 @@ use super::pick::Pick;
 use crate::db::flush_job::table_path;
 use crate::db::installer::Flusher;
 use crate::db::view::TableFile;
-use crate::{Error, Result};
+use crate::{CompactionCompleted, Error, KeyspaceId, Result};
 
 impl Compactions {
     /// Appends the edit replacing `pick`'s tables of `keyspace` by `outputs` (by the moved table
@@ -84,9 +84,23 @@ impl Compactions {
                     }),
             );
         }
+        let inputs = || pick.inputs.iter().chain(&pick.overlaps);
+        let completed = CompactionCompleted {
+            keyspace: KeyspaceId::new(keyspace),
+            output_level: u8::try_from(pick.output_level).unwrap_or(u8::MAX),
+            input_tables: u32::try_from(removed.len()).unwrap_or(u32::MAX),
+            output_tables: u32::try_from(added.len()).unwrap_or(u32::MAX),
+            input_bytes: inputs().fold(0, |bytes: u64, table| bytes.saturating_add(table.size)),
+            output_bytes: added
+                .iter()
+                .fold(0, |bytes: u64, file| bytes.saturating_add(file.meta.size)),
+        };
         flusher.view.store(Arc::new(
             current.after_compaction(keyspace, &removed, added),
         ));
+        if let Some(events) = &flusher.events {
+            events.listener().compaction_completed(&completed);
+        }
         Ok(())
     }
 }

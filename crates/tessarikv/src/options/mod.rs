@@ -10,6 +10,7 @@ mod compaction;
 mod compaction_filter;
 mod db;
 mod encryption;
+mod events;
 mod keyspace;
 mod keyspace_bounds;
 mod keyspace_builder;
@@ -25,6 +26,8 @@ mod write;
 #[cfg(test)]
 mod compaction_tests;
 #[cfg(test)]
+mod events_tests;
+#[cfg(test)]
 mod keyspace_tests;
 #[cfg(test)]
 mod tests;
@@ -33,6 +36,8 @@ pub use compaction::CompactionStyle;
 pub use compaction_filter::{CompactionFilter, FilterDecision};
 pub use db::{DbOptions, DbOptionsBuilder};
 pub use encryption::{Encryption, KeyProvider};
+pub(crate) use events::Reporter;
+pub use events::{CompactionCompleted, EventListener, FlushCompleted, StallCondition};
 pub use keyspace::KeyspaceOptions;
 pub use keyspace_builder::KeyspaceOptionsBuilder;
 pub(crate) use keyspaces::DEFAULT_NAME;
