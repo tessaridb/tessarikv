@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A table block that claims to decompress to more than any data block can hold (the largest block size plus one
+  entry with the largest key and value) is refused before anything is allocated; a crafted Zstandard or Deflate
+  block could otherwise make a read allocate up to 4 GiB.
+
 ## [0.1.2] - 2026-10-27
 
 ### Changed

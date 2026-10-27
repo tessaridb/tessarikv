@@ -8,14 +8,16 @@
 //! nothing extra.
 //!
 //! Reading treats the stored bytes as untrusted even after the seal's checksum has passed: a
-//! claimed length larger than the body could expand to is refused before anything is reserved,
-//! the codecs whose expansion is unbounded in practice decode into a buffer that grows only as
-//! output appears, and a body that decodes to any length but the claimed one is refused.
+//! claimed length larger than any data block can hold, or than the body could expand to, is
+//! refused before anything is reserved, the codecs whose expansion is unbounded in practice
+//! decode into a buffer that grows only as output appears, and a body that decodes to any length
+//! but the claimed one is refused.
 
 use std::io::Read;
 
 use ruzstd::decoding::StreamingDecoder;
 use ruzstd::encoding::CompressionLevel;
+use tessarikv_constants::{MAX_BLOCK_BYTES, MAX_KEY_BYTES, MAX_VALUE_BYTES};
 
 use crate::varint;
 
@@ -62,6 +64,18 @@ const SNAPPY_MAX_RATIO: usize = 22;
 /// output appears.
 const ZSTD_RESERVE_RATIO: usize = 8;
 
+/// The largest payload a data block can hold: a block is closed once it reaches its target size
+/// (at most [`MAX_BLOCK_BYTES`]) and then takes one more entry, whose key and value are bounded
+/// by [`MAX_KEY_BYTES`] and [`MAX_VALUE_BYTES`]; 4 KiB covers the key trailer, the entry header
+/// and the restart points.
+pub(super) fn max_payload() -> usize {
+    usize::try_from(MAX_BLOCK_BYTES)
+        .unwrap_or(usize::MAX)
+        .saturating_add(MAX_KEY_BYTES)
+        .saturating_add(MAX_VALUE_BYTES)
+        .saturating_add(4096)
+}
+
 /// `payload` compressed by `compression` with its length in front, and the codec byte to seal it
 /// with; `None` when the codec stores blocks as they are or saves less than an eighth.
 pub(super) fn compress(compression: Compression, payload: &[u8]) -> Option<(Vec<u8>, u8)> {
@@ -106,6 +120,9 @@ pub(super) fn decompress(byte: u8, stored: &[u8]) -> Result<Vec<u8>, &'static st
     let (length, used) = varint::get_u32(stored).ok_or("compressed length")?;
     let body = stored.get(used..).ok_or("compressed length")?;
     let length = usize::try_from(length).map_err(|_| "compressed length")?;
+    if length > max_payload() {
+        return Err("claims more than a block can hold");
+    }
     let payload = match byte {
         LZ4 => {
             bounded(length, body, LZ4_MAX_RATIO)?;

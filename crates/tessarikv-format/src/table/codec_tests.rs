@@ -1,7 +1,7 @@
 use proptest::prelude::*;
 
 use super::Compression;
-use super::codec::{compress, decompress};
+use super::codec::{compress, decompress, max_payload};
 use crate::varint;
 
 /// Every way a table can store its data blocks.
@@ -102,6 +102,69 @@ fn a_length_no_body_could_expand_to_is_refused() {
         varint::put_u32(&mut bomb, u32::MAX);
         bomb.extend_from_slice(&stored[used..]);
         assert!(decompress(byte, &bomb).is_err(), "{codec:?}");
+    }
+}
+
+#[test]
+fn every_codec_refuses_a_block_larger_than_a_block_can_be() {
+    for codec in EVERY.into_iter().skip(1) {
+        let (stored, byte) = compress(codec, &compressible()).expect("compressible");
+        let (_, used) = varint::get_u32(&stored).expect("length");
+        let mut claim = Vec::new();
+        let too_large = u32::try_from(max_payload() + 1).expect("fits the length field");
+        varint::put_u32(&mut claim, too_large);
+        claim.extend_from_slice(&stored[used..]);
+        assert_eq!(
+            decompress(byte, &claim),
+            Err("claims more than a block can hold"),
+            "{codec:?}"
+        );
+    }
+}
+
+/// A valid Zstandard frame of run-length blocks that expands to `len` bytes of `byte`.
+fn zstd_runs(len: usize, byte: u8) -> Vec<u8> {
+    const RUN: usize = 128 * 1024;
+    // Magic, a descriptor without a content size, and a 128 KiB window.
+    let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x38];
+    let mut left = len;
+    while left > 0 {
+        let size = left.min(RUN);
+        left -= size;
+        let last = u32::from(left == 0);
+        let header = last | (1 << 1) | (u32::try_from(size).expect("a run") << 3);
+        frame.extend_from_slice(&header.to_le_bytes()[..3]);
+        frame.push(byte);
+    }
+    frame
+}
+
+#[test]
+fn a_zstd_frame_that_expands_past_any_block_is_refused_before_it_is_decoded() {
+    let len = max_payload() + 1;
+    let mut block = Vec::new();
+    varint::put_u32(
+        &mut block,
+        u32::try_from(len).expect("fits the length field"),
+    );
+    block.extend_from_slice(&zstd_runs(len, 7));
+    assert_eq!(
+        decompress(3, &block).map(|payload| payload.len()),
+        Err("claims more than a block can hold")
+    );
+}
+
+#[test]
+fn a_block_holding_one_entry_past_the_target_size_still_reads() {
+    // 32 MiB of one byte: more than the largest target size, as a block holding one large value is.
+    let payload = vec![b'v'; 32 * 1024 * 1024];
+    for codec in EVERY.into_iter().skip(1) {
+        let (stored, byte) = compress(codec, &payload).expect("compressible");
+        assert_eq!(
+            decompress(byte, &stored).as_deref(),
+            Ok(payload.as_slice()),
+            "{codec:?}"
+        );
     }
 }
 

@@ -49,7 +49,9 @@ pub use source::{BlockSource, OpenError, unseal_block};
 /// How a table is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableOptions {
-    /// A data block is closed once its entries take this many bytes.
+    /// A data block is closed once its entries take this many bytes. Readers refuse a block
+    /// holding more than `MAX_BLOCK_BYTES` plus one largest entry, so keep it at or below
+    /// `tessarikv_constants::MAX_BLOCK_BYTES`.
     pub block_bytes: usize,
     /// Entries between restart points in a data block.
     pub restart_interval: usize,
