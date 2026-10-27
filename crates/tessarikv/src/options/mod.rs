@@ -5,6 +5,7 @@
 //! options value that exists is one the engine accepts. Per-call options ([`ReadOptions`],
 //! [`WriteOptions`]) have no invalid combinations and are plain structs.
 
+mod block_reads;
 mod bounds;
 mod compaction;
 mod compaction_filter;

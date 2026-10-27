@@ -69,7 +69,8 @@ impl Db {
             BlockCache::new(options.block_cache_bytes(), keyspace.block_bytes())
                 .with_open_files(options.max_open_files(), Arc::clone(&storage))
                 .with_sealing(sealing.clone())
-                .with_statistics(statistics.clone()),
+                .with_statistics(statistics.clone())
+                .with_reads_on_worker(options.block_reads_on_worker()),
         );
         let opened = {
             let storage = Arc::clone(&storage);

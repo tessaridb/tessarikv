@@ -49,6 +49,17 @@ fn db_defaults_are_the_documented_constants() {
         options.delayed_write_bytes_per_second(),
         limits::DEFAULT_DELAYED_WRITE_BYTES_PER_SECOND
     );
+    assert!(
+        options.block_reads_on_worker(),
+        "block misses read on the worker"
+    );
+    assert!(
+        !DbOptions::builder()
+            .block_reads_on_worker(false)
+            .build()
+            .unwrap()
+            .block_reads_on_worker()
+    );
 }
 
 #[test]

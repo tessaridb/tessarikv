@@ -20,6 +20,8 @@ pub(crate) struct Reads {
     pub(crate) blocking: AtomicU64,
     /// Files opened and not yet dropped.
     pub(crate) open: AtomicU64,
+    /// Reads made on a thread of a runtime's pools rather than on the caller's own thread.
+    pub(crate) on_pool_threads: AtomicU64,
 }
 
 /// Memory storage whose files count their reads; `inline` decides whether a read promised not
@@ -51,6 +53,12 @@ impl ReadableFile for CountedFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
         // Relaxed: see the module documentation.
         self.reads.blocking.fetch_add(1, Ordering::Relaxed);
+        let pooled = std::thread::current()
+            .name()
+            .is_some_and(|name| name.starts_with("tokio-"));
+        if pooled {
+            self.reads.on_pool_threads.fetch_add(1, Ordering::Relaxed);
+        }
         self.inner.read_at(offset, buf)
     }
 

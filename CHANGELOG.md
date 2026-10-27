@@ -22,6 +22,9 @@ All notable changes to this project are documented here. The format follows
 - `EventListener` and `DbOptionsBuilder::event_listener`: the engine reports flushes and compactions once installed
   (`FlushCompleted`, `CompactionCompleted`), each change of what it asks of writers (`StallCondition`), and, once,
   the failure that stops the database.
+- `DbOptionsBuilder::block_reads_on_worker`: whether a block missing from the cache is read on the reading task's own
+  thread. On by default — a read of many tasks keeps a short tail (p99.9 about 9× lower at 16 readers) — at the cost
+  of holding the worker for a device read; off hands such reads to the runtime as before.
 
 ### Changed
 

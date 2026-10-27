@@ -26,6 +26,7 @@ pub struct DbOptions {
     pub(super) encryption_cipher: Option<tessarikv_format::Cipher>,
     pub(super) max_manifest_bytes: u64,
     pub(super) statistics: bool,
+    pub(super) block_reads_on_worker: bool,
     pub(super) event_listener: Option<super::events::ListenerHandle>,
     default_keyspace: KeyspaceOptions,
     /// Named keyspaces beside the default one (see `keyspaces.rs`).
@@ -52,6 +53,7 @@ impl Default for DbOptions {
             encryption_cipher: None,
             max_manifest_bytes: limits::DEFAULT_MAX_MANIFEST_BYTES,
             statistics: false,
+            block_reads_on_worker: true,
             event_listener: None,
             default_keyspace: KeyspaceOptions::default(),
             keyspaces: Vec::new(),
