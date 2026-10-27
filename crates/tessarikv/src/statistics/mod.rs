@@ -54,11 +54,13 @@ pub enum Ticker {
     CompactionBytesWritten,
     /// Entries compactions left out: overwritten or deleted versions no snapshot needs.
     CompactionKeysDropped,
+    /// Compactions that failed and were left to run again; their inputs stayed as they were.
+    CompactionFailures,
 }
 
 impl Ticker {
     /// Every ticker, in a stable order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::GetCalls,
         Self::MemtableHit,
         Self::MemtableMiss,
@@ -76,6 +78,7 @@ impl Ticker {
         Self::CompactionBytesRead,
         Self::CompactionBytesWritten,
         Self::CompactionKeysDropped,
+        Self::CompactionFailures,
     ];
 
     /// The ticker's stable name, for exporting.
@@ -99,6 +102,7 @@ impl Ticker {
             Self::CompactionBytesRead => "compaction.bytes.read",
             Self::CompactionBytesWritten => "compaction.bytes.written",
             Self::CompactionKeysDropped => "compaction.keys.dropped",
+            Self::CompactionFailures => "compaction.failures",
         }
     }
 
@@ -122,6 +126,7 @@ impl Ticker {
             Self::CompactionBytesRead => 14,
             Self::CompactionBytesWritten => 15,
             Self::CompactionKeysDropped => 16,
+            Self::CompactionFailures => 17,
         }
     }
 }

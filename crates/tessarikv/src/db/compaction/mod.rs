@@ -19,9 +19,14 @@
 //! An input's file is removed once no view names it any more: until then a reader that loaded
 //! an older view may still read it. The installer checks after each install, every
 //! [`SWEEP_INTERVAL`] while a file waits, and when it stops.
+//!
+//! A job that fails changes nothing but the files it began, and waits to run again (see
+//! [`retry`]).
 
+mod below;
 mod commit;
 mod fifo;
+mod hidden;
 mod job;
 mod levels;
 pub(super) mod manual;
@@ -29,6 +34,7 @@ mod output;
 mod pick;
 mod request;
 mod retain;
+mod retry;
 mod split;
 mod universal;
 
@@ -60,13 +66,14 @@ pub(super) use self::levels::owed;
 use self::levels::shape_of;
 use self::manual::{Active, Request};
 use self::pick::{Busy, Pick, Shape};
+use self::retry::Backoff;
 use super::block_cache::BlockCache;
 use super::installer::Flusher;
 use super::table_blocks::TableBlocks;
 use super::view::TableFile;
+use crate::Result;
 use crate::storage::Storage;
 use crate::{CompactionStyle, KeyspaceOptions};
-use crate::{Error, Result};
 
 /// How often the installer looks again at input files a reader still held.
 pub(super) const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -90,6 +97,8 @@ pub(super) struct Compactions {
     /// Range requests waiting, and the one being served.
     queued: VecDeque<Request>,
     active: Option<Active>,
+    /// When jobs may start again after failed ones.
+    backoff: Backoff,
 }
 
 impl Compactions {
@@ -103,27 +112,6 @@ impl Compactions {
         !self.jobs.is_empty()
     }
 
-    /// Waits for a running job and keeps its outputs for [`Compactions::step`]; never returns
-    /// while none runs.
-    ///
-    /// # Errors
-    ///
-    /// The job's error, or [`Error::CompactionFailed`] when its thread died.
-    pub(super) async fn finished(&mut self) -> Result<()> {
-        let Some(joined) = self.jobs.join_next().await else {
-            return std::future::pending().await;
-        };
-        let (number, outputs) = joined.map_err(|_| Error::CompactionFailed)?;
-        let at = self
-            .running
-            .iter()
-            .position(|(running, _, _)| *running == number)
-            .ok_or(Error::CompactionFailed)?;
-        let (_, keyspace, pick) = self.running.swap_remove(at);
-        self.ready.push((number, keyspace, pick, outputs?));
-        Ok(())
-    }
-
     /// Queues a range request; [`Compactions::step`] serves it.
     pub(super) fn request(&mut self, request: Request) {
         self.queued.push_back(request);
@@ -135,7 +123,7 @@ impl Compactions {
     ///
     /// # Errors
     ///
-    /// [`Error::CompactionFailed`] when the manifest edit or a job's start fails.
+    /// [`crate::Error::CompactionFailed`] when the manifest edit or a job's start fails.
     pub(super) async fn step(&mut self, flusher: &mut Flusher, start: bool) -> Result<bool> {
         let mut published = false;
         if flusher.manifest.is_none() {
@@ -152,6 +140,7 @@ impl Compactions {
             self.recorded(number);
         }
         self.refuse_unheld(flusher);
+        let start = start && self.backoff.ready();
         self.sweep(Arc::clone(&flusher.storage), Arc::clone(&flusher.cache))
             .await;
         // Keyspace 0, then the named ones in id order: index 0 is the default keyspace.

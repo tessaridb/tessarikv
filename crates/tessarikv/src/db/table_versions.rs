@@ -42,6 +42,11 @@ impl TableVersions {
         self.finish_move().await;
     }
 
+    pub(super) async fn seek_to_first(&mut self) {
+        self.versions.seek_to_first();
+        self.finish_move().await;
+    }
+
     pub(super) async fn next(&mut self) {
         if self.error.is_none() {
             self.versions.next();
@@ -77,6 +82,11 @@ impl TableVersions {
             kind,
             value: self.versions.value(),
         })
+    }
+
+    /// Whether the versions ended early at a damaged block or key, or a failed load.
+    pub(super) fn failed(&self) -> bool {
+        self.error.is_some()
     }
 
     /// Why the versions ended early, taken once.

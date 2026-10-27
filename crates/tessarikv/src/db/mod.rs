@@ -27,6 +27,7 @@ mod installer;
 mod iterator;
 mod key_check;
 mod keyspaces;
+mod level_versions;
 mod merge;
 mod multi_get;
 mod multi_scan;
@@ -58,6 +59,8 @@ mod background_error_tests;
 mod cache_tests;
 #[cfg(test)]
 mod checkpoint_tests;
+#[cfg(test)]
+mod compaction_error_tests;
 #[cfg(test)]
 mod compaction_model_tests;
 #[cfg(test)]
@@ -101,6 +104,8 @@ mod kill_tests;
 #[cfg(test)]
 mod level0_stall_tests;
 #[cfg(test)]
+mod level_read_tests;
+#[cfg(test)]
 mod level_tests;
 #[cfg(test)]
 mod log_bound_tests;
@@ -124,6 +129,8 @@ mod options_file_tests;
 mod pressure_tests;
 #[cfg(test)]
 mod range_delete_tests;
+#[cfg(test)]
+mod range_reclaim_tests;
 #[cfg(test)]
 mod rate_limiter_tests;
 #[cfg(test)]

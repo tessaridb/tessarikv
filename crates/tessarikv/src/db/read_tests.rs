@@ -103,11 +103,7 @@ pub(super) fn table_file_in(
     written.append(&bytes).unwrap();
     drop(written);
     let (table, blocks) = open_table(storage, &path, id, cache, None).unwrap();
-    TableFile {
-        meta: Arc::new(meta),
-        table,
-        blocks,
-    }
+    TableFile::new(Arc::new(meta), table, blocks).unwrap()
 }
 
 /// The table built from `table`, and the bytes of its file.

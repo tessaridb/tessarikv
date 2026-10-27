@@ -4,12 +4,18 @@
 //! Every batch, plain or transactional, publishes right after its claim and before anything
 //! that can wait: it records the hashes of the keys it writes (and whether it deletes a range)
 //! in a [`ConflictTable`] at its first sequence, then announces its claim with
-//! [`Sequencer::publish`]: two stores into the claim's own ring slot, no shared counter. A
-//! transaction with snapshot `S` and claim `c` first waits until every claim between `S` and `c`
-//! has announced itself ([`Sequencer::wait_published`]), then is refused when one of its keys was
-//! recorded above `S`, when a range delete was recorded above `S`, or, if it deletes a range
-//! itself, when any claim lies between `S` and `c`. Refused, it announces without recording, so
-//! it never refuses anyone else.
+//! [`Sequencer::publish`]: two stores into the claim's own ring slot, no shared counter. A range
+//! delete records the prefix buckets of its range's cover (see [`super::prefixes`]) and a bucket
+//! of its keyspace, and raises the table's range value. A transaction with snapshot `S` and claim
+//! `c` first waits until every claim between `S` and `c` has announced itself
+//! ([`Sequencer::wait_published`]), then is refused when one of its keys was recorded above `S`,
+//! when a range delete recorded above `S` covers one of its keys (a range bucket of the key's
+//! prefixes is above `S`: every key of a range shares a bucket with its cover), or, if it deletes
+//! a range itself, when a range delete of the same keyspace was recorded above `S` or a write may
+//! have landed in its range since (any claim between `S` and `c`, or, where writes record their
+//! prefixes, a prefix bucket of its cover above `S`). The range checks are skipped while the
+//! range value is not above `S`. Refused, it announces without recording, so it never refuses
+//! anyone else.
 //!
 //! Why nothing is missed: a writer `w` with `S < w < c` records before it announces, and the
 //! validator reads the table after the Acquire that observes the announcement (or a `visible`
@@ -21,8 +27,8 @@
 //! Serializable transactions (when the database records prefixes, see [`super::prefixes`]):
 //! every write also records the prefix buckets of its keys, and a serializable transaction is
 //! also refused when a key it read was recorded above its snapshot, or when a range it scanned
-//! shares a prefix bucket recorded above it. (A range delete after the snapshot already refuses
-//! every checked transaction.) Committed serializable transactions
+//! shares a prefix bucket recorded above it, or a range delete of its keyspace was recorded
+//! above it. Committed serializable transactions
 //! then behave as if they ran one at a time in commit order: each one's reads were still
 //! current when it claimed its place. A transaction that writes nothing is never refused.
 //!
@@ -103,16 +109,29 @@ impl Commits {
         let accepted = check.is_none_or(|check| self.accepts(sequencer, first, batch, check));
         if accepted {
             for entry in batch {
-                self.record(entry.keyspace, entry.kind, entry.key, first);
+                self.record(entry.keyspace, entry.kind, entry.key, entry.value, first);
             }
         }
         sequencer.publish(claim);
         accepted
     }
 
-    /// Records one entry of the batch claimed from `first`.
-    fn record(&self, keyspace: KeyspaceId, kind: ValueKind, key: &[u8], first: u64) {
+    /// Records one entry of the batch claimed from `first`; `end` is a range delete's end.
+    fn record(
+        &self,
+        keyspace: KeyspaceId,
+        kind: ValueKind,
+        key: &[u8],
+        end: Option<&[u8]>,
+        first: u64,
+    ) {
         if kind == ValueKind::RangeDelete {
+            self.conflicts
+                .record(range_bucket(keyspace, Kind::Prefix, &[]), first);
+            prefixes::cover(key, end, |kind, bytes| {
+                self.conflicts
+                    .record(range_bucket(keyspace, kind, bytes), first);
+            });
             self.conflicts.record_range(first);
         } else {
             self.conflicts.record(hash(keyspace, key), first);
@@ -135,44 +154,93 @@ impl Commits {
         let snapshot = check.snapshot;
         let before = first.saturating_sub(1);
         sequencer.wait_published(snapshot, before);
-        if self.conflicts.newest_range() > snapshot {
-            return false;
-        }
+        let ranges = self.conflicts.newest_range() > snapshot;
         let writes_current = batch.into_iter().all(|entry| {
             if entry.kind == ValueKind::RangeDelete {
-                // Conservative: any claim since the snapshot may have written into the range.
-                before <= snapshot
+                !(ranges && self.ranged(entry.keyspace, snapshot))
+                    && match &self.prefixes {
+                        Some(table) => {
+                            current(table, entry.keyspace, entry.key, entry.value, snapshot)
+                        }
+                        // Any claim since the snapshot may have written into the range.
+                        None => before <= snapshot,
+                    }
             } else {
-                self.conflicts.newest(hash(entry.keyspace, entry.key)) <= snapshot
+                self.key_current(entry.keyspace, entry.key, snapshot, ranges)
             }
         });
         writes_current
             && check
                 .reads
-                .is_none_or(|reads| self.reads_current(reads, snapshot))
+                .is_none_or(|reads| self.reads_current(reads, snapshot, ranges))
     }
 
     /// Whether nothing was recorded above `snapshot` in a bucket of what `reads` read.
-    fn reads_current(&self, reads: &Reads, snapshot: u64) -> bool {
+    fn reads_current(&self, reads: &Reads, snapshot: u64, ranges: bool) -> bool {
         let Some(table) = &self.prefixes else {
             return false;
         };
-        let mut current = reads
+        reads
             .keys
             .iter()
-            .all(|(keyspace, key)| self.conflicts.newest(hash(*keyspace, key)) <= snapshot);
-        for (keyspace, start, end) in &reads.ranges {
-            prefixes::cover(start, end.as_deref(), |kind, bytes| {
-                current &= table.newest(bucket(*keyspace, kind, bytes)) <= snapshot;
+            .all(|(keyspace, key)| self.key_current(*keyspace, key, snapshot, ranges))
+            && reads.ranges.iter().all(|(keyspace, start, end)| {
+                !(ranges && self.ranged(*keyspace, snapshot))
+                    && current(table, *keyspace, start, end.as_deref(), snapshot)
+            })
+    }
+
+    /// Whether `key` was neither written nor covered by a range delete above `snapshot`; range
+    /// deletes are looked at only when `ranges` says one was recorded above it.
+    fn key_current(&self, keyspace: KeyspaceId, key: &[u8], snapshot: u64, ranges: bool) -> bool {
+        if self.conflicts.newest(hash(keyspace, key)) > snapshot {
+            return false;
+        }
+        let mut covered = false;
+        if ranges {
+            prefixes::buckets_of(key, |kind, bytes| {
+                covered |= self.conflicts.newest(range_bucket(keyspace, kind, bytes)) > snapshot;
             });
         }
-        current
+        !covered
     }
+
+    /// Whether a range delete of `keyspace` was recorded above `snapshot`.
+    fn ranged(&self, keyspace: KeyspaceId, snapshot: u64) -> bool {
+        self.conflicts
+            .newest(range_bucket(keyspace, Kind::Prefix, &[]))
+            > snapshot
+    }
+}
+
+/// Whether nothing was recorded in `table` above `snapshot` in a prefix bucket of the cover of
+/// `[start, end)` (unbounded above for `None`) in `keyspace`.
+fn current(
+    table: &ConflictTable,
+    keyspace: KeyspaceId,
+    start: &[u8],
+    end: Option<&[u8]>,
+    snapshot: u64,
+) -> bool {
+    let mut current = true;
+    prefixes::cover(start, end, |kind, bytes| {
+        current &= table.newest(bucket(keyspace, kind, bytes)) <= snapshot;
+    });
+    current
 }
 
 /// The key's hash, mixed with its keyspace.
 fn hash(keyspace: KeyspaceId, key: &[u8]) -> u64 {
     key_hash(key) ^ u64::from(keyspace.get()).wrapping_mul(KEYSPACE_MIX)
+}
+
+/// Keeps the buckets range deletes record apart from those of keys and prefixes.
+const RANGE_MIX: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// The hash of a bucket a range delete of `keyspace` records: one of its cover, or, for the
+/// empty prefix (which no cover names), the keyspace's own.
+fn range_bucket(keyspace: KeyspaceId, kind: Kind, bytes: &[u8]) -> u64 {
+    bucket(keyspace, kind, bytes) ^ RANGE_MIX
 }
 
 /// The hash of a prefix bucket: its kind, then its bytes, mixed with the keyspace.

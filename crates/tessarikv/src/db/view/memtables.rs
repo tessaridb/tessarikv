@@ -4,10 +4,8 @@ use std::sync::Arc;
 
 use tessarikv_sync::next_epoch;
 
-use super::super::tables;
 use super::{EpochTables, TableFile, View};
 use crate::memtable::Memtable;
-use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
 impl View {
@@ -40,6 +38,7 @@ impl View {
         Self {
             tables,
             files: self.files.clone(),
+            deletes: Arc::clone(&self.deletes),
             names: Arc::clone(&self.names),
             next_keyspace: self.next_keyspace,
         }
@@ -65,6 +64,7 @@ impl View {
         Ok(Self {
             tables,
             files: self.files.clone(),
+            deletes: Arc::clone(&self.deletes),
             names: names.into(),
             next_keyspace: self.next_keyspace.max(id.saturating_add(1)),
         })
@@ -74,7 +74,7 @@ impl View {
     /// while its in-memory tables stay in their epochs, so a write that found it before it was
     /// dropped still finds its table; new tables leave it out (see [`View::with_next_table`]).
     pub(crate) fn without_keyspace(&self, id: u32) -> (Self, Vec<TableFile>) {
-        let (removed, files) = self
+        let (removed, files): (Vec<TableFile>, Vec<TableFile>) = self
             .files
             .iter()
             .cloned()
@@ -87,6 +87,7 @@ impl View {
             .collect();
         let view = Self {
             tables: self.shared_tables(),
+            deletes: super::deletions::gather(&files),
             files,
             names: names.into(),
             next_keyspace: self.next_keyspace,
@@ -125,6 +126,7 @@ impl View {
         }
         Ok(Self {
             tables,
+            deletes: super::deletions::gather(&files),
             files,
             names: Arc::clone(&self.names),
             next_keyspace: self.next_keyspace,
@@ -201,22 +203,6 @@ impl View {
     /// How many epochs have in-memory tables: the newest and those frozen behind it.
     pub(crate) fn epochs(&self) -> usize {
         self.tables.len()
-    }
-
-    /// The range deletes of the in-memory tables and the table files of `keyspace`.
-    ///
-    /// # Errors
-    ///
-    /// [`crate::Error::Corruption`] for a damaged range-delete block in a table file.
-    pub(crate) fn tombstones(&self, keyspace: u32) -> Result<Vec<RangeTombstone>> {
-        let mut tombstones = Vec::new();
-        for table in self.memtables(keyspace) {
-            table.tombstones(&mut tombstones);
-        }
-        for file in self.files(keyspace) {
-            tables::tombstones(&file.table, &mut tombstones)?;
-        }
-        Ok(tombstones)
     }
 
     /// The tables of `keyspace` with their epochs, newest first.

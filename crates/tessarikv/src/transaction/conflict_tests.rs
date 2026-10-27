@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 use crate::log::fault::FaultStorage;
-use crate::{Db, DbOptions, Error, KeyspaceId, ReadOptions, Result, WriteBatch, WriteOptions};
+use crate::{
+    Db, DbOptions, Error, KeyspaceId, KeyspaceOptions, ReadOptions, Result, WriteBatch,
+    WriteOptions,
+};
 
 const KS: KeyspaceId = KeyspaceId::DEFAULT;
 
@@ -96,19 +99,38 @@ async fn transactions_writing_different_keys_both_commit() {
     assert_eq!(read(&db, b"b").await, Some(b"2".to_vec()));
 }
 
-/// Range deletes are checked conservatively: one committed after the snapshot refuses every
-/// writing transaction, and a transaction's own range delete is refused after any later commit.
+/// A range delete committed after the snapshot refuses a transaction that writes a key in its
+/// range of its keyspace, and no other; a transaction's own range delete is refused after any
+/// later commit (see the serializable tests for a database that records key prefixes).
 #[tokio::test]
-async fn range_deletes_after_the_snapshot_refuse_conservatively() {
-    let db = memory().await;
-    let mut txn = db.begin().expect("began");
+async fn range_deletes_after_the_snapshot_refuse_the_keys_they_cover() {
+    let options = DbOptions::in_memory()
+        .to_builder()
+        .keyspace("other", KeyspaceOptions::default())
+        .build()
+        .expect("valid");
+    let db = Db::open("conflicts", options).await.expect("opened");
+    let other = db.keyspace("other").expect("held");
+    let mut inside = db.begin().expect("began");
+    let mut outside = db.begin().expect("began");
+    let mut elsewhere = db.begin().expect("began");
     let mut batch = WriteBatch::new();
     batch.delete_range(KS, b"x", b"y").expect("range");
     db.write(&batch, &WriteOptions::default())
         .await
         .expect("written");
-    txn.put(KS, b"a", b"1").expect("put");
-    assert_conflict(txn.commit(&WriteOptions::default()).await);
+    inside.put(KS, b"xa", b"1").expect("put");
+    assert_conflict(inside.commit(&WriteOptions::default()).await);
+    outside.put(KS, b"a", b"1").expect("put");
+    outside
+        .commit(&WriteOptions::default())
+        .await
+        .expect("a key outside the range commits");
+    elsewhere.put(other, b"xa", b"1").expect("put");
+    elsewhere
+        .commit(&WriteOptions::default())
+        .await
+        .expect("another keyspace commits");
 
     let mut ranged = db.begin().expect("began");
     put(&db, b"z", b"later").await;

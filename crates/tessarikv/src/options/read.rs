@@ -4,10 +4,9 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ReadOptions {
-    /// Verify the checksum of every block read from a table (default `true`).
-    ///
-    /// Turning it off trades corruption detection for a little CPU; a corrupt block then decodes
-    /// to an error or to wrong data instead of a [`crate::ErrorCategory::Corruption`] error.
+    /// Has no effect: every block read from a table is verified against its checksum whatever
+    /// this says, and a corrupt one is a [`crate::ErrorCategory::Corruption`] error. Kept so code
+    /// that sets it still builds (default `true`).
     pub verify_checksums: bool,
     /// Keep the blocks this read loads in the block cache (default `true`).
     ///

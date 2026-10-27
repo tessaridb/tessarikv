@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tessarikv_format::{Compression, TableMeta, TableOptions};
 use tessarikv_types::{SequenceNumber, ValueKind};
 
+use super::below::Outside;
 use super::job::Job;
 use super::output::Destination;
 use super::retain::Retention;
@@ -68,6 +69,7 @@ fn every_version_of_a_key_goes_to_one_output_table() {
         to: destination(),
         inputs: vec![input(&entries, 1)],
         deeper: Vec::new(),
+        outside: Outside::default(),
         retention: Retention::new(121, &snapshots),
         parts: 1,
     }
@@ -103,6 +105,7 @@ fn a_delete_stays_while_a_deeper_level_may_hold_its_key() {
             },
             inputs: vec![input(&entries, 1)],
             deeper,
+            outside: Outside::default(),
             retention: Retention::new(20, &[]),
             parts: 1,
         }
@@ -196,6 +199,7 @@ fn a_compaction_split_into_parts_writes_what_one_part_writes() {
             },
             inputs: tables.clone(),
             deeper: Vec::new(),
+            outside: Outside::default(),
             retention: Retention::new(1000, &[150, 250]),
             parts,
         }
@@ -215,8 +219,14 @@ fn a_compaction_split_into_parts_writes_what_one_part_writes() {
     }
     let (entries, deletes) = written(&whole);
     // Snapshots 150 and 250 keep one version per stripe: keys 0-19 one, 20-29 two (tables 0-1
-    // and 2), 30-49 three (tables 0-1, 2 and 3), 50-69 one.
-    assert_eq!(entries.len(), 20 + 20 + 60 + 20, "every kept version");
+    // and 2), 30-49 three (tables 0-1, 2 and 3), 50-69 one; less the versions a newer range
+    // delete of their own stripe hides: keys 5-9 of table 0 (its delete, oldest stripe) and keys
+    // 35-54 of table 3 (its delete, newest stripe).
+    assert_eq!(
+        entries.len(),
+        20 + 20 + 60 + 20 - 5 - 20,
+        "every kept version"
+    );
     assert_eq!(written(&split), (entries, deletes));
 }
 
@@ -234,6 +244,7 @@ fn a_paced_compaction_charges_its_limiter_every_byte_it_writes() {
         },
         inputs: vec![input(&entries, 1)],
         deeper: Vec::new(),
+        outside: Outside::default(),
         retention: Retention::new(31, &(1..=30).collect::<Vec<_>>()),
         parts: 1,
     }

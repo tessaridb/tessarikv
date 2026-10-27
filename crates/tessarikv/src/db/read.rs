@@ -5,13 +5,12 @@ use std::time::Instant;
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::Db;
-use super::merge::{MergedVersions, Source};
-use super::table_versions::TableVersions;
+use super::level_versions::Span;
+use super::merge::{MergedVersions, sources};
 use super::tables::{TableLookup, lookup};
 use super::view::View;
 use crate::memtable::Lookup;
 use crate::statistics::{Histogram, Statistics, Ticker};
-use crate::tombstones::Fragments;
 use crate::{ReadOptions, Result};
 
 /// One page of a scan: live entries in key order, and where the next page starts.
@@ -150,20 +149,20 @@ async fn get_uncounted(
     fill_cache: bool,
     statistics: Option<&Statistics>,
 ) -> Result<Option<Vec<u8>>> {
-    let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
-    if !fragments.is_empty() {
-        return get_merged(view, keyspace, key, snapshot, &fragments, fill_cache).await;
-    }
+    // A range delete covering the key deletes every version below its sequence.
+    let floor = view
+        .deletions(keyspace.get(), snapshot)
+        .covering(key)
+        .map_or(0, SequenceNumber::get);
     // Newest first, in-memory tables before table files: the first that decides the key
-    // answers for it. Without range deletes a table file whose key range misses the key cannot
-    // decide it, so only the files whose range holds it are read.
-    let decided = view
-        .memtables(keyspace.get())
-        .find_map(|table| match table.get(key, snapshot) {
+    // answers for it, and a table file whose key range misses the key cannot decide it.
+    let decided = view.memtables(keyspace.get()).find_map(|table| {
+        match table.get_above(key, snapshot, floor) {
             Lookup::Value(value) => Some(Some(value.to_vec())),
             Lookup::Deleted => Some(None),
             Lookup::Absent => None,
-        });
+        }
+    });
     if let Some(statistics) = statistics {
         let ticker = if decided.is_some() {
             Ticker::MemtableHit
@@ -176,7 +175,7 @@ async fn get_uncounted(
         return Ok(value);
     }
     for file in view.candidates(keyspace.get(), key) {
-        match lookup(file, key, snapshot, fill_cache, statistics).await? {
+        match lookup(file, key, snapshot, floor, fill_cache, statistics).await? {
             TableLookup::Value(value) => return Ok(Some(value)),
             TableLookup::Deleted => return Ok(None),
             TableLookup::Absent => {}
@@ -212,8 +211,12 @@ pub(super) async fn scan_in(
 ) -> Result<ScanPage> {
     let ScanRange { start, end, limit } = range;
     let mut page = ScanPage::default();
-    let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
-    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache));
+    let fragments = view.deletions(keyspace.get(), snapshot);
+    let span = Span {
+        low: Some(start),
+        high: end,
+    };
+    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache, span));
     versions.seek(start, snapshot).await;
     // The user key last decided, kept in one buffer reused across keys.
     let mut decided: Option<Vec<u8>> = None;
@@ -242,39 +245,4 @@ pub(super) async fn scan_in(
     }
     versions.finish()?;
     Ok(page)
-}
-
-/// Every source of `keyspace` in `view`, borrowed: in-memory tables, then table files.
-fn sources(view: &View, keyspace: KeyspaceId, fill_cache: bool) -> Vec<Source<'_>> {
-    view.memtables(keyspace.get())
-        .map(|table| Source::Memtable(table.iter()))
-        .chain(
-            view.files(keyspace.get())
-                .map(|file| Source::Table(Box::new(TableVersions::new(file, fill_cache)))),
-        )
-        .collect()
-}
-
-/// The value of `key` when range deletes may hide it: the newest version at the snapshot,
-/// unless a fragment with a higher sequence covers it.
-async fn get_merged(
-    view: &View,
-    keyspace: KeyspaceId,
-    key: &[u8],
-    snapshot: SequenceNumber,
-    fragments: &Fragments,
-    fill_cache: bool,
-) -> Result<Option<Vec<u8>>> {
-    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache));
-    versions.seek(key, snapshot).await;
-    let value = versions
-        .entry()
-        .filter(|version| {
-            version.user_key == key
-                && version.kind == ValueKind::Value
-                && !fragments.deletes(key, version.sequence)
-        })
-        .map(|version| version.value.to_vec());
-    versions.finish()?;
-    Ok(value)
 }

@@ -139,7 +139,14 @@ impl Memtable {
     }
 
     /// The newest version of `key` whose sequence is at most `snapshot`.
+    #[cfg(test)]
     pub(crate) fn get(&self, key: &[u8], snapshot: SequenceNumber) -> Lookup<'_> {
+        self.get_above(key, snapshot, 0)
+    }
+
+    /// The newest version of `key` whose sequence is at most `snapshot`, with every version
+    /// below sequence `floor` deleted: a range delete at `floor` covers the key.
+    pub(crate) fn get_above(&self, key: &[u8], snapshot: SequenceNumber, floor: u64) -> Lookup<'_> {
         if !self.keys.may_contain(key_hash(key)) {
             return Lookup::Absent;
         }
@@ -158,6 +165,9 @@ impl Memtable {
         if found.user_key() != key {
             return Lookup::Absent;
         }
+        if found.trailer().sequence().get() < floor {
+            return Lookup::Deleted;
+        }
         match found.trailer().kind() {
             Ok(ValueKind::Value) => Lookup::Value(cursor.value()),
             Ok(ValueKind::Delete) => Lookup::Deleted,
@@ -168,6 +178,13 @@ impl Memtable {
     /// Every version in the table, in internal-key order.
     pub(crate) fn iter(&self) -> MemtableIter<'_> {
         MemtableIter::new(self.entries.cursor())
+    }
+
+    /// Whether the table holds a range delete; a read with none to apply skips them.
+    pub(crate) fn has_range_deletes(&self) -> bool {
+        let mut cursor = self.range_deletes.cursor();
+        cursor.seek_to_first();
+        cursor.valid()
     }
 
     /// The table's range deletes, appended to `out`.

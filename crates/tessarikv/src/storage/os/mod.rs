@@ -54,6 +54,12 @@ impl Storage for OsStorage {
         fs::rename(from, to).map_err(|error| Error::io("rename", from, error))
     }
 
+    fn link(&self, from: &Path, to: &Path) -> bool {
+        // Any failure (another file system, no support) leaves the copy to the caller, which
+        // reports a real I/O fault when it hits one.
+        fs::hard_link(from, to).is_ok()
+    }
+
     fn list(&self, dir: &Path) -> Result<Vec<String>> {
         let mut names = Vec::new();
         for entry in fs::read_dir(dir).map_err(|error| Error::io("list", dir, error))? {

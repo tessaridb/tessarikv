@@ -20,8 +20,9 @@
 //! Writes stall while the newest table is full and as many tables are frozen as the keyspace
 //! allows: memory stays bounded by that many tables plus one.
 //!
-//! Between flushes the installer also runs compactions, one at a time (see
-//! [`super::compaction`]); a failed compaction stops writes like a failed flush.
+//! Between flushes the installer also runs compactions (see [`super::compaction`]); a failed
+//! compaction job leaves its inputs as they are and is tried again later, while a failed
+//! manifest edit for one stops writes like a failed flush.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -151,10 +152,12 @@ async fn run(
     let mut compactions = Compactions::default();
     let mut catalog = Catalog::default();
     let mut stopping = false;
+    let cache = Arc::clone(&flusher.cache);
     // Levels recovered past a trigger compact now: no write may come to wake the installer
     // while the levels hold writes.
     settle(&mut flusher, &mut compactions, &mut catalog, &signals, true).await?;
     loop {
+        let retry_at = compactions.retry_at();
         tokio::select! {
             // Shutdown first: no new flush starts after it, the running one finishes.
             biased;
@@ -169,7 +172,7 @@ async fn run(
                     }
                 }
             }
-            compacted = compactions.finished(), if compactions.is_running() => {
+            compacted = compactions.finished(cache.statistics()), if compactions.is_running() => {
                 if let Err(error) = compacted {
                     signals.fail(&error);
                     return Err(error);
@@ -183,6 +186,7 @@ async fn run(
             },
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
+            () = sleep_until(retry_at), if retry_at.is_some() && !stopping => {}
         }
         // Finished work is recorded even while stopping; no new job starts then.
         settle(
@@ -207,6 +211,14 @@ async fn run(
         {
             running = Some(flusher.start_flush(oldest, &signals)?);
         }
+    }
+}
+
+/// Waits until `at`; never returns for `None`.
+async fn sleep_until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
     }
 }
 

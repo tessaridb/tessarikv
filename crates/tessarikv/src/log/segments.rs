@@ -137,17 +137,34 @@ impl Segments {
         }
     }
 
-    /// Whether the oldest finished segment holds nothing past `through`.
+    /// Whether a segment holds nothing past `through`: the oldest finished one, or the current
+    /// one, which [`Segments::remove_through`] then finishes.
     pub(super) fn has_removable(&self, through: u64) -> bool {
         self.finished
             .front()
             .is_some_and(|segment| segment.last <= through)
+            || self.current_released(through)
     }
 
-    /// Removes finished segments, oldest first, while every frame in them is at or below
-    /// `through`. Runs on a blocking thread. A segment whose removal fails stays first in line
-    /// for the next round: nothing acknowledged depends on it being gone.
-    pub(super) fn remove_through(&mut self, through: u64) {
+    /// Whether the current segment is open and holds nothing past `through`.
+    fn current_released(&self, through: u64) -> bool {
+        self.file.is_some() && self.current_last <= through
+    }
+
+    /// Removes the segments, oldest first, while every frame in them is at or below `through`;
+    /// the current one is finished first when that holds for it too, so a flush that released
+    /// every frame leaves no log behind. Runs on a blocking thread. A segment whose removal fails
+    /// stays first in line for the next round: nothing acknowledged depends on it being gone.
+    ///
+    /// # Errors
+    ///
+    /// The storage's error when the current segment cannot be synced as it is finished.
+    pub(super) fn remove_through(&mut self, through: u64) -> Result<()> {
+        if self.current_released(through) {
+            // Synced although every frame is in a synced table: a segment whose removal fails, or
+            // is cut short by a crash, must not end the replay at a torn tail before later ones.
+            self.roll()?;
+        }
         while let Some(segment) = self.finished.front().copied() {
             if segment.last > through {
                 break;
@@ -162,6 +179,7 @@ impl Segments {
                 Err(_) => break,
             }
         }
+        Ok(())
     }
 
     /// Creates the current segment and makes its directory entry durable.

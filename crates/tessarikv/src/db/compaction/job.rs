@@ -2,8 +2,8 @@
 //!
 //! Every input is walked from its first version, its blocks read on this thread and not kept
 //! in the cache; the walks are merged in internal-key order, so each user key's versions arrive
-//! newest first, and [`Retention`] decides which are written. Range deletes are carried to the
-//! outputs unchanged.
+//! newest first, and [`Retention`] decides which are written, less what a range delete hides
+//! (see [`super::hidden`]).
 //!
 //! A job whose inputs start at more than one key is split at up to
 //! [`crate::KeyspaceOptions::max_subcompactions`] `- 1` of those keys: each part merges its own
@@ -18,15 +18,16 @@ use tessarikv_types::{
     InternalKeyRef, SequenceNumber, ValueKind, compare_internal, encode_internal, seek_trailer,
 };
 
-use super::output::{Destination, Outputs};
+use super::below::{Outside, deeper, deeper_holds};
+use super::hidden::Hidden;
+use super::output::{self, Destination, Outputs};
 use super::pick::Pick;
 use super::retain::Retention;
 use super::split;
 use crate::db::flush_job::table_options;
 use crate::db::installer::Flusher;
-use crate::db::tables::{self, format_error, user_key};
+use crate::db::tables::{format_error, user_key};
 use crate::db::view::TableFile;
-use crate::statistics::{Statistics, Ticker};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
@@ -36,6 +37,9 @@ pub(crate) struct Job {
     pub(crate) inputs: Vec<TableFile>,
     /// The tables of every level below the output level, by level, each in key order.
     pub(crate) deeper: Vec<Vec<Arc<TableMeta>>>,
+    /// Every other table of the keyspace, and their range deletes: one may hold a version under
+    /// an input's range delete, and theirs hide versions of the inputs too.
+    pub(crate) outside: Outside,
     pub(crate) retention: Retention,
     /// Parts the merge is split into at most.
     pub(crate) parts: usize,
@@ -99,6 +103,7 @@ impl Job {
             },
             inputs,
             deeper: deeper(pick, levels, &wanted),
+            outside: Outside::of(current.files(keyspace), &wanted),
             retention: Retention::new(horizon.visible(), horizon.snapshots()),
             // Split parts write tables of one age side by side; within level 0 each would be a
             // run of its own, so a merge there is never split.
@@ -118,56 +123,78 @@ impl Job {
     /// [`Error::Corruption`] for a damaged input, and the storage's error when reading an input
     /// or writing an output fails.
     pub(crate) fn run(self) -> Result<Vec<TableFile>> {
-        let mut tombstones = Vec::new();
-        for file in &self.inputs {
-            tables::tombstones(&file.table, &mut tombstones)?;
-        }
+        let tombstones: Vec<RangeTombstone> = self
+            .inputs
+            .iter()
+            .flat_map(|file| file.tombstones.iter().cloned())
+            .collect();
+        let (hidden, tombstones) = Hidden::new(&tombstones, &self.retention, &self.outside);
         let cuts = split::boundaries(
             self.inputs
                 .iter()
                 .map(|file| user_key(&file.meta.smallest).to_vec()),
             self.parts,
         );
-        let written = if cuts.is_empty() {
-            self.merge(None, None, &tombstones)?
+        let parts = if cuts.is_empty() {
+            vec![self.merge(None, None, &tombstones, &hidden)]
         } else {
             let lows = std::iter::once(None).chain(cuts.iter().map(|cut| Some(cut.as_slice())));
             let highs = cuts.iter().map(|cut| Some(cut.as_slice())).chain([None]);
             let job = &self;
             let tombstones = &tombstones;
+            let hidden = &hidden;
             std::thread::scope(|scope| {
                 let parts: Vec<_> = lows
                     .zip(highs)
                     .map(|(low, high)| {
                         std::thread::Builder::new()
                             .name("tessarikv-subcompaction".to_owned())
-                            .spawn_scoped(scope, move || job.merge(low, high, tombstones))
+                            .spawn_scoped(scope, move || job.merge(low, high, tombstones, hidden))
                     })
                     .collect();
-                let mut written = Vec::new();
-                for part in parts {
-                    let part = part.map_err(|_| Error::CompactionFailed)?;
-                    written.extend(part.join().map_err(|_| Error::CompactionFailed)??);
-                }
-                Ok::<_, Error>(written)
-            })?
+                // Every part is waited for, so a failed one's siblings' tables can be removed.
+                parts
+                    .into_iter()
+                    .map(|part| {
+                        part.map_err(|_| Error::CompactionFailed)?
+                            .join()
+                            .map_err(|_| Error::CompactionFailed)?
+                    })
+                    .collect()
+            })
         };
-        if !written.is_empty() {
-            self.to.storage.sync_dir(&self.to.dir)?;
+        let mut written = Vec::new();
+        let mut failed = None;
+        for part in parts {
+            match part {
+                Ok(tables) => written.extend(tables),
+                Err(error) => failed = failed.or(Some(error)),
+            }
+        }
+        if failed.is_none()
+            && !written.is_empty()
+            && let Err(error) = self.to.storage.sync_dir(&self.to.dir)
+        {
+            failed = Some(error);
+        }
+        if let Some(error) = failed {
+            output::discard(&self.to, written);
+            return Err(error);
         }
         if let Some(statistics) = self.to.cache.statistics() {
-            count(statistics, &self.inputs, &written);
+            output::count(statistics, &self.inputs, &written);
         }
         Ok(written)
     }
 
     /// Merges the user keys in `[low, high)` (unbounded where `None`) with the range deletes
-    /// starting there, and writes and syncs their output tables.
+    /// starting there, leaving out what `hidden` hides, and writes and syncs their output tables.
     fn merge(
         &self,
         low: Option<&[u8]>,
         high: Option<&[u8]>,
         tombstones: &[RangeTombstone],
+        hidden: &Hidden,
     ) -> Result<Vec<TableFile>> {
         let inside =
             |key: &[u8]| low.is_none_or(|low| low <= key) && high.is_none_or(|high| key < high);
@@ -177,6 +204,25 @@ impl Job {
             .cloned()
             .collect();
         let mut outputs = Outputs::new(&self.to, &tombstones);
+        match self.fill(&mut outputs, low, high, hidden) {
+            Ok(()) => outputs.finish(),
+            Err(error) => {
+                outputs.discard();
+                Err(error)
+            }
+        }
+    }
+
+    /// Writes the versions of the user keys in `[low, high)` that are kept to `outputs`.
+    fn fill(
+        &self,
+        outputs: &mut Outputs<'_>,
+        low: Option<&[u8]>,
+        high: Option<&[u8]>,
+        hidden: &Hidden,
+    ) -> Result<()> {
+        let inside =
+            |key: &[u8]| low.is_none_or(|low| low <= key) && high.is_none_or(|high| key < high);
         let mut target = Vec::new();
         if let Some(low) = low {
             encode_internal(low, seek_trailer(SequenceNumber::MAX), &mut target);
@@ -215,40 +261,16 @@ impl Job {
                 first = false;
             }
             let sequence = parsed.trailer().sequence().get();
-            let keep = decisions.keeps(sequence, kind, || deeper_holds(&self.deeper, &key));
+            let keep = decisions.keeps(sequence, kind, || deeper_holds(&self.deeper, &key))
+                && !hidden.hides(&self.retention, &key, sequence);
             if keep && matches!(kind, ValueKind::Value | ValueKind::Delete) {
                 outputs.add(stored, starts_key, walk.versions.value())?;
             }
             walk.versions.next();
             settle(walk.file, &mut walk.versions)?;
         }
-        outputs.finish()
+        Ok(())
     }
-}
-
-/// The tables below `pick`'s output that may hold older versions of its keys, each list in key
-/// order: every level below the output level and, for a merge within level 0, each level-0
-/// table it leaves out (older than those it merges), as a list of its own.
-pub(super) fn deeper(
-    pick: &Pick,
-    levels: &[Vec<Arc<TableMeta>>; LEVELS],
-    merged: &[u64],
-) -> Vec<Vec<Arc<TableMeta>>> {
-    let older_runs = levels
-        .first()
-        .filter(|_| pick.output_level == 0)
-        .into_iter()
-        .flatten()
-        .filter(|table| !merged.contains(&table.id))
-        .map(|table| vec![Arc::clone(table)]);
-    older_runs
-        .chain(
-            levels
-                .iter()
-                .skip(pick.output_level.saturating_add(1))
-                .cloned(),
-        )
-        .collect()
 }
 
 /// Loads the blocks the last move of `versions` waits for, and reports a damaged block.
@@ -259,16 +281,6 @@ fn settle(file: &TableFile, versions: &mut TableIter) -> Result<()> {
         .map_err(|error| format_error(&error, None))
 }
 
-/// Whether a table of a level below the output may hold `key`.
-fn deeper_holds(deeper: &[Vec<Arc<TableMeta>>], key: &[u8]) -> bool {
-    deeper.iter().any(|level| {
-        let at = level.partition_point(|table| user_key(&table.largest) < key);
-        level
-            .get(at)
-            .is_some_and(|table| user_key(&table.smallest) <= key)
-    })
-}
-
 fn corrupt() -> Error {
     Error::Corruption {
         what: "table",
@@ -276,23 +288,4 @@ fn corrupt() -> Error {
         offset: None,
         detail: "a stored key has no trailer or a kind this build does not read".to_owned(),
     }
-}
-
-/// Counts a compaction of `inputs` into `outputs`: the bytes it read and wrote, and the entries
-/// it left out.
-fn count(statistics: &Statistics, inputs: &[TableFile], outputs: &[TableFile]) {
-    let bytes = |files: &[TableFile]| {
-        files
-            .iter()
-            .fold(0_u64, |total, file| total.saturating_add(file.meta.size))
-    };
-    let entries = |files: &[TableFile]| {
-        files.iter().fold(0_u64, |total, file| {
-            total.saturating_add(file.table.entries())
-        })
-    };
-    statistics.record(Ticker::CompactionBytesRead, bytes(inputs));
-    statistics.record(Ticker::CompactionBytesWritten, bytes(outputs));
-    let dropped = entries(inputs).saturating_sub(entries(outputs));
-    statistics.record(Ticker::CompactionKeysDropped, dropped);
 }

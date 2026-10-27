@@ -13,6 +13,9 @@
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-6B5FD1?style=flat-square)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.89-6B5FD1?style=flat-square)](#building)
 
+[kv.tessaridb.com](https://kv.tessaridb.com) · [docs](https://docs.tessaridb.com/kv) ·
+[TessariDB](https://github.com/tessaridb/tessaridb)
+
 </div>
 
 TessariKV is the LSM tree under [TessariDB](https://github.com/tessaridb/tessaridb): every table, index, log and
@@ -33,12 +36,12 @@ still change in a minor release before 1.0.
 | In-memory table | lock-free skiplist with a whole-key filter that lets reads of absent keys skip it; a database can also live entirely in memory; `DbOptions::total_memtable_bytes` caps the newest tables of every keyspace together |
 | Tables | sorted blocks with prefix compression, an index, a bloom filter and a checksum on every block; LZ4 (default), Snappy, Zstandard or Deflate per keyspace, with a separate codec for the bottom level; `Db::verify_checksums` re-reads every table file from storage and verifies each block |
 | Encryption | `DbOptions::encryption` with a caller's `KeyProvider`: every file holding data or metadata (tables, log, manifest, options record) is encrypted and authenticated (AES-256-GCM, or ChaCha20-Poly1305 without AES instructions; `DbOptionsBuilder::encryption_cipher` pins one) under a key of its own; a wrong or missing key is refused before any of them is read; to rotate, new files take the current key id, and an old key is needed until compaction has rewritten every file naming it |
-| Statistics | `DbOptions::statistics` turns them on, `Db::statistics` reads them: tickers since open (point reads, in-memory table hits and misses, block cache hits and misses, block bytes read, filter outcomes, entries and bytes written, log bytes and syncs, stall time, flush bytes, compaction bytes read and written, entries compactions dropped) and per-interval latency histograms for point reads and writes; each count is one wait-free add on a per-thread stripe |
+| Statistics | `DbOptions::statistics` turns them on, `Db::statistics` reads them: tickers since open (point reads, in-memory table hits and misses, block cache hits and misses, block bytes read, filter outcomes, entries and bytes written, log bytes and syncs, stall time, flush bytes, compaction bytes read and written, entries compactions dropped, compactions that failed) and per-interval latency histograms for point reads and writes; each count is one wait-free add on a per-thread stripe |
 | Block cache | lock-free CLOCK cache, sized by `DbOptions::block_cache_bytes`; `DbOptions::max_open_files` bounds the table files kept open |
-| Flush | background flush to table files named by a synced manifest, replaced by a fresh one past `DbOptions::max_manifest_bytes`; recovery replays only the log above them, flushes what it replayed and removes that log; `Db::flush` on demand; a failed flush, compaction or log write stops writes and `Db::background_error` reports it |
-| Checkpoint | `Db::checkpoint` writes a consistent copy of a live database into another directory, holding every batch committed before the call; the copy opens as a database of its own |
+| Flush | background flush to table files named by a synced manifest, replaced by a fresh one past `DbOptions::max_manifest_bytes`; recovery replays only the log above them, flushes what it replayed and removes that log; `Db::flush` on demand; a failed flush, log write or manifest edit stops writes and `Db::background_error` reports it |
+| Checkpoint | `Db::checkpoint` writes a consistent copy of a live database into another directory, holding every batch committed before the call; the copy opens as a database of its own; on a file system its table files are hard links, so it costs no table bytes |
 | Destroy | `Db::destroy` removes every file the engine wrote in a database's directory, in an order a crash cannot turn into a partial database; an open database is refused |
-| Compaction | leveled (default), universal and FIFO; several compactions at once, each split into parallel parts; rate-limited output; `Db::compact_range` on demand; automatic compactions can be turned off per keyspace for bulk loads |
+| Compaction | leveled (default), universal and FIFO; several compactions at once, each split into parallel parts; rate-limited output; a compaction that fails (a full disk, an unreadable input) removes the files it began, leaves its inputs in place and runs again after a growing wait, while writes go on; `Db::compact_range` on demand; automatic compactions can be turned off per keyspace for bulk loads |
 | Backpressure | writes slow down, then stop, on level-0 size, pending compaction bytes and unflushed tables |
 | Keyspaces | independent sets of keys, each with its own options, in-memory tables, levels and compactions; named at open, created or dropped while running (`Db::create_keyspace`, `Db::drop_keyspace`); a batch may span several and stays atomic across crashes; every open records the options it runs with in `OPTIONS-<n>` |
 

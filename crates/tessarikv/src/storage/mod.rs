@@ -90,6 +90,15 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
     ///
     /// [`crate::Error::Locked`] when another holder has it.
     fn lock(&self, path: &Path) -> Result<Box<dyn StorageLock>>;
+
+    /// Gives the file at `from`, which is never written again, the second name `to`; returns
+    /// whether it did. A storage that cannot (the default), or not between these two places,
+    /// returns `false`, and the caller copies the file instead. The new name is durable once
+    /// `to`'s directory is synced.
+    fn link(&self, from: &Path, to: &Path) -> bool {
+        let _ = (from, to);
+        false
+    }
 }
 
 /// The single writer of one file.

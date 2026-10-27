@@ -6,6 +6,44 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-27
+
+### Changed
+
+- Scans and iterators read each level below 0 as one ordered source and open only the table files their range or
+  bounds reach, so a positioned read touches one file per level instead of every file of the keyspace.
+- A point read beside range deletes keeps its usual path through the table filters: it finds the newest range delete
+  covering the key and reads the key as deleted when its newest version is older. Before, any range delete in a
+  keyspace made every point read merge all of its sources. A table file's range deletes are read once when it opens
+  and cut into fragments once per view, not on every read.
+
+- A compaction that fails — an output that cannot be written or synced, an input that cannot be read — no longer
+  stops writes. It removes the files it began, leaves its inputs as they were and runs again after a wait that starts
+  at 100 ms and doubles up to 30 s; `Db::compact_range` returns the error of the compaction it waited for. Failures
+  are counted by the new `Ticker::CompactionFailures`. A failed manifest edit still stops writes.
+
+- A range delete committed after a transaction began refuses it only when its range may cover a key the transaction
+  writes, or reads under serializable isolation, in the same keyspace. Before, any range delete in any keyspace
+  refused every transaction begun before it. A transaction's own range delete is refused by a later write into its
+  range (with `serializable_transactions`) or a later range delete of its keyspace, as before by any later commit
+  without it.
+
+- A flush releases the log segment it emptied: the segment being written is closed and removed once every frame in
+  it is held by a table, so the log no longer keeps flushed writes until it reaches its size limit, and opening
+  replays less.
+- `Db::checkpoint` links the table files into the copy where the storage can, instead of copying their bytes.
+
+### Added
+
+- `Storage::link`, which gives a file that is never written again a second name; it returns `false` by default, and
+  the operating-system storage makes a hard link.
+
+### Fixed
+
+- Range deletes now free their space: a compaction drops the versions a newer range delete hides when no snapshot
+  can still read them, and drops the range delete itself once no other table file can hold a version under it.
+  Before, every range delete and everything it covered stayed in the table files for good.
+
 ## [0.1.1] - 2026-10-24
 
 ### Fixed
@@ -209,7 +247,9 @@ The first release with a stable on-disk file format: a database written by 0.1.0
   `Db::keyspace` and `Db::keyspaces` look them up. Each keyspace flushes, compacts and paces writes by its own options; a batch spanning keyspaces is
   recovered whole or not at all.
 
-[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/tessaridb/tessarikv/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/tessaridb/tessarikv/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/tessaridb/tessarikv/compare/v0.0.2...v0.1.0
 [0.0.2]: https://github.com/tessaridb/tessarikv/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/tessaridb/tessarikv/releases/tag/v0.0.1

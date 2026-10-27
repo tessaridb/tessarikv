@@ -23,8 +23,10 @@ impl Db {
     /// committed before the call; the copy opens as a database of its own, with the same options
     /// (and the same key provider, when encrypted). The batches still in memory are flushed
     /// first, then the table files of that moment are copied with a manifest naming them, so the
-    /// copy needs no log. Reads and writes go on meanwhile; writes after the call are not in the
-    /// copy. The table files copied are kept from removal until the copy is done.
+    /// copy needs no log; where the storage can, a table file is linked under a second name
+    /// instead of copied (a table file is never written again). Reads and writes go on meanwhile;
+    /// writes after the call are not in the copy. The table files copied are kept from removal
+    /// until the copy is done.
     ///
     /// # Errors
     ///
@@ -85,7 +87,11 @@ impl Copy {
         self.storage.create_dir_all(&self.to)?;
         for file in view.all_files() {
             let id = file.meta.id;
-            self.copy(&table_path(&self.from, id), &table_path(&self.to, id))?;
+            let (from, to) = (table_path(&self.from, id), table_path(&self.to, id));
+            // A table file is never written again, so a second name serves as well as a copy.
+            if !self.storage.link(&from, &to) {
+                self.copy(&from, &to)?;
+            }
         }
         let key_check = self.from.join(KEY_CHECK);
         if self.storage.exists(&key_check)? {
