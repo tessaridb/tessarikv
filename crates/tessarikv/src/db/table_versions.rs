@@ -124,7 +124,9 @@ impl TableVersions {
 fn parse(encoded: &[u8]) -> Option<(InternalKeyRef<'_>, ValueKind)> {
     let key = InternalKeyRef::parse(encoded).ok()?;
     match key.trailer().kind() {
-        Ok(kind @ (ValueKind::Value | ValueKind::Delete)) => Some((key, kind)),
+        Ok(kind @ (ValueKind::Value | ValueKind::ExpiringValue | ValueKind::Delete)) => {
+            Some((key, kind))
+        }
         Ok(ValueKind::RangeDelete) | Err(_) => None,
     }
 }

@@ -12,9 +12,16 @@ All notable changes to this project are documented here. The format follows
   defaults use `read_at` and `try_read_at`; the OS storage reads into memory that is not zeroed first.
 - `WritableFile::syncer` and the `FileSyncer` trait: a handle that syncs a file from another thread while appends
   go on. The default is `None`, and the log then syncs as before.
+- `WriteBatch::put_expiring`: a put that reads as absent from the time it names on, hiding the older versions of
+  its key as a delete would; compaction writes it out as a delete once that time has passed.
+- `CompactionFilter`, `FilterDecision` and `KeyspaceOptionsBuilder::compaction_filter`: compaction asks a
+  keyspace's filter about the newest value of each key it writes that no held snapshot can read, and a removed value
+  becomes a delete at its version. The options record names the filter.
 
 ### Changed
 
+- The store format is 2, and the write batch encoding version 3, for expiring puts. Format 1 databases open and are
+  stamped 2; releases before this one refuse a format 2 database at open.
 - A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed
   block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
 - A `Durability::Buffered` write whose log frames fit the open segment is appended by the log task itself instead of

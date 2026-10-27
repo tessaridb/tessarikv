@@ -30,6 +30,7 @@ use tessarikv_types::{
     seek_trailer,
 };
 
+use crate::expiry::{Seen, seen};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
@@ -120,7 +121,7 @@ impl Memtable {
         value: &[u8],
     ) -> Result<()> {
         let (list, value) = match kind {
-            ValueKind::Value => (&self.entries, value),
+            ValueKind::Value | ValueKind::ExpiringValue => (&self.entries, value),
             ValueKind::Delete => (&self.entries, &[][..]),
             ValueKind::RangeDelete => (&self.range_deletes, value),
         };
@@ -169,9 +170,13 @@ impl Memtable {
             return Lookup::Deleted;
         }
         match found.trailer().kind() {
-            Ok(ValueKind::Value) => Lookup::Value(cursor.value()),
-            Ok(ValueKind::Delete) => Lookup::Deleted,
             Ok(ValueKind::RangeDelete) | Err(_) => Lookup::Absent,
+            Ok(kind) => match seen(kind, cursor.value()) {
+                Seen::Value(value) => Lookup::Value(value),
+                Seen::Absent => Lookup::Deleted,
+                // Never inserted: a batch holding one is refused when it is decoded.
+                Seen::Malformed => Lookup::Absent,
+            },
         }
     }
 

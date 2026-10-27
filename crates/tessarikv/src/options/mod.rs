@@ -7,6 +7,7 @@
 
 mod bounds;
 mod compaction;
+mod compaction_filter;
 mod db;
 mod encryption;
 mod keyspace;
@@ -29,6 +30,7 @@ mod keyspace_tests;
 mod tests;
 
 pub use compaction::CompactionStyle;
+pub use compaction_filter::{CompactionFilter, FilterDecision};
 pub use db::{DbOptions, DbOptionsBuilder};
 pub use encryption::{Encryption, KeyProvider};
 pub use keyspace::KeyspaceOptions;

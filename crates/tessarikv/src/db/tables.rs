@@ -13,6 +13,7 @@ use tessarikv_types::{InternalKeyRef, Trailer, ValueKind, compare_internal, enco
 
 use super::lookup_key::LookupKey;
 use super::view::TableFile;
+use crate::expiry::{Seen, malformed, seen};
 use crate::memtable::Memtable;
 use crate::sealing::Sealing;
 use crate::statistics::{Statistics, Ticker};
@@ -261,8 +262,13 @@ pub(crate) async fn lookup(
     }
     // The seek lands on the newest version at or below the snapshot.
     Ok(match found.trailer().kind() {
-        Ok(ValueKind::Value) => TableLookup::Value(versions.value().to_vec()),
-        Ok(ValueKind::Delete) => TableLookup::Deleted,
+        Ok(kind @ (ValueKind::Value | ValueKind::ExpiringValue | ValueKind::Delete)) => {
+            match seen(kind, versions.value()) {
+                Seen::Value(value) => TableLookup::Value(value.to_vec()),
+                Seen::Absent => TableLookup::Deleted,
+                Seen::Malformed => return Err(malformed()),
+            }
+        }
         // Range deletes are kept in their own block, never among the versions.
         Ok(ValueKind::RangeDelete) | Err(_) => {
             return Err(Error::Corruption {

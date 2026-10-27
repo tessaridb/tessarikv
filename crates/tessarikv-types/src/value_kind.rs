@@ -14,6 +14,10 @@ pub enum ValueKind {
     Value = 1,
     /// Every key in `[this key, the entry's value)` is absent from this version on.
     RangeDelete = 2,
+    /// The key holds the entry's value until the time its expiry stamp names (see
+    /// [`split_expiring`](crate::split_expiring)), and is absent from then on: an expired
+    /// version hides the older ones like a delete.
+    ExpiringValue = 3,
 }
 
 impl ValueKind {
@@ -27,6 +31,7 @@ impl ValueKind {
             Self::Delete => 0,
             Self::Value => 1,
             Self::RangeDelete => 2,
+            Self::ExpiringValue => 3,
         }
     }
 
@@ -40,6 +45,7 @@ impl ValueKind {
             0 => Ok(Self::Delete),
             1 => Ok(Self::Value),
             2 => Ok(Self::RangeDelete),
+            3 => Ok(Self::ExpiringValue),
             other => Err(Error::UnknownValueKind(other)),
         }
     }

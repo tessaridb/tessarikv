@@ -7,6 +7,7 @@ use tessarikv_types::{SequenceNumber, ValueKind};
 use super::below::Outside;
 use super::job::Job;
 use super::output::Destination;
+use super::removal::Removing;
 use super::retain::Retention;
 use crate::db::block_cache::BlockCache;
 use crate::db::flush_job::FileNumbers;
@@ -72,6 +73,10 @@ fn every_version_of_a_key_goes_to_one_output_table() {
         outside: Outside::default(),
         retention: Retention::new(121, &snapshots),
         parts: 1,
+        removing: Removing {
+            now: 0,
+            filter: None,
+        },
     }
     .run()
     .unwrap();
@@ -108,6 +113,10 @@ fn a_delete_stays_while_a_deeper_level_may_hold_its_key() {
             outside: Outside::default(),
             retention: Retention::new(20, &[]),
             parts: 1,
+            removing: Removing {
+                now: 0,
+                filter: None,
+            },
         }
         .run()
         .unwrap();
@@ -202,6 +211,10 @@ fn a_compaction_split_into_parts_writes_what_one_part_writes() {
             outside: Outside::default(),
             retention: Retention::new(1000, &[150, 250]),
             parts,
+            removing: Removing {
+                now: 0,
+                filter: None,
+            },
         }
         .run()
         .unwrap()
@@ -247,6 +260,10 @@ fn a_paced_compaction_charges_its_limiter_every_byte_it_writes() {
         outside: Outside::default(),
         retention: Retention::new(31, &(1..=30).collect::<Vec<_>>()),
         parts: 1,
+        removing: Removing {
+            now: 0,
+            filter: None,
+        },
     }
     .run()
     .unwrap();

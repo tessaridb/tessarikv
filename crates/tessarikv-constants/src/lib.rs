@@ -17,7 +17,7 @@ pub use log::{
 /// or older, and refuses a later one at open, before reading its tables or logs. Format 0 is a
 /// store from before the format was recorded. A release that writes a layout an older build
 /// cannot read raises it; one that only adds a field older builds may skip does not.
-pub const STORE_FORMAT: u32 = 1;
+pub const STORE_FORMAT: u32 = 2;
 
 /// How many bits of an internal key's trailer hold the sequence number.
 ///

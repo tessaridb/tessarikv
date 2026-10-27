@@ -1,9 +1,12 @@
 //! Options for one keyspace: its memtables and the tables it writes.
 
+use std::sync::Arc;
+
 use tessarikv_constants::{self as limits, LEVELS};
 use tessarikv_format::Compression;
 
 use super::compaction::CompactionStyle;
+use super::compaction_filter::{CompactionFilter, FilterHandle};
 use super::keyspace_builder::KeyspaceOptionsBuilder;
 
 /// Validated options of one keyspace. Built through [`KeyspaceOptions::builder`] or a preset.
@@ -28,6 +31,7 @@ pub struct KeyspaceOptions {
     pub(super) target_file_bytes: u64,
     pub(super) compression: Compression,
     pub(super) bottommost_compression: Option<Compression>,
+    pub(super) compaction_filter: Option<FilterHandle>,
 }
 
 impl Default for KeyspaceOptions {
@@ -52,6 +56,7 @@ impl Default for KeyspaceOptions {
             target_file_bytes: limits::DEFAULT_TARGET_FILE_BYTES,
             compression: Compression::Lz4,
             bottommost_compression: None,
+            compaction_filter: None,
         }
     }
 }
@@ -164,6 +169,13 @@ impl KeyspaceOptions {
     #[must_use]
     pub const fn max_subcompactions(&self) -> u32 {
         self.max_subcompactions
+    }
+
+    /// The filter compaction asks which values to keep (default none); see
+    /// [`CompactionFilter`] for what it is shown.
+    #[must_use]
+    pub fn compaction_filter(&self) -> Option<&Arc<dyn CompactionFilter>> {
+        self.compaction_filter.as_ref().map(|handle| &handle.0)
     }
 
     /// Whether the engine never starts a compaction of this keyspace by itself (default

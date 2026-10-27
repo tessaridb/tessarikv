@@ -22,6 +22,7 @@ use super::below::{Outside, deeper, deeper_holds};
 use super::hidden::Hidden;
 use super::output::{self, Destination, Outputs};
 use super::pick::Pick;
+use super::removal::Removing;
 use super::retain::Retention;
 use super::split;
 use crate::db::flush_job::table_options;
@@ -43,6 +44,7 @@ pub(crate) struct Job {
     pub(crate) retention: Retention,
     /// Parts the merge is split into at most.
     pub(crate) parts: usize,
+    pub(crate) removing: Removing,
 }
 
 /// One input's walk.
@@ -112,6 +114,7 @@ impl Job {
             } else {
                 usize::try_from(options.max_subcompactions()).unwrap_or(1)
             },
+            removing: Removing::of(options),
         })
     }
 
@@ -240,6 +243,7 @@ impl Job {
         }
         let mut key: Vec<u8> = Vec::new();
         let mut decisions = self.retention.key();
+        let mut removal = self.removing.with(&self.retention);
         let mut first = true;
         // The inputs are few (level 0 and the tables it touches), so the least is found by a scan.
         while let Some(walk) = walks
@@ -261,10 +265,14 @@ impl Job {
                 first = false;
             }
             let sequence = parsed.trailer().sequence().get();
-            let keep = decisions.keeps(sequence, kind, || deeper_holds(&self.deeper, &key))
-                && !hidden.hides(&self.retention, &key, sequence);
-            if keep && matches!(kind, ValueKind::Value | ValueKind::Delete) {
-                outputs.add(stored, starts_key, walk.versions.value())?;
+            let value = walk.versions.value();
+            let (written, hides) = removal.kind_of(&decisions, hidden, kind, &parsed, value)?;
+            let keep =
+                decisions.keeps(sequence, written, || deeper_holds(&self.deeper, &key)) && !hides;
+            if keep && written != kind {
+                outputs.add(removal.delete_key(&parsed), starts_key, &[])?;
+            } else if keep && kind != ValueKind::RangeDelete {
+                outputs.add(stored, starts_key, value)?;
             }
             walk.versions.next();
             settle(walk.file, &mut walk.versions)?;

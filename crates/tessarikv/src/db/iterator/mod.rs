@@ -6,7 +6,7 @@ mod backward;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
+use tessarikv_types::{KeyspaceId, SequenceNumber};
 
 use super::Db;
 use super::level_versions::{LevelVersions, Span};
@@ -14,6 +14,7 @@ use super::merge::{MergedVersions, Source};
 use super::snapshot::Snapshot;
 use super::table_versions::TableVersions;
 use super::view::View;
+use crate::expiry::{Seen, malformed, seen, written_value};
 use crate::memtable::MemtableCursor;
 use crate::tombstones::Deletions;
 use crate::{ReadOptions, Result};
@@ -161,7 +162,9 @@ impl<'a> DbIterator<'a> {
         if self.backward {
             return &self.saved;
         }
-        self.versions.entry().map_or(&[], |version| version.value)
+        self.versions
+            .entry()
+            .map_or(&[], |version| written_value(version.kind, version.value))
     }
 
     /// Moves to the least key, or to the lower bound.
@@ -242,9 +245,15 @@ impl<'a> DbIterator<'a> {
             if !passed {
                 self.key.clear();
                 self.key.extend_from_slice(version.user_key);
-                if version.kind == ValueKind::Value
-                    && !self.fragments.deletes(version.user_key, version.sequence)
-                {
+                let live = match seen(version.kind, version.value) {
+                    Seen::Value(_) => true,
+                    Seen::Absent => false,
+                    Seen::Malformed => {
+                        self.key.clear();
+                        return Err(malformed());
+                    }
+                };
+                if live && !self.fragments.deletes(version.user_key, version.sequence) {
                     self.valid = true;
                     break;
                 }

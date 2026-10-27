@@ -72,7 +72,7 @@ async fn read(db: &Db, index: u32) -> Option<Vec<u8>> {
 }
 
 /// The versions every table file stores, by user key, and each table's level and number.
-async fn stored(db: &Db) -> (BTreeMap<Vec<u8>, usize>, Vec<(u8, u64)>) {
+pub(super) async fn stored(db: &Db) -> (BTreeMap<Vec<u8>, usize>, Vec<(u8, u64)>) {
     let files: Vec<_> = db.view.load().files(0).cloned().collect();
     tokio::task::spawn_blocking(move || {
         let mut versions_of = BTreeMap::new();

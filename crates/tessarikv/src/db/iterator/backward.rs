@@ -8,6 +8,7 @@ use tessarikv_types::{SequenceNumber, Trailer, ValueKind, encode_internal, seek_
 
 use super::DbIterator;
 use crate::Result;
+use crate::expiry::{Seen, malformed, seen};
 
 impl DbIterator<'_> {
     /// Moves to the greatest key, or the greatest below the upper bound.
@@ -99,11 +100,19 @@ impl DbIterator<'_> {
                     break;
                 }
                 if version.sequence <= self.snapshot {
-                    live = version.kind == ValueKind::Value
+                    let value = match seen(version.kind, version.value) {
+                        Seen::Value(value) => Some(value),
+                        Seen::Absent => None,
+                        Seen::Malformed => {
+                            self.key.clear();
+                            return Err(malformed());
+                        }
+                    };
+                    live = value.is_some()
                         && !self.fragments.deletes(version.user_key, version.sequence);
-                    if live {
+                    if let Some(value) = value.filter(|_| live) {
                         self.saved.clear();
-                        self.saved.extend_from_slice(version.value);
+                        self.saved.extend_from_slice(value);
                     }
                 }
                 self.versions.prev().await;

@@ -203,6 +203,52 @@ fn a_version_1_batch_decodes_but_may_not_carry_a_range_delete() {
     ));
 }
 
+#[test]
+fn an_expiring_put_round_trips_with_its_stamp_and_older_versions_may_not_carry_one() {
+    let expires_at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_234);
+    let mut batch = WriteBatch::new();
+    batch
+        .put_expiring(KeyspaceId::DEFAULT, b"k", b"v", expires_at)
+        .unwrap();
+    let decoded = WriteBatch::from_bytes(batch.as_bytes().to_vec()).unwrap();
+    let mut stored = 1_234_u64.to_be_bytes().to_vec();
+    stored.extend_from_slice(b"v");
+    assert_eq!(
+        entries(&decoded),
+        vec![(0, ValueKind::ExpiringValue, b"k".to_vec(), Some(stored))]
+    );
+    for version in [1, 2] {
+        let mut old = batch.as_bytes().to_vec();
+        old[0] = version;
+        assert!(
+            matches!(
+                WriteBatch::from_bytes(old),
+                Err(Error::Malformed {
+                    what: "write batch entry kind",
+                    ..
+                })
+            ),
+            "version {version}"
+        );
+    }
+}
+
+#[test]
+fn an_expiring_put_shorter_than_its_stamp_is_refused() {
+    let mut batch = WriteBatch::new();
+    batch.put(KeyspaceId::DEFAULT, b"k", b"1234567").unwrap();
+    let mut forged = batch.as_bytes().to_vec();
+    // The first entry's kind byte follows the 5-byte header.
+    forged[5] = ValueKind::ExpiringValue.to_byte();
+    assert!(matches!(
+        WriteBatch::from_bytes(forged),
+        Err(Error::Malformed {
+            what: "write batch expiring put",
+            ..
+        })
+    ));
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
 

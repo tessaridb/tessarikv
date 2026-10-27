@@ -32,6 +32,7 @@ mod levels;
 pub(super) mod manual;
 mod output;
 mod pick;
+mod removal;
 mod request;
 mod retain;
 mod retry;
@@ -39,7 +40,11 @@ mod split;
 mod universal;
 
 #[cfg(test)]
+mod expiry_tests;
+#[cfg(test)]
 mod fifo_tests;
+#[cfg(test)]
+mod filter_tests;
 #[cfg(test)]
 mod job_tests;
 #[cfg(test)]

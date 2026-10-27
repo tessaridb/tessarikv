@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
+use tessarikv_types::{KeyspaceId, SequenceNumber};
 
 use super::Db;
 use super::level_versions::Span;
@@ -10,6 +10,7 @@ use super::lookup_key::LookupKey;
 use super::merge::{MergedVersions, sources};
 use super::tables::{TableLookup, lookup};
 use super::view::View;
+use crate::expiry::{Seen, malformed, seen};
 use crate::memtable::Lookup;
 use crate::statistics::{Histogram, Statistics, Ticker};
 use crate::{ReadOptions, Result};
@@ -232,7 +233,12 @@ pub(super) async fn scan_in(
             let key = decided.get_or_insert_with(Vec::new);
             key.clear();
             key.extend_from_slice(version.user_key);
-            if version.kind == ValueKind::Value
+            let value = match seen(version.kind, version.value) {
+                Seen::Value(value) => Some(value),
+                Seen::Absent => None,
+                Seen::Malformed => return Err(malformed()),
+            };
+            if let Some(value) = value
                 && !fragments.deletes(version.user_key, version.sequence)
             {
                 if page.entries.len() >= limit {
@@ -240,7 +246,7 @@ pub(super) async fn scan_in(
                     break;
                 }
                 page.entries
-                    .push((version.user_key.to_vec(), version.value.to_vec()));
+                    .push((version.user_key.to_vec(), value.to_vec()));
             }
         }
         versions.next().await;
