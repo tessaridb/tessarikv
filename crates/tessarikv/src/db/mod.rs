@@ -128,6 +128,8 @@ mod pressure_tests;
 #[cfg(test)]
 mod range_delete_tests;
 #[cfg(test)]
+mod range_reclaim_tests;
+#[cfg(test)]
 mod rate_limiter_tests;
 #[cfg(test)]
 mod read_tests;

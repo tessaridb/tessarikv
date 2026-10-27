@@ -163,7 +163,10 @@ async fn differential(options: fn() -> DbOptions) {
 
 /// The number of versions of each user key in the table files below level 0 numbered above
 /// `after`, by level.
-async fn versions_below_level_zero(db: &Db, after: u64) -> Vec<BTreeMap<Vec<u8>, usize>> {
+pub(super) async fn versions_below_level_zero(
+    db: &Db,
+    after: u64,
+) -> Vec<BTreeMap<Vec<u8>, usize>> {
     let files: Vec<_> = db
         .view
         .load()

@@ -11,7 +11,9 @@
 //! so it is dropped too, unless an older version of the key may remain in a level below the
 //! compaction's output, which the delete must go on hiding.
 //!
-//! Range deletes are not decided here; a compaction carries them unchanged.
+//! A version a range delete hides is dropped when no reader can tell: the range delete is newer
+//! and in the same stripe (see [`super::job`]). A range delete in the oldest stripe is dropped
+//! once nothing outside the compaction can hold a version under it.
 
 use tessarikv_types::ValueKind;
 
@@ -42,6 +44,18 @@ impl Retention {
         boundaries.sort_unstable();
         boundaries.dedup();
         Self { boundaries }
+    }
+
+    /// The stripe of `sequence`: the index of the least boundary at or above it, which is the
+    /// number of boundaries when it is above the visible sequence.
+    pub(crate) fn stripe(&self, sequence: u64) -> usize {
+        self.boundaries
+            .partition_point(|boundary| *boundary < sequence)
+    }
+
+    /// Whether `stripe` lies above the visible sequence, where every version is kept.
+    pub(crate) fn above_visible(&self, stripe: usize) -> bool {
+        stripe >= self.boundaries.len()
     }
 
     /// The decisions for the next key.

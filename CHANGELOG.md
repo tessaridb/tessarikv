@@ -15,6 +15,12 @@ All notable changes to this project are documented here. The format follows
   keyspace made every point read merge all of its sources. A table file's range deletes are read once when it opens
   and cut into fragments once per view, not on every read.
 
+### Fixed
+
+- Range deletes now free their space: a compaction drops the versions a newer range delete hides when no snapshot
+  can still read them, and drops the range delete itself once no other table file can hold a version under it.
+  Before, every range delete and everything it covered stayed in the table files for good.
+
 ## [0.1.1] - 2026-10-24
 
 ### Fixed

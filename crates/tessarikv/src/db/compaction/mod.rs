@@ -20,8 +20,10 @@
 //! an older view may still read it. The installer checks after each install, every
 //! [`SWEEP_INTERVAL`] while a file waits, and when it stops.
 
+mod below;
 mod commit;
 mod fifo;
+mod hidden;
 mod job;
 mod levels;
 pub(super) mod manual;
