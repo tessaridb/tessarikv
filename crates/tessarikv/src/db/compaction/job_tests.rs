@@ -30,6 +30,7 @@ fn destination() -> Destination {
             block_bytes: 256,
             restart_interval: 2,
             bloom_bits_per_key: 10,
+            filter: tessarikv_format::FilterPolicy::Bloom,
             compression: Compression::None,
             prefix_length: None,
         },

@@ -17,6 +17,9 @@ use crate::{ReadOptions, Result};
 
 pub(super) mod operands;
 
+#[cfg(test)]
+mod filter_tests;
+
 /// One page of a scan: live entries in key order, and where the next page starts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanPage {

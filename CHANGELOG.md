@@ -48,6 +48,9 @@ All notable changes to this project are documented here. The format follows
   follows them. A change of compaction style or of in-memory table sizes is refused.
 - `tessarikv-inspect`, a command-line tool: `manifest`, `table` and `scan` print a database's manifest, a table
   file's entries and its live keys, changing no file.
+- `FilterPolicy` and `KeyspaceOptionsBuilder::filter_policy`: a keyspace's tables can keep a ribbon filter in place
+  of the bloom filter — at ten bits per key about three quarters of the bytes (7.6 bits per key) with 0.77 % of
+  absent keys passing against 0.99 %, at a higher cost to build. Tables already written keep their filter.
 - `Db::open_read_only`: opens a database without a lock and reads it as its files hold it, the batches in its
   log included; it changes no file, and every change is refused with the new `Error::ReadOnly` (code `read_only`).
 
@@ -56,8 +59,9 @@ All notable changes to this project are documented here. The format follows
 - Opening a keyspace that holds tables below level 0 with `CompactionStyle::Fifo` is refused with
   `Error::InvalidOptions` for `keyspace.compaction`: first-in-first-out compaction never removes those tables. Every
   other change of compaction style between opens is allowed.
-- The store format is 4, and the write batch encoding version 4, for expiring puts, blob files and merge operands.
-  Format 1 to 3 databases open and are stamped 4; releases before this one refuse a format 4 database at open.
+- The store format is 4, the write batch encoding version 4 and the table format 4, for expiring puts, blob files,
+  merge operands and ribbon filters. Format 1 to 3 databases open and are stamped 4; releases before this one refuse
+  a format 4 database at open.
 - A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed
   block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
 - A `Durability::Buffered` write whose log frames fit the open segment is appended by the log task itself instead of

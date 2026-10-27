@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use tessarikv_constants::{self as limits, LEVELS};
-use tessarikv_format::Compression;
+use tessarikv_format::{Compression, FilterPolicy};
 
 use super::compaction::CompactionStyle;
 use super::compaction_filter::{CompactionFilter, FilterHandle};
@@ -17,6 +17,7 @@ pub struct KeyspaceOptions {
     pub(super) block_bytes: u64,
     pub(super) block_restart_interval: u32,
     pub(super) bloom_bits_per_key: u32,
+    pub(super) filter_policy: FilterPolicy,
     pub(super) level0_compaction_trigger: u32,
     pub(super) level0_slowdown_trigger: u32,
     pub(super) level0_stop_trigger: u32,
@@ -46,6 +47,7 @@ impl Default for KeyspaceOptions {
             block_bytes: limits::DEFAULT_BLOCK_BYTES,
             block_restart_interval: limits::DEFAULT_BLOCK_RESTART_INTERVAL,
             bloom_bits_per_key: limits::DEFAULT_BLOOM_BITS_PER_KEY,
+            filter_policy: FilterPolicy::Bloom,
             level0_compaction_trigger: limits::DEFAULT_LEVEL0_COMPACTION_TRIGGER,
             level0_slowdown_trigger: limits::DEFAULT_LEVEL0_SLOWDOWN_TRIGGER,
             level0_stop_trigger: limits::DEFAULT_LEVEL0_STOP_TRIGGER,
@@ -143,6 +145,12 @@ impl KeyspaceOptions {
     #[must_use]
     pub const fn bloom_bits_per_key(&self) -> u32 {
         self.bloom_bits_per_key
+    }
+
+    /// The kind of whole-key filter the keyspace's tables keep; [`FilterPolicy::Bloom`] by default.
+    #[must_use]
+    pub const fn filter_policy(&self) -> FilterPolicy {
+        self.filter_policy
     }
 
     /// Level-0 tables that start a compaction of level 0 into the levels below.

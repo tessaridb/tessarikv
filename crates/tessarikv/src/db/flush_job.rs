@@ -171,6 +171,7 @@ pub(super) fn table_options(keyspace: &KeyspaceOptions, level: usize) -> Result<
         restart_interval: usize::try_from(keyspace.block_restart_interval())
             .map_err(|_| invalid("keyspace.block_restart_interval"))?,
         bloom_bits_per_key: keyspace.bloom_bits_per_key(),
+        filter: keyspace.filter_policy(),
         compression: keyspace.compression_at(level),
         prefix_length: keyspace.prefix_length(),
     })

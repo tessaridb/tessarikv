@@ -9,6 +9,7 @@ fn table(keys: u32) -> (Table, u64) {
         block_bytes: 64,
         restart_interval: 4,
         bloom_bits_per_key: 10,
+        filter: crate::table::FilterPolicy::Bloom,
         compression: Compression::None,
         prefix_length: None,
     };

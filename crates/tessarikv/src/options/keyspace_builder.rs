@@ -48,6 +48,13 @@ impl KeyspaceOptionsBuilder {
         self
     }
 
+    /// Sets [`KeyspaceOptions::filter_policy`]: table files written from then on keep that kind
+    /// of filter, and tables already written keep theirs.
+    pub const fn filter_policy(mut self, value: tessarikv_format::FilterPolicy) -> Self {
+        self.options.filter_policy = value;
+        self
+    }
+
     /// Sets [`KeyspaceOptions::level0_compaction_trigger`].
     pub const fn level0_compaction_trigger(mut self, value: u32) -> Self {
         self.options.level0_compaction_trigger = value;

@@ -25,8 +25,12 @@ use crate::seal::FileSealer;
 /// Bytes of the footer.
 pub const FOOTER_BYTES: usize = 64;
 
-/// The table format this build writes and reads.
-pub(super) const FORMAT_VERSION: u32 = 3;
+/// The table format this build writes and reads: its filter block is a bloom filter with remixed
+/// probes or a ribbon filter, each saying which it is.
+pub(super) const FORMAT_VERSION: u32 = 4;
+
+/// The third version, whose filter is always a bloom filter with remixed probes; still read.
+const FORMAT_VERSION_3: u32 = 3;
 
 /// The second version, whose filters step through a line by double hashing; still read.
 const FORMAT_VERSION_2: u32 = 2;
@@ -166,7 +170,7 @@ impl Footer {
         }
         let version = u32_at(48);
         let probing = match version {
-            FORMAT_VERSION => Probing::Remixed,
+            FORMAT_VERSION | FORMAT_VERSION_3 => Probing::Remixed,
             FORMAT_VERSION_2 | FORMAT_VERSION_1 => Probing::Stepped,
             _ => {
                 return Err(match u8::try_from(version) {

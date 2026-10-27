@@ -49,6 +49,7 @@ mod tests;
 pub use blob::{BlobBuilder, BlobIndex, open_blob};
 pub use builder::TableBuilder;
 pub use codec::Compression;
+pub use filter::FilterPolicy;
 pub use handle::{BlockHandle, FOOTER_BYTES};
 pub use iter::TableIter;
 pub use reader::Table;
@@ -63,8 +64,10 @@ pub struct TableOptions {
     pub block_bytes: usize,
     /// Entries between restart points in a data block.
     pub restart_interval: usize,
-    /// Bits of filter per key; about one absent key in a hundred passes at ten.
+    /// Bits of filter per key; about one absent key in a hundred passes a bloom filter at ten.
     pub bloom_bits_per_key: u32,
+    /// The kind of whole-key filter the table keeps.
+    pub filter: FilterPolicy,
     /// How data blocks are stored.
     pub compression: Compression,
     /// Length of the key prefixes a second filter records, at most

@@ -35,7 +35,7 @@ pub use seal::{
     SealHeader, TAG_BYTES as SEAL_TAG_BYTES,
 };
 pub use table::block::{Block, BlockBuilder, BlockIter, Compare};
-pub use table::filter::{BloomBuilder, BloomFilter, hash as key_hash};
+pub use table::filter::{BloomBuilder, BloomFilter, FilterPolicy, hash as key_hash};
 pub use table::{
     BlobBuilder, BlobIndex, BlockHandle, BlockSource, Compression, FOOTER_BYTES, OpenError, Table,
     TableBuilder, TableIter, TableOptions, open_blob, unseal_block, unseal_block_owned,

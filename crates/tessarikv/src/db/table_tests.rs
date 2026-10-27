@@ -15,6 +15,7 @@ fn options(compression: Compression) -> TableOptions {
         block_bytes: 64,
         restart_interval: 2,
         bloom_bits_per_key: 10,
+        filter: tessarikv_format::FilterPolicy::Bloom,
         compression,
         prefix_length: None,
     }

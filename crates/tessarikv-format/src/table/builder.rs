@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use super::block::{BlockBuilder, Compare};
-use super::filter::{BloomBuilder, Probing};
+use super::filter::{FilterBuilder, Probing};
 use super::handle::{Footer, write_block};
 use super::prefix::{PREFIX_FILTER_PROPERTY, PrefixFilterBuilder};
 use super::{Compression, TableOptions};
@@ -33,7 +33,7 @@ pub struct TableBuilder {
     drained: u64,
     data: BlockBuilder,
     index: BlockBuilder,
-    filter: BloomBuilder,
+    filter: FilterBuilder,
     last_key: Vec<u8>,
     entries: u64,
     range_deletes: BlockBuilder,
@@ -58,7 +58,7 @@ impl TableBuilder {
             drained: 0,
             data: BlockBuilder::new(options.restart_interval, compare),
             index: BlockBuilder::new(1, compare),
-            filter: BloomBuilder::new(options.bloom_bits_per_key),
+            filter: FilterBuilder::new(options.filter, options.bloom_bits_per_key),
             last_key: Vec::new(),
             entries: 0,
             range_deletes: BlockBuilder::new(options.restart_interval, compare),

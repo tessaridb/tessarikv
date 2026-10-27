@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::blob::blob_files_of;
 use super::block::{Block, Compare};
 use super::builder::{ENTRIES_PROPERTY, RANGE_DELETES_PROPERTY};
-use super::filter::BloomFilter;
+use super::filter::TableFilter;
 use super::handle::{BlockHandle, FOOTER_BYTES, Footer};
 use super::iter::TableIter;
 use super::prefix::{PREFIX_FILTER_PROPERTY, PrefixFilter, decode_entry};
@@ -20,7 +20,7 @@ use crate::seal::{FileSealer, TAG_BYTES};
 pub struct Table {
     source: Arc<dyn BlockSource>,
     index: Block,
-    filter: Arc<BloomFilter>,
+    filter: Arc<TableFilter>,
     filter_key: fn(&[u8]) -> &[u8],
     compare: Compare,
     entries: u64,
@@ -151,7 +151,7 @@ impl Table {
             Ok(Self {
                 source,
                 index: Block::new(index, compare)?,
-                filter: Arc::new(BloomFilter::with_probing(filter, footer.probing)?),
+                filter: Arc::new(TableFilter::decode(filter, footer.probing)?),
                 filter_key,
                 compare,
                 entries,
