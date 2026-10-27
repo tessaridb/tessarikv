@@ -197,6 +197,7 @@ async fn run(
                 Command::Drop(drop) => catalog.drop_keyspace(drop),
                 Command::Checkpoint(reply) => catalog.checkpoint(reply),
                 Command::Idle(reply) => idle.push(reply),
+                Command::SetOptions(set) => flusher.set_options(set),
             },
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}

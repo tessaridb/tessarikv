@@ -27,6 +27,10 @@ use crate::options::DEFAULT_NAME;
 use crate::version::Version;
 use crate::{Error, KeyspaceOptions, Result};
 
+mod set_options;
+
+pub(crate) use set_options::SetOptions;
+
 /// What the installer is asked to do.
 pub(crate) enum Command {
     /// Compact a key range (see [`crate::Db::compact_range`]).
@@ -41,6 +45,8 @@ pub(crate) enum Command {
     /// Answer once no flush or compaction is running, queued or due (see
     /// [`crate::Db::wait_for_compact`]).
     Idle(oneshot::Sender<()>),
+    /// Replace a keyspace's options (see [`crate::Db::set_keyspace_options`]).
+    SetOptions(SetOptions),
 }
 
 /// A version and the view naming its table files; the view keeps them from removal while held.

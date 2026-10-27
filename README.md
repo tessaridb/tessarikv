@@ -44,7 +44,7 @@ still change in a minor release before 1.0.
 | Destroy | `Db::destroy` removes every file the engine wrote in a database's directory, in an order a crash cannot turn into a partial database; an open database is refused |
 | Compaction | leveled (default), universal and FIFO; several compactions at once, each split into parallel parts; rate-limited output; a compaction that fails (a full disk, an unreadable input) removes the files it began, leaves its inputs in place and runs again after a growing wait, while writes go on; `Db::compact_range` on demand, `Db::wait_for_compact` until nothing is left to do; automatic compactions can be turned off per keyspace for bulk loads; a keyspace's `CompactionFilter` may remove values as compactions meet them, never one a held snapshot still reads |
 | Backpressure | writes slow down, then stop, on level-0 size, pending compaction bytes and unflushed tables |
-| Keyspaces | independent sets of keys, each with its own options, in-memory tables, levels and compactions; named at open, created or dropped while running (`Db::create_keyspace`, `Db::drop_keyspace`); a batch may span several and stays atomic across crashes; every open records the options it runs with in `OPTIONS-<n>` |
+| Keyspaces | independent sets of keys, each with its own options, in-memory tables, levels and compactions; named at open, created or dropped while running (`Db::create_keyspace`, `Db::drop_keyspace`); options changed while running (`Db::set_keyspace_options`: compaction triggers and limits, stalls, and how new table files are written); a batch may span several and stays atomic across crashes; every open records the options it runs with in `OPTIONS-<n>` |
 
 ## File format
 

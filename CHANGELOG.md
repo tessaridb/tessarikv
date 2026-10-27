@@ -40,6 +40,8 @@ All notable changes to this project are documented here. The format follows
   transaction began refuses the commit with `Conflict`, as for a key the transaction writes. Nothing waits.
 - `WriteBatch::single_delete`: the delete of a key put exactly once; it reads as a delete.
 - `Db::wait_for_compact`: returns once no flush or compaction is running, queued or due.
+- `Db::set_keyspace_options`: replaces a keyspace's options while the database runs; work starting afterwards
+  follows them. A change of compaction style or of in-memory table sizes is refused.
 - `Db::open_read_only`: opens a database without a lock and reads it as its files hold it, the batches in its
   log included; it changes no file, and every change is refused with the new `Error::ReadOnly` (code `read_only`).
 
