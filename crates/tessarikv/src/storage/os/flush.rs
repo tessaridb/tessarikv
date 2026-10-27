@@ -7,6 +7,12 @@ use crate::Result;
 
 /// Flushes a file's data to stable storage.
 ///
+/// Whether the log may run syncs of one segment side by side. Measured: on Linux overlapping
+/// syncs raise synced-write throughput at 2 to 16 writers; on macOS each full flush empties the
+/// drive's cache in turn, so overlapping them only splits a group commit into more flushes
+/// (30 to 40 % slower at 8 to 16 writers). Windows is not measured and keeps one sync at a time.
+pub(super) const SYNCS_OVERLAP: bool = cfg!(target_os = "linux");
+
 /// Apple platforms need `F_FULLFSYNC`: a plain `fsync` there returns once the drive has the
 /// data in its volatile cache.
 #[cfg(target_vendor = "apple")]

@@ -28,18 +28,14 @@ fn no_open_segment_is_not_appended_in_place() {
 #[test]
 fn an_append_that_fits_the_open_segment_is_made_in_place() {
     let mut segments = segments(1 << 20, Vec::new());
-    segments
-        .write(vec![(frame(100), 1)], false)
-        .expect("written");
+    segments.write(vec![(frame(100), 1)]).expect("written");
     assert!(segments.appends_in_place(100, 0));
 }
 
 #[test]
 fn an_append_that_would_roll_the_segment_is_handed_over() {
     let mut segments = segments(1024, Vec::new());
-    segments
-        .write(vec![(frame(500), 1)], false)
-        .expect("written");
+    segments.write(vec![(frame(500), 1)]).expect("written");
     assert!(segments.appends_in_place(400, 0));
     assert!(!segments.appends_in_place(600, 0));
 }
@@ -51,9 +47,7 @@ fn a_released_segment_to_remove_is_handed_over() {
         last: 5,
     }];
     let mut segments = segments(1 << 20, finished);
-    segments
-        .write(vec![(frame(100), 9)], false)
-        .expect("written");
+    segments.write(vec![(frame(100), 9)]).expect("written");
     assert!(segments.appends_in_place(100, 4));
     // Released through 5: the finished segment is to be removed.
     assert!(!segments.appends_in_place(100, 5));

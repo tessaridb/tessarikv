@@ -32,7 +32,9 @@ pub use options::{
     WalRecovery, WriteOptions,
 };
 pub use statistics::{Histogram, HistogramSnapshot, StatisticsSnapshot, Ticker};
-pub use storage::{MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile};
+pub use storage::{
+    FileSyncer, MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile,
+};
 pub use tessarikv_format::{BatchEntry, Cipher, Compression, ROOT_KEY_BYTES, RootKey, WriteBatch};
 pub use tessarikv_types::{KeyspaceId, SequenceNumber};
 pub use transaction::{Savepoint, Transaction};

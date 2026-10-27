@@ -125,6 +125,24 @@ pub trait WritableFile: Send {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// A handle that syncs this file from another thread while appends go on, when the backend
+    /// has one; `None` (the default) when a sync must go through [`WritableFile::sync`].
+    fn syncer(&self) -> Option<Arc<dyn FileSyncer>> {
+        None
+    }
+}
+
+/// Syncs a file from any thread while its writer goes on appending.
+pub trait FileSyncer: Send + Sync {
+    /// Makes everything appended to the file before the call durable against power loss; bytes
+    /// appended while it runs may or may not be included.
+    ///
+    /// # Errors
+    ///
+    /// As [`WritableFile::sync`]: after a failure the data's durability is unknown, and the
+    /// caller must recover, never retry and continue.
+    fn sync(&self) -> Result<()>;
 }
 
 /// A file read by position from any number of threads at once.

@@ -24,10 +24,13 @@
 
 mod frame;
 mod segments;
+mod syncs;
 mod writer;
 
 #[cfg(test)]
 pub(crate) mod fault;
+#[cfg(test)]
+mod overlap_tests;
 #[cfg(test)]
 mod release_tests;
 #[cfg(test)]

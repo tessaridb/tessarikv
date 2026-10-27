@@ -10,6 +10,7 @@ use tessarikv_format::SEAL_HEADER_BYTES;
 use tokio::sync::{Notify, mpsc, watch};
 
 use super::segments::Segments;
+use super::syncs::{Syncs, durable, sync_beside};
 use super::{Entry, FinishedSegment, Wait};
 use crate::statistics::Statistics;
 use crate::storage::Storage;
@@ -40,6 +41,11 @@ impl Progress {
     /// Every sequence up to this one is written or skipped.
     pub(super) fn written(&self) -> u64 {
         self.written
+    }
+
+    /// Every frame through `through` is on stable storage; an earlier sync never lowers it.
+    pub(super) fn durable_through(&mut self, through: u64) {
+        self.durable = self.durable.max(through);
     }
 
     /// Whether a frame ending at `last` has reached `wait`.
@@ -151,12 +157,17 @@ impl Writer {
         progress: &watch::Sender<Progress>,
     ) -> Result<()> {
         let released = Arc::clone(&self.released);
+        let mut syncs = Syncs::default();
         loop {
             tokio::select! {
                 // A sync asked for first, so a steady stream of entries cannot postpone it; then
-                // entries: a closed channel ends the loop, which syncs and removes too.
+                // the oldest running sync's result; then entries: a closed channel ends the loop,
+                // which syncs and removes too.
                 biased;
-                () = released.sync.notified() => self.write_ready(progress, true).await?,
+                () = released.sync.notified() => {
+                    self.write_ready(progress, &mut syncs, true).await?;
+                }
+                through = syncs.oldest(), if !syncs.is_empty() => durable(progress, through?),
                 entry = entries.recv() => {
                     let Some(entry) = entry else { break };
                     self.pending.insert(entry.first, entry);
@@ -167,12 +178,16 @@ impl Writer {
                         let Ok(entry) = entries.try_recv() else { break };
                         self.pending.insert(entry.first, entry);
                     }
-                    self.write_ready(progress, false).await?;
+                    self.write_ready(progress, &mut syncs, false).await?;
                 }
                 () = released.notice.notified() => self.remove_released().await?,
             }
         }
-        self.write_ready(progress, true).await
+        self.write_ready(progress, &mut syncs, true).await?;
+        while !syncs.is_empty() {
+            durable(progress, syncs.oldest().await?);
+        }
+        Ok(())
     }
 
     /// The sequence finished segments may be removed through.
@@ -201,10 +216,12 @@ impl Writer {
     }
 
     /// Writes the entries that continue the log without a gap; syncs when one of them waits
-    /// for durability, or when `force_sync` (closing, or a sync asked for).
+    /// for durability, or when `force_sync` (closing, or a sync asked for). Where the storage can
+    /// sync beside the writes, the sync is started and left running in `syncs`.
     async fn write_ready(
         &mut self,
         progress: &watch::Sender<Progress>,
+        syncs: &mut Syncs,
         force_sync: bool,
     ) -> Result<()> {
         let mut frames = Vec::new();
@@ -224,19 +241,20 @@ impl Writer {
         let bytes = frames.iter().fold(0_u64, |total, (frame, _)| {
             total.saturating_add(u64::try_from(frame.bytes.len()).unwrap_or(u64::MAX))
         });
-        // A plain append without a sync only copies into the page cache, so it is made here, on
-        // this task: handing it to a blocking thread costs two thread hand-offs, more than the
-        // copy. A write that syncs, rolls to a new segment or removes one is handed over. After
-        // an append made here the task yields: the writers it has just woken may be queued behind
-        // it on this worker, and a full queue of entries would otherwise keep it running.
-        let (segments, written) = if !sync && segments.appends_in_place(bytes, through) {
-            let written = segments.write(frames, false);
+        // A plain append only copies into the page cache, so it is made here, on this task:
+        // handing it to a blocking thread costs two thread hand-offs, more than the copy. A write
+        // that rolls to a new segment or removes one is handed over. After an append made here
+        // the task yields: the writers it has just woken may be queued behind it on this worker,
+        // and a full queue of entries would otherwise keep it running. The sync, when one is
+        // needed, comes after the write and runs beside the task.
+        let (segments, written) = if segments.appends_in_place(bytes, through) {
+            let written = segments.write(frames);
             tokio::task::yield_now().await;
             (segments, written)
         } else {
             tokio::task::spawn_blocking(move || {
                 let written = segments
-                    .write(frames, sync)
+                    .write(frames)
                     .and_then(|()| segments.remove_through(through));
                 (segments, written)
             })
@@ -249,10 +267,10 @@ impl Writer {
             if let Some(last) = last {
                 progress.written = last;
             }
-            if sync {
-                progress.durable = progress.written;
-            }
         });
+        if sync {
+            sync_beside(&mut self.segments, progress, syncs).await?;
+        }
         Ok(())
     }
 }

@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format follows
 
 - `ReadableFile::read_vec_at` and `ReadableFile::try_read_vec_at` read a block into a buffer of its own. Their
   defaults use `read_at` and `try_read_at`; the OS storage reads into memory that is not zeroed first.
+- `WritableFile::syncer` and the `FileSyncer` trait: a handle that syncs a file from another thread while appends
+  go on. The default is `None`, and the log then syncs as before.
 
 ### Changed
 
@@ -19,6 +21,9 @@ All notable changes to this project are documented here. The format follows
   on a blocking thread; a write that syncs, starts a new segment or removes one is still handed over.
 - A point read builds the key it seeks in table files once, not once per file it consults, and a table seek copies
   its target only when it has to wait for a block.
+- On Linux a `Durability::Sync` write that arrives while the log is syncing starts a sync of its own instead of
+  waiting for that one to finish; up to four run at once, and a write is acknowledged only after every earlier sync
+  succeeded. macOS and Windows keep one sync at a time.
 
 ### Fixed
 

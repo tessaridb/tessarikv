@@ -7,8 +7,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
 
 use super::sync_gate::SyncGate;
+use crate::Result;
 use crate::storage::{MemoryStorage, ReadableFile, Storage, StorageLock, WritableFile};
-use crate::{Error, Result};
+use file::FaultFile;
+
+mod file;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FaultStorage {
@@ -68,7 +71,17 @@ impl FaultStorage {
 
     /// Whether a sync of a file whose name starts with `prefix` is waiting at the paused gate.
     pub(crate) fn sync_waiting(&self, prefix: &str) -> bool {
+        self.syncs_waiting(prefix) > 0
+    }
+
+    /// How many syncs of files whose names start with `prefix` wait at the paused gate.
+    pub(crate) fn syncs_waiting(&self, prefix: &str) -> usize {
         self.state.gate.waiting(prefix)
+    }
+
+    /// Lets the sync that started waiting last through the paused gate.
+    pub(crate) fn let_newest_sync_through(&self) {
+        self.state.gate.let_newest_through();
     }
 
     /// Lets waiting and later syncs through.
@@ -242,58 +255,5 @@ impl Storage for FaultStorage {
 
     fn lock(&self, path: &Path) -> Result<Box<dyn StorageLock>> {
         self.files.lock(path)
-    }
-}
-
-struct FaultFile {
-    inner: Box<dyn WritableFile>,
-    path: PathBuf,
-    storage: FaultStorage,
-}
-
-impl WritableFile for FaultFile {
-    fn append(&mut self, data: &[u8]) -> Result<()> {
-        let state = &self.storage.state;
-        if state.fail_table_writes.load(Ordering::SeqCst)
-            && self
-                .path
-                .extension()
-                .is_some_and(|extension| extension == "sst")
-        {
-            return Err(Error::Io {
-                operation: "append",
-                path: self.path.clone(),
-                source: std::io::Error::other("injected write failure"),
-            });
-        }
-        let _change = self.storage.change();
-        self.inner.append(data)
-    }
-
-    fn sync(&mut self) -> Result<()> {
-        let state = &self.storage.state;
-        state.gate.pass(&self.path);
-        if state.fail_sync.load(Ordering::SeqCst) {
-            return Err(Error::Io {
-                operation: "sync",
-                path: self.path.clone(),
-                source: std::io::Error::other("injected sync failure"),
-            });
-        }
-        self.storage.capture(&self.path, "before syncing");
-        {
-            let _change = self.storage.change();
-            self.inner.sync()?;
-            state
-                .synced
-                .pin()
-                .insert(self.path.clone(), self.inner.len());
-        }
-        self.storage.capture(&self.path, "after syncing");
-        Ok(())
-    }
-
-    fn len(&self) -> u64 {
-        self.inner.len()
     }
 }

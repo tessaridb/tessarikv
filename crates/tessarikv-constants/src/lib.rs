@@ -4,6 +4,13 @@
 //! has. Defaults that a user may change are the starting values of the options in the
 //! `tessarikv` crate; limits are hard bounds the format or the engine relies on.
 
+mod log;
+
+pub use log::{
+    DEFAULT_WAL_SEGMENT_BYTES, LOG_QUEUE_ENTRIES, LOG_SYNCS_IN_FLIGHT, MAX_WAL_SEGMENT_BYTES,
+    MIN_WAL_SEGMENT_BYTES,
+};
+
 /// The store format this build writes, recorded at the start of every manifest.
 ///
 /// It names the set of file layouts a database may hold. A build opens a store of this format
@@ -192,15 +199,6 @@ pub const MAX_TARGET_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Default block cache capacity (512 MiB).
 pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Default size at which a log segment is closed and a new one started (64 MiB).
-pub const DEFAULT_WAL_SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
-
-/// Smallest log segment (1 MiB): a smaller one rolls over on every few commits.
-pub const MIN_WAL_SEGMENT_BYTES: u64 = 1024 * 1024;
-
-/// Largest log segment (4 GiB): an offset inside one segment fits in 32 bits.
-pub const MAX_WAL_SEGMENT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-
 /// Default size past which the manifest is replaced by one holding the whole version (64 MiB).
 pub const DEFAULT_MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -289,10 +287,6 @@ pub const SKIPLIST_MAX_HEIGHT: usize = 12;
 
 /// Each skiplist level holds about one in this many of the level below.
 pub const SKIPLIST_BRANCHING: u32 = 4;
-
-/// Committed batches that may wait in the queue to the log writer; a writer that finds it full
-/// waits for room. Also the most the log writer takes from the queue for one write.
-pub const LOG_QUEUE_ENTRIES: usize = 1024;
 
 /// Longest keyspace name, in bytes.
 pub const MAX_KEYSPACE_NAME_BYTES: usize = 255;
