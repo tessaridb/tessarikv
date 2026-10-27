@@ -9,14 +9,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tessarikv_format::{TableBuilder, TableMeta, TableOptions};
-use tessarikv_types::{Trailer, ValueKind, compare_internal, encode_internal};
+use tessarikv_format::TableOptions;
+use tessarikv_types::{InternalKeyRef, Trailer, ValueKind, compare_internal, encode_internal};
+
+use super::output_table::Open;
+use crate::db::tables::blobs::{BlobFile, blob_path};
 
 use crate::db::block_cache::BlockCache;
 use crate::db::flush_job::{FileNumbers, table_path};
 use crate::db::rate_limiter::RateLimiter;
-use crate::db::table_blocks::open_table;
-use crate::db::tables::{finish, format_error, hand_off, table_builder, user_key};
+use crate::db::tables::user_key;
 use crate::db::view::TableFile;
 use crate::statistics::{Statistics, Ticker};
 use crate::storage::{Storage, WritableFile};
@@ -35,6 +37,8 @@ pub(crate) struct Destination {
     pub(crate) level: u8,
     /// Paces the output files' writes, when compactions are paced.
     pub(crate) limiter: Option<Arc<RateLimiter>>,
+    /// Size from which a value the job writes moves to a blob file.
+    pub(crate) blob_threshold: Option<u64>,
 }
 
 /// The tables written so far and the one being written.
@@ -45,21 +49,11 @@ pub(super) struct Outputs<'a> {
     next_tombstone: Option<(Vec<u8>, Vec<u8>)>,
     open: Option<Open>,
     written: Vec<TableFile>,
-    /// Every table file created, so a failed compaction can remove them.
+    /// Every table and blob file created, so a failed compaction can remove them.
     created: Vec<u64>,
-}
-
-/// The table being written, its file, and the range and sequences it holds.
-struct Open {
-    builder: TableBuilder,
-    id: u64,
-    path: PathBuf,
-    /// Receives the table's bytes as they are built.
-    file: Box<dyn WritableFile>,
-    smallest: Option<Vec<u8>>,
-    largest: Vec<u8>,
-    min_sequence: u64,
-    max_sequence: u64,
+    created_blobs: Vec<u64>,
+    /// The key of a version written under a kind of its own.
+    scratch: Vec<u8>,
 }
 
 impl<'a> Outputs<'a> {
@@ -88,21 +82,60 @@ impl<'a> Outputs<'a> {
             open: None,
             written: Vec::new(),
             created: Vec::new(),
+            created_blobs: Vec::new(),
+            scratch: Vec::new(),
         }
     }
 
     /// Writes the version at `key`, an internal key; `starts_key` says it is the first version
     /// of its user key, the only place a table may be closed.
     pub(super) fn add(&mut self, key: &[u8], starts_key: bool, value: &[u8]) -> Result<()> {
+        let to = self.to;
+        self.ready(key, starts_key)?.add(to, key, value, true)
+    }
+
+    /// Writes `version` as a value: into the table's blob file when it is large enough, into
+    /// the table otherwise. `stored` is its key as an input stores it.
+    pub(super) fn add_value(
+        &mut self,
+        stored: &[u8],
+        version: &InternalKeyRef<'_>,
+        starts_key: bool,
+        value: &[u8],
+    ) -> Result<()> {
+        let to = self.to;
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let added = self
+            .ready(stored, starts_key)
+            .and_then(|open| open.add_value(to, version, value, &mut scratch));
+        self.scratch = scratch;
+        added
+    }
+
+    /// Writes the version at `key` whose stored `index` points into `blob`, as it is.
+    pub(super) fn add_carried(
+        &mut self,
+        key: &[u8],
+        starts_key: bool,
+        index: &[u8],
+        blob: &Arc<BlobFile>,
+    ) -> Result<()> {
+        let to = self.to;
+        self.ready(key, starts_key)?
+            .add_carried(to, key, index, blob)
+    }
+
+    /// The table a version at `key` goes to: a new one when the last is full and `starts_key`
+    /// lets it close, after the range deletes starting at or before the key.
+    fn ready(&mut self, key: &[u8], starts_key: bool) -> Result<&mut Open> {
         let full = self.open.as_ref().is_some_and(|open| {
-            u64::try_from(open.builder.estimated_size()).unwrap_or(u64::MAX) >= self.to.target_bytes
+            u64::try_from(open.estimated_size()).unwrap_or(u64::MAX) >= self.to.target_bytes
         });
         if starts_key && full {
             self.close()?;
         }
         self.write_tombstones(Some(user_key(key)))?;
-        let to = self.to;
-        self.current()?.add(to, key, value, true)
+        self.current()
     }
 
     /// Writes the remaining range deletes and closes the last table; returns every table, or
@@ -120,8 +153,11 @@ impl<'a> Outputs<'a> {
     /// Removes every table file this compaction created: no manifest edit will name them.
     pub(super) fn discard(mut self) {
         self.written.clear();
-        self.open = None;
+        if let Some(open) = self.open.take() {
+            open.discard();
+        }
         remove(self.to, &self.created);
+        remove_blobs(self.to, &self.created_blobs);
     }
 
     /// Writes the range deletes starting at or before `through` (all of them for `None`).
@@ -140,20 +176,9 @@ impl<'a> Outputs<'a> {
     /// The table being written, opened with its file when there is none.
     fn current(&mut self) -> Result<&mut Open> {
         if self.open.is_none() {
-            let id = self.to.numbers.take()?;
-            let path = table_path(&self.to.dir, id);
-            let file = self.to.storage.create(&path)?;
-            self.created.push(id);
-            self.open = Some(Open {
-                builder: table_builder(self.to.options, self.to.cache.sealing())?,
-                id,
-                path,
-                file,
-                smallest: None,
-                largest: Vec::new(),
-                min_sequence: u64::MAX,
-                max_sequence: 0,
-            });
+            let open = Open::create(self.to)?;
+            self.created.push(open.id);
+            self.open = Some(open);
         }
         self.open.as_mut().ok_or(Error::CompactionFailed)
     }
@@ -163,48 +188,36 @@ impl<'a> Outputs<'a> {
         let Some(open) = self.open.take() else {
             return Ok(());
         };
-        let to = self.to;
-        let Some(smallest) = open.smallest else {
-            return Ok(());
-        };
-        let Open {
-            builder,
-            id,
-            path,
-            mut file,
-            largest,
-            min_sequence,
-            max_sequence,
-            ..
-        } = open;
-        let (tail_offset, tail) = finish(builder, &mut |piece| write(to, file.as_mut(), piece))?;
-        file.sync()?;
-        drop(file);
-        let size = tail_offset.saturating_add(u64::try_from(tail.len()).unwrap_or(u64::MAX));
-        let meta = TableMeta {
-            keyspace: to.keyspace,
-            level: to.level,
-            id,
-            size,
-            smallest,
-            largest,
-            min_sequence,
-            max_sequence,
-        };
-        let written = Some((tail_offset, tail.as_slice()));
-        let (table, blocks) = open_table(to.storage.as_ref(), &path, id, &to.cache, written)?;
-        self.written
-            .push(TableFile::new(Arc::new(meta), table, blocks)?);
+        self.created_blobs.extend(open.blob_id());
+        if let Some(table) = open.close(self.to)? {
+            self.written.push(table);
+        }
         Ok(())
     }
 }
 
-/// Removes the output tables `tables`, written by a compaction that failed.
-pub(super) fn discard(to: &Destination, tables: Vec<TableFile>) {
+/// Removes the output tables `tables`, written by a compaction that failed, and the blob files
+/// they hold that are not among `inputs`, the blob files the job read.
+pub(super) fn discard(to: &Destination, tables: Vec<TableFile>, inputs: &[Arc<BlobFile>]) {
     let ids: Vec<u64> = tables.iter().map(|table| table.meta.id).collect();
-    // The tables' files are closed before they are removed.
+    let mut blobs: Vec<u64> = tables
+        .iter()
+        .flat_map(|table| table.blobs.iter().map(|blob| blob.id()))
+        .filter(|id| !inputs.iter().any(|input| input.id() == *id))
+        .collect();
+    blobs.dedup();
+    // The files are closed before they are removed.
     drop(tables);
     remove(to, &ids);
+    remove_blobs(to, &blobs);
+}
+
+/// Removes the blob files `ids`; a removal that fails leaves a file no table names, which the
+/// next open removes.
+fn remove_blobs(to: &Destination, ids: &[u64]) {
+    for &id in ids {
+        let _ = to.storage.remove(&blob_path(&to.dir, id));
+    }
 }
 
 /// Removes the table files `ids` from the cache and the disk. A removal that fails leaves a file
@@ -217,45 +230,11 @@ fn remove(to: &Destination, ids: &[u64]) {
 }
 
 /// Appends `piece` of an output table to `file`, paced when compactions are.
-fn write(to: &Destination, file: &mut dyn WritableFile, piece: &[u8]) -> Result<()> {
+pub(super) fn write(to: &Destination, file: &mut dyn WritableFile, piece: &[u8]) -> Result<()> {
     if let Some(limiter) = &to.limiter {
         limiter.pace(u64::try_from(piece.len()).unwrap_or(u64::MAX));
     }
     file.append(piece)
-}
-
-impl Open {
-    /// Adds a version (`point`) or a range delete's start and end, widening the recorded range,
-    /// and writes the table's finished bytes once they make a chunk.
-    fn add(&mut self, to: &Destination, key: &[u8], value: &[u8], point: bool) -> Result<()> {
-        if point {
-            self.builder.add(key, value)
-        } else {
-            self.builder.add_range_delete(key, value)
-        }
-        .map_err(|error| format_error(&error, None))?;
-        let file = self.file.as_mut();
-        hand_off(&mut self.builder, &mut |piece| write(to, file, piece))?;
-        let sequence = tessarikv_types::InternalKeyRef::parse(key)
-            .map_err(|_| Error::CompactionFailed)?
-            .trailer()
-            .sequence()
-            .get();
-        self.min_sequence = self.min_sequence.min(sequence);
-        self.max_sequence = self.max_sequence.max(sequence);
-        if self
-            .smallest
-            .as_deref()
-            .is_none_or(|least| compare_internal(key, least).is_lt())
-        {
-            self.smallest = Some(key.to_vec());
-        }
-        if self.largest.is_empty() || compare_internal(key, &self.largest).is_gt() {
-            self.largest.clear();
-            self.largest.extend_from_slice(key);
-        }
-        Ok(())
-    }
 }
 
 /// Counts a compaction of `inputs` into `outputs`: the bytes it read and wrote, and the entries

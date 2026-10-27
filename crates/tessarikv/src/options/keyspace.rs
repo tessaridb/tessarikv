@@ -33,6 +33,8 @@ pub struct KeyspaceOptions {
     pub(super) bottommost_compression: Option<Compression>,
     pub(super) compaction_filter: Option<FilterHandle>,
     pub(super) prefix_length: Option<u32>,
+    pub(super) blob_threshold: Option<u64>,
+    pub(super) blob_gc_age_cutoff_percent: u32,
 }
 
 impl Default for KeyspaceOptions {
@@ -59,6 +61,8 @@ impl Default for KeyspaceOptions {
             bottommost_compression: None,
             compaction_filter: None,
             prefix_length: None,
+            blob_threshold: None,
+            blob_gc_age_cutoff_percent: limits::DEFAULT_BLOB_GC_AGE_CUTOFF_PERCENT,
         }
     }
 }

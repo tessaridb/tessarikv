@@ -86,6 +86,7 @@ fn destroy(storage: &dyn Storage, dir: &Path) -> Result<()> {
 /// Whether the engine writes a file named `name`.
 fn written_here(name: &str) -> bool {
     name.ends_with(".sst")
+        || name.ends_with(".blob")
         || name.ends_with(".log")
         || name.starts_with("MANIFEST-")
         || name.starts_with(OPTIONS_PREFIX)

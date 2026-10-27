@@ -47,6 +47,8 @@ pub(crate) fn seen_at(kind: ValueKind, stored: &[u8], now: u64) -> Seen<'_> {
             None => Seen::Malformed,
         },
         ValueKind::Delete | ValueKind::RangeDelete => Seen::Absent,
+        // Readers see the value an index names, resolved where the table is read.
+        ValueKind::BlobIndex => Seen::Malformed,
     }
 }
 

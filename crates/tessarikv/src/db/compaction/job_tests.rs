@@ -5,6 +5,7 @@ use tessarikv_format::{Compression, TableMeta, TableOptions};
 use tessarikv_types::{SequenceNumber, ValueKind};
 
 use super::below::Outside;
+use super::blob_values::BlobInputs;
 use super::job::Job;
 use super::output::Destination;
 use super::removal::Removing;
@@ -38,6 +39,7 @@ fn destination() -> Destination {
         keyspace: 0,
         level: 6,
         limiter: None,
+        blob_threshold: None,
     }
 }
 
@@ -74,6 +76,7 @@ fn every_version_of_a_key_goes_to_one_output_table() {
         outside: Outside::default(),
         retention: Retention::new(121, &snapshots),
         parts: 1,
+        blobs: no_blobs(),
         removing: Removing {
             now: 0,
             filter: None,
@@ -114,6 +117,7 @@ fn a_delete_stays_while_a_deeper_level_may_hold_its_key() {
             outside: Outside::default(),
             retention: Retention::new(20, &[]),
             parts: 1,
+            blobs: no_blobs(),
             removing: Removing {
                 now: 0,
                 filter: None,
@@ -212,6 +216,7 @@ fn a_compaction_split_into_parts_writes_what_one_part_writes() {
             outside: Outside::default(),
             retention: Retention::new(1000, &[150, 250]),
             parts,
+            blobs: no_blobs(),
             removing: Removing {
                 now: 0,
                 filter: None,
@@ -261,6 +266,7 @@ fn a_paced_compaction_charges_its_limiter_every_byte_it_writes() {
         outside: Outside::default(),
         retention: Retention::new(31, &(1..=30).collect::<Vec<_>>()),
         parts: 1,
+        blobs: no_blobs(),
         removing: Removing {
             now: 0,
             filter: None,
@@ -271,4 +277,13 @@ fn a_paced_compaction_charges_its_limiter_every_byte_it_writes() {
     let written: u64 = outputs.iter().map(|output| output.meta.size).sum();
     assert!(written > 0);
     assert_eq!(limiter.charged(), written);
+}
+
+/// No blob file among the inputs.
+fn no_blobs() -> BlobInputs {
+    BlobInputs {
+        files: Vec::new(),
+        gc_below: u64::MAX,
+        filtered: false,
+    }
 }

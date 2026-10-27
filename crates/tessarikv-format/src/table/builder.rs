@@ -11,6 +11,10 @@ use super::{Compression, TableOptions};
 use crate::error::{Error, Result};
 use crate::seal::{FileSealer, SealHeader};
 
+/// The properties block's key for the blob files the table's entries point into: their
+/// numbers, each a little-endian u64, in increasing order.
+pub(super) const BLOB_FILES_PROPERTY: &[u8] = b"blob_files";
+
 /// The properties block's key for the entry count.
 pub(super) const ENTRIES_PROPERTY: &[u8] = b"entries";
 
@@ -35,6 +39,7 @@ pub struct TableBuilder {
     range_deletes: BlockBuilder,
     last_range_key: Vec<u8>,
     prefixes: Option<PrefixFilterBuilder>,
+    blob_files: Vec<u64>,
     sealer: Option<Arc<FileSealer>>,
     /// A prefix-filter property value written in place of the real one.
     #[cfg(test)]
@@ -61,6 +66,7 @@ impl TableBuilder {
             prefixes: options
                 .prefix_length
                 .and_then(|length| PrefixFilterBuilder::new(length, options.bloom_bits_per_key)),
+            blob_files: Vec::new(),
             sealer: None,
             #[cfg(test)]
             prefix_entry: None,
@@ -132,6 +138,14 @@ impl TableBuilder {
         Ok(())
     }
 
+    /// Records that entries of the table point into blob file `file` (see
+    /// [`super::BlobIndex`]); [`super::Table::blob_files`] reads the set back.
+    pub fn references_blob(&mut self, file: u64) {
+        if let Err(at) = self.blob_files.binary_search(&file) {
+            self.blob_files.insert(at, file);
+        }
+    }
+
     /// Entries added so far.
     pub fn entries(&self) -> u64 {
         self.entries
@@ -198,6 +212,14 @@ impl TableBuilder {
         let range_deletes = range_deletes.transpose()?;
         let prefix_entry = self.prefix_filter()?;
         let mut properties = BlockBuilder::new(1, |left, right| left.cmp(right));
+        if !self.blob_files.is_empty() {
+            let files: Vec<u8> = self
+                .blob_files
+                .iter()
+                .flat_map(|file| file.to_le_bytes())
+                .collect();
+            properties.add(BLOB_FILES_PROPERTY, &files)?;
+        }
         properties.add(ENTRIES_PROPERTY, &self.entries.to_le_bytes())?;
         if let Some(entry) = prefix_entry {
             properties.add(PREFIX_FILTER_PROPERTY, &entry)?;

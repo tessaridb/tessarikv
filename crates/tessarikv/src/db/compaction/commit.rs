@@ -6,7 +6,6 @@ use tessarikv_format::{ManifestEdit, TableMeta, TableRef};
 
 use super::Compactions;
 use super::pick::Pick;
-use crate::db::flush_job::table_path;
 use crate::db::installer::Flusher;
 use crate::db::view::TableFile;
 use crate::{CompactionCompleted, Error, KeyspaceId, Result};
@@ -71,18 +70,11 @@ impl Compactions {
             .collect();
         let current = flusher.view.load_full();
         if !moved {
-            self.obsolete.extend(
-                current
-                    .files(keyspace)
-                    .filter(|file| removed.contains(&file.meta.id))
-                    .map(|file| {
-                        (
-                            Arc::downgrade(&file.blocks),
-                            file.meta.id,
-                            table_path(&flusher.dir, file.meta.id),
-                        )
-                    }),
-            );
+            for file in current.files(keyspace) {
+                if removed.contains(&file.meta.id) {
+                    self.retire_file(file, &flusher.dir);
+                }
+            }
         }
         let inputs = || pick.inputs.iter().chain(&pick.overlaps);
         let completed = CompactionCompleted {

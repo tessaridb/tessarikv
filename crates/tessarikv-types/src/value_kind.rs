@@ -18,6 +18,9 @@ pub enum ValueKind {
     /// [`split_expiring`](crate::split_expiring)), and is absent from then on: an expired
     /// version hides the older ones like a delete.
     ExpiringValue = 3,
+    /// The key holds a value kept in a blob file; the entry's value says where (see
+    /// `tessarikv_format::BlobIndex`). Only table files hold it: writes never carry it.
+    BlobIndex = 4,
 }
 
 impl ValueKind {
@@ -32,6 +35,7 @@ impl ValueKind {
             Self::Value => 1,
             Self::RangeDelete => 2,
             Self::ExpiringValue => 3,
+            Self::BlobIndex => 4,
         }
     }
 
@@ -46,6 +50,7 @@ impl ValueKind {
             1 => Ok(Self::Value),
             2 => Ok(Self::RangeDelete),
             3 => Ok(Self::ExpiringValue),
+            4 => Ok(Self::BlobIndex),
             other => Err(Error::UnknownValueKind(other)),
         }
     }

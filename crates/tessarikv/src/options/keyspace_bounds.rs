@@ -53,6 +53,20 @@ pub(super) fn validate(options: &KeyspaceOptions) -> Result<()> {
             u64::from(limits::MAX_PREFIX_LENGTH),
         )?;
     }
+    if let Some(bytes) = options.blob_threshold() {
+        check_range(
+            "keyspace.blob_threshold",
+            bytes,
+            limits::MIN_BLOB_THRESHOLD,
+            u64::try_from(limits::MAX_VALUE_BYTES).unwrap_or(u64::MAX),
+        )?;
+    }
+    check_range(
+        "keyspace.blob_gc_age_cutoff_percent",
+        u64::from(options.blob_gc_age_cutoff_percent()),
+        0,
+        100,
+    )?;
     check_range(
         "keyspace.level0_compaction_trigger",
         u64::from(options.level0_compaction_trigger()),

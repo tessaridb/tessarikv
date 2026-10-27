@@ -69,8 +69,10 @@ impl Flusher {
             .iter()
             .filter(|(keyspace, _)| self.holds(*keyspace))
             .map(|(keyspace, table)| {
-                let options = table_options(self.keyspace_options(*keyspace), 0)?;
-                Ok((*keyspace, options, Arc::clone(table)))
+                let keyspace_options = self.keyspace_options(*keyspace);
+                let options = table_options(keyspace_options, 0)?;
+                let threshold = keyspace_options.blob_threshold();
+                Ok((*keyspace, options, threshold, Arc::clone(table)))
             })
             .collect::<Result<Vec<_>>>()?;
         let mut manifest = self.manifest.take().ok_or(Error::FlushFailed)?;

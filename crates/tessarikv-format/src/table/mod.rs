@@ -19,6 +19,7 @@
 pub mod block;
 pub mod filter;
 
+mod blob;
 mod builder;
 mod codec;
 mod handle;
@@ -28,6 +29,8 @@ mod reader;
 mod source;
 mod unseal;
 
+#[cfg(test)]
+mod blob_tests;
 #[cfg(test)]
 mod codec_tests;
 #[cfg(test)]
@@ -43,6 +46,7 @@ mod source_tests;
 #[cfg(test)]
 mod tests;
 
+pub use blob::{BlobBuilder, BlobIndex, open_blob};
 pub use builder::TableBuilder;
 pub use codec::Compression;
 pub use handle::{BlockHandle, FOOTER_BYTES};

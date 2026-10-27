@@ -82,11 +82,17 @@ fn a_table_larger_than_a_write_chunk_is_written_in_pieces_and_reads_back_whole()
     }
     let mut pieces = 0;
     let mut bytes = Vec::new();
-    let built = super::tables::build(&memtable, options(Compression::None), None, &mut |piece| {
-        pieces += 1;
-        bytes.extend_from_slice(piece);
-        Ok(())
-    })
+    let built = super::tables::build(
+        &memtable,
+        options(Compression::None),
+        None,
+        None,
+        &mut |piece| {
+            pieces += 1;
+            bytes.extend_from_slice(piece);
+            Ok(())
+        },
+    )
     .unwrap();
     assert!(pieces > 2, "3 MiB went out in {pieces} pieces");
     assert_eq!(built.size(), u64::try_from(bytes.len()).unwrap());

@@ -4,8 +4,10 @@
 //! has. Defaults that a user may change are the starting values of the options in the
 //! `tessarikv` crate; limits are hard bounds the format or the engine relies on.
 
+mod blobs;
 mod log;
 
+pub use blobs::{DEFAULT_BLOB_GC_AGE_CUTOFF_PERCENT, MIN_BLOB_THRESHOLD};
 pub use log::{
     DEFAULT_WAL_SEGMENT_BYTES, LOG_QUEUE_ENTRIES, LOG_SYNCS_IN_FLIGHT, MAX_WAL_SEGMENT_BYTES,
     MIN_WAL_SEGMENT_BYTES,
@@ -17,7 +19,7 @@ pub use log::{
 /// or older, and refuses a later one at open, before reading its tables or logs. Format 0 is a
 /// store from before the format was recorded. A release that writes a layout an older build
 /// cannot read raises it; one that only adds a field older builds may skip does not.
-pub const STORE_FORMAT: u32 = 2;
+pub const STORE_FORMAT: u32 = 3;
 
 /// How many bits of an internal key's trailer hold the sequence number.
 ///

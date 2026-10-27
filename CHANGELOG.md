@@ -30,14 +30,20 @@ All notable changes to this project are documented here. The format follows
   it (about 10× more scans of an absent prefix over 19 level-0 tables). Reads spanning prefixes read as before.
   `Table::may_hold_prefix_range` answers for one table; a table written before this filter existed has none and is
   read as before.
+- `KeyspaceOptionsBuilder::blob_threshold` and `blob_gc_age_cutoff_percent`: values at least that large move to blob
+  files when tables are written, and the table keeps a 24-byte index to each, so compaction moves the index instead of
+  the value (writes to tables and blob files fell from 3.9× to 1.3× the bytes written, 4 KiB values overwritten
+  three times). Compaction moves the values of the oldest blob files into new ones as it passes them, and a blob file
+  is removed once no table refers to it. Checkpoints, `Db::destroy` and `Db::verify_checksums` cover blob files;
+  `Table::blob_files` names those a table refers to.
 
 ### Changed
 
 - Opening a keyspace that holds tables below level 0 with `CompactionStyle::Fifo` is refused with
   `Error::InvalidOptions` for `keyspace.compaction`: first-in-first-out compaction never removes those tables. Every
   other change of compaction style between opens is allowed.
-- The store format is 2, and the write batch encoding version 3, for expiring puts. Format 1 databases open and are
-  stamped 2; releases before this one refuse a format 2 database at open.
+- The store format is 3, and the write batch encoding version 3, for expiring puts and blob files. Format 1 and 2
+  databases open and are stamped 3; releases before this one refuse a format 3 database at open.
 - A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed
   block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
 - A `Durability::Buffered` write whose log frames fit the open segment is appended by the log task itself instead of

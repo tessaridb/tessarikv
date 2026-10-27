@@ -16,7 +16,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tessarikv_constants::LEVELS;
 use tessarikv_format::{
     Block, BlockHandle, BlockSource, FileKind, FileSealer, OpenError, SEAL_HEADER_BYTES, Table,
     TableIter, unseal_block_owned,
@@ -24,11 +23,8 @@ use tessarikv_format::{
 use tessarikv_types::compare_internal;
 
 use super::block_cache::{BlockCache, BlockKey};
-use super::flush_job::table_path;
 use super::tables::{format_error, user_key};
-use super::view::TableFile;
 use crate::storage::{ReadableFile, Storage};
-use crate::version::Version;
 use crate::{Error, Result};
 
 /// The data blocks of one open table file.
@@ -190,7 +186,7 @@ impl TableBlocks {
 }
 
 /// Whether the caller runs on a multi-thread runtime, where a worker may block in place.
-fn multi_thread() -> bool {
+pub(super) fn multi_thread() -> bool {
     tokio::runtime::Handle::try_current()
         .is_ok_and(|runtime| runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
 }
@@ -261,34 +257,4 @@ pub(crate) fn open_table(
         OpenError::Read(error) => error,
     })?;
     Ok((table, blocks))
-}
-
-/// Opens every table file `version` names, newest first, reading their data blocks through
-/// `cache`, and removes the table files it does not name: those a crash left between writing a
-/// table and naming it in the manifest. Runs on a blocking thread.
-pub(super) fn restore_tables(
-    storage: &dyn Storage,
-    dir: &Path,
-    version: &Version,
-    cache: &Arc<BlockCache>,
-) -> Result<Vec<TableFile>> {
-    let mut files = Vec::new();
-    let keyspaces = std::iter::once(0).chain(version.keyspaces().map(|(id, _)| id));
-    for keyspace in keyspaces {
-        for meta in (0..LEVELS).flat_map(|level| version.tables(keyspace, level)) {
-            let path = table_path(dir, meta.id);
-            let (table, blocks) = open_table(storage, &path, meta.id, cache, None)?;
-            files.push(TableFile::new(Arc::clone(meta), table, blocks)?);
-        }
-    }
-    for name in storage.list(dir)? {
-        let named = name
-            .strip_suffix(".sst")
-            .and_then(|stem| stem.parse::<u64>().ok())
-            .map(|id| files.iter().any(|file| file.meta.id == id));
-        if named == Some(false) {
-            storage.remove(&dir.join(&name))?;
-        }
-    }
-    Ok(files)
 }

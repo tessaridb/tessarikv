@@ -86,6 +86,13 @@ pub(super) fn read_entry(rep: &[u8], at: usize, version: u8) -> Result<(BatchEnt
             Some(end)
         }
         ValueKind::Delete => None,
+        // Refused with every kind a batch does not carry, above.
+        ValueKind::BlobIndex => {
+            return Err(Error::Malformed {
+                what: "write batch entry kind",
+                reason: "not a put, an expiring put, a delete or a range delete of this version",
+            });
+        }
     };
     Ok((
         BatchEntry {

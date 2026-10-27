@@ -90,7 +90,7 @@ impl Db {
                     .transpose()?;
                 let (version, number) = found.unwrap_or_else(|| (Version::empty(), 0));
                 let mut files =
-                    super::table_blocks::restore_tables(storage.as_ref(), &path, &version, &cache)?;
+                    super::view::restore_tables(storage.as_ref(), &path, &version, &cache)?;
                 let (replay, _) = super::keyspaces::tables_for(&options, version.keyspaces());
                 let flushed = version.flushed_sequence();
                 let recovered = recover(
@@ -127,7 +127,8 @@ impl Db {
                         .into_iter()
                         .map(|(id, table)| {
                             let keyspace = options_of(&named, options.default_keyspace(), id);
-                            Ok((id, table_options(keyspace, 0)?, Arc::new(table)))
+                            let threshold = keyspace.blob_threshold();
+                            Ok((id, table_options(keyspace, 0)?, threshold, Arc::new(table)))
                         })
                         .collect::<Result<Vec<_>>>()?;
                     let job = Job {

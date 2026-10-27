@@ -24,13 +24,16 @@
 //! [`retry`]).
 
 mod below;
+mod blob_values;
 mod commit;
 mod fifo;
 mod hidden;
 mod job;
 mod levels;
 pub(super) mod manual;
+mod obsolete;
 mod output;
+mod output_table;
 mod pick;
 mod removal;
 mod request;
@@ -38,6 +41,7 @@ mod retain;
 mod retry;
 mod split;
 mod universal;
+mod walk;
 
 #[cfg(test)]
 mod expiry_tests;
@@ -75,12 +79,11 @@ use self::levels::shape_of;
 use self::manual::{Active, Request};
 use self::pick::{Busy, Pick, Shape};
 use self::retry::Backoff;
-use super::block_cache::BlockCache;
 use super::installer::Flusher;
 use super::table_blocks::TableBlocks;
+use super::tables::blobs::BlobFile;
 use super::view::TableFile;
 use crate::Result;
-use crate::storage::Storage;
 use crate::{CompactionStyle, KeyspaceOptions};
 
 /// How often the installer looks again at input files a reader still held.
@@ -102,6 +105,8 @@ pub(super) struct Compactions {
     ready: Vec<(u64, u32, Pick, Vec<TableFile>)>,
     /// Tables to remove once no view reads them: their blocks, file ids and paths.
     obsolete: Vec<(Weak<TableBlocks>, u64, PathBuf)>,
+    /// Blob files to remove once no table holds them, the same way.
+    obsolete_blobs: Vec<(Weak<BlobFile>, u64, PathBuf)>,
     /// Range requests waiting, and the one being served.
     queued: VecDeque<Request>,
     active: Option<Active>,
@@ -112,7 +117,7 @@ pub(super) struct Compactions {
 impl Compactions {
     /// Whether input files wait for their last reader.
     pub(super) fn has_obsolete(&self) -> bool {
-        !self.obsolete.is_empty()
+        !self.obsolete.is_empty() || !self.obsolete_blobs.is_empty()
     }
 
     /// Whether a job is running.
@@ -228,28 +233,6 @@ impl Compactions {
             busy.ranges.extend(pick.busy_range());
         }
         busy
-    }
-
-    /// Removes the input files no view names any more; a removal that fails is tried again at
-    /// the next sweep.
-    async fn sweep(&mut self, storage: Arc<dyn Storage>, cache: Arc<BlockCache>) {
-        let (unread, read): (Vec<_>, Vec<_>) = std::mem::take(&mut self.obsolete)
-            .into_iter()
-            .partition(|(blocks, _, _)| blocks.strong_count() == 0);
-        self.obsolete = read;
-        if unread.is_empty() {
-            return;
-        }
-        let failed = tokio::task::spawn_blocking(move || {
-            unread
-                .into_iter()
-                // A handle still kept would stop the removal where open files cannot be removed.
-                .filter(|(_, id, path)| !cache.forget_file(*id) || storage.remove(path).is_err())
-                .collect::<Vec<_>>()
-        })
-        .await
-        .unwrap_or_default();
-        self.obsolete.extend(failed);
     }
 }
 

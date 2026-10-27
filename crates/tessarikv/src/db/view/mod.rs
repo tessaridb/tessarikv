@@ -21,6 +21,7 @@ mod memtables;
 pub(crate) mod properties;
 #[cfg(test)]
 mod properties_tests;
+mod restore;
 
 use std::sync::Arc;
 
@@ -29,6 +30,9 @@ use tessarikv_types::compare_internal;
 
 use super::table_blocks::TableBlocks;
 use super::tables;
+pub(super) use restore::restore_tables;
+
+use super::tables::blobs::BlobFile;
 use crate::Result;
 use crate::memtable::Memtable;
 use crate::tombstones::RangeTombstone;
@@ -62,6 +66,9 @@ pub(crate) struct TableFile {
     pub(crate) blocks: Arc<TableBlocks>,
     /// The table's range deletes, read once when it was opened.
     pub(crate) tombstones: Arc<[RangeTombstone]>,
+    /// The blob files the table's entries point into, by number: held for as long as the
+    /// table is, so a blob file outlives every table and reader that can reach it.
+    pub(crate) blobs: Arc<[Arc<BlobFile>]>,
 }
 
 impl TableFile {
@@ -82,7 +89,30 @@ impl TableFile {
             table,
             blocks,
             tombstones: tombstones.into(),
+            blobs: Arc::new([]),
         })
+    }
+
+    /// The table file holding `blobs`, the blob files its table records, in its order.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Corruption`] when `blobs` are not the files the table records.
+    pub(crate) fn with_blobs(mut self, blobs: Arc<[Arc<BlobFile>]>) -> Result<Self> {
+        if !blobs
+            .iter()
+            .map(|blob| blob.id())
+            .eq(self.table.blob_files().iter().copied())
+        {
+            return Err(crate::Error::Corruption {
+                what: "table",
+                path: None,
+                offset: None,
+                detail: "a table's blob files are not the ones it records".to_owned(),
+            });
+        }
+        self.blobs = blobs;
+        Ok(self)
     }
 }
 

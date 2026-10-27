@@ -7,6 +7,7 @@ use tessarikv_types::{InternalKeyRef, SequenceNumber, ValueKind, encode_internal
 
 use super::merge::KeyVersion;
 use super::table_blocks::TableBlocks;
+use super::tables::blobs::{BlobFile, locate};
 use super::tables::format_error;
 use super::view::TableFile;
 use crate::Error;
@@ -17,6 +18,9 @@ use crate::Error;
 pub(super) struct TableVersions {
     versions: TableIter,
     blocks: Arc<TableBlocks>,
+    blobs: Arc<[Arc<BlobFile>]>,
+    /// The value the current version's blob index names, read when the move finished.
+    resolved: Vec<u8>,
     fill_cache: bool,
     target: Vec<u8>,
     error: Option<Error>,
@@ -29,6 +33,8 @@ impl TableVersions {
         Self {
             versions: file.table.iter(),
             blocks: Arc::clone(&file.blocks),
+            blobs: Arc::clone(&file.blobs),
+            resolved: Vec::new(),
             fill_cache,
             target: Vec::new(),
             error: None,
@@ -76,11 +82,17 @@ impl TableVersions {
             return None;
         }
         let (key, kind) = parse(self.versions.key())?;
+        // A version in a blob file reads as the value its index names.
+        let (kind, value) = if kind == ValueKind::BlobIndex {
+            (ValueKind::Value, self.resolved.as_slice())
+        } else {
+            (kind, self.versions.value())
+        };
         Some(KeyVersion {
             user_key: key.user_key(),
             sequence: key.trailer().sequence(),
             kind,
-            value: self.versions.value(),
+            value,
         })
     }
 
@@ -94,9 +106,26 @@ impl TableVersions {
         self.error.take()
     }
 
-    /// Loads the blocks the last move waits for, then records why the versions ended, when they
-    /// ended early.
+    /// Loads the blocks the last move waits for and the value a blob index there names, then
+    /// records why the versions ended, when they ended early.
     async fn finish_move(&mut self) {
+        self.load_blocks().await;
+        if self.error.is_none()
+            && self.versions.valid()
+            && parse(self.versions.key()).is_some_and(|(_, kind)| kind == ValueKind::BlobIndex)
+        {
+            let read = match locate(&self.blobs, self.versions.value()) {
+                Ok((blob, handle)) => blob.read(handle).await,
+                Err(error) => Err(error),
+            };
+            match read {
+                Ok(value) => self.resolved = value,
+                Err(error) => self.error = Some(error),
+            }
+        }
+    }
+
+    async fn load_blocks(&mut self) {
         if self.error.is_some() {
             return;
         }
@@ -124,9 +153,12 @@ impl TableVersions {
 fn parse(encoded: &[u8]) -> Option<(InternalKeyRef<'_>, ValueKind)> {
     let key = InternalKeyRef::parse(encoded).ok()?;
     match key.trailer().kind() {
-        Ok(kind @ (ValueKind::Value | ValueKind::ExpiringValue | ValueKind::Delete)) => {
-            Some((key, kind))
-        }
+        Ok(
+            kind @ (ValueKind::Value
+            | ValueKind::ExpiringValue
+            | ValueKind::Delete
+            | ValueKind::BlobIndex),
+        ) => Some((key, kind)),
         Ok(ValueKind::RangeDelete) | Err(_) => None,
     }
 }

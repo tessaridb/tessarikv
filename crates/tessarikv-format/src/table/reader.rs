@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use super::blob::blob_files_of;
 use super::block::{Block, Compare};
 use super::builder::{ENTRIES_PROPERTY, RANGE_DELETES_PROPERTY};
 use super::filter::BloomFilter;
@@ -25,6 +26,7 @@ pub struct Table {
     entries: u64,
     range_deletes: Option<Block>,
     prefix_filter: Option<Arc<PrefixFilter>>,
+    blob_files: Arc<[u64]>,
 }
 
 impl Table {
@@ -139,7 +141,8 @@ impl Table {
         let filter = block(footer.filter)?;
         let properties = block(footer.properties)?;
         let (entries, range_deletes, prefix) =
-            properties_of(properties).map_err(OpenError::Format)?;
+            properties_of(&properties).map_err(OpenError::Format)?;
+        let blob_files = blob_files_of(properties).map_err(OpenError::Format)?;
         let range_deletes = range_deletes.map(&mut block).transpose()?;
         let prefix = prefix
             .map(|(handle, length)| block(handle).map(|payload| (payload, length)))
@@ -159,6 +162,7 @@ impl Table {
                     .map(|(payload, length)| PrefixFilter::new(payload, length, footer.probing))
                     .transpose()?
                     .map(Arc::new),
+                blob_files,
             })
         })();
         decoded.map_err(OpenError::Format)
@@ -197,6 +201,12 @@ impl Table {
         self.prefix_filter
             .as_ref()
             .is_none_or(|filter| filter.may_hold(low, high))
+    }
+
+    /// The blob files the table's entries point into, in increasing order; empty for a table
+    /// whose values are all inline.
+    pub fn blob_files(&self) -> &[u64] {
+        &self.blob_files
     }
 
     /// Entries in the table.
@@ -243,8 +253,8 @@ impl Table {
 type Properties = (u64, Option<BlockHandle>, Option<(BlockHandle, u32)>);
 
 /// The table's [`Properties`], from the properties block.
-fn properties_of(payload: Vec<u8>) -> Result<Properties> {
-    let properties = Block::new(payload, |left, right| left.cmp(right))?;
+fn properties_of(payload: &[u8]) -> Result<Properties> {
+    let properties = Block::new(payload.to_vec(), |left, right| left.cmp(right))?;
     let mut property = properties.iter();
     property.seek(ENTRIES_PROPERTY);
     let entries = if property.valid() && property.key() == ENTRIES_PROPERTY {

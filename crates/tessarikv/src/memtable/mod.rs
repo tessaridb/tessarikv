@@ -124,6 +124,12 @@ impl Memtable {
             ValueKind::Value | ValueKind::ExpiringValue => (&self.entries, value),
             ValueKind::Delete => (&self.entries, &[][..]),
             ValueKind::RangeDelete => (&self.range_deletes, value),
+            // Values move to blob files only when tables are written.
+            ValueKind::BlobIndex => {
+                return Err(Error::Memtable {
+                    reason: "a blob index never enters an in-memory table",
+                });
+            }
         };
         if kind != ValueKind::RangeDelete {
             // Before the entry is linked: see the module documentation.

@@ -3,7 +3,12 @@
 //!
 //! A table holds every version of its in-memory table under its internal key, so a table answers
 //! a read at any snapshot exactly as the in-memory table did; versions are dropped only by
-//! compaction, which knows the snapshots readers hold.
+//! compaction, which knows the snapshots readers hold. A value large enough for its keyspace's
+//! blob threshold lives in a blob file beside the table, which keeps an index to it (see
+//! `blobs`).
+
+pub(crate) mod blobs;
+mod lookup;
 
 use std::path::Path;
 
@@ -11,25 +16,13 @@ use tessarikv_constants::{TABLE_WRITE_CHUNK_BYTES, TRAILER_BYTES};
 use tessarikv_format::{FileKind, Table, TableBuilder, TableOptions};
 use tessarikv_types::{InternalKeyRef, Trailer, ValueKind, compare_internal, encode_internal};
 
-use super::lookup_key::LookupKey;
-use super::view::TableFile;
-use crate::expiry::{Seen, malformed, seen};
+use blobs::BlobWriter;
+pub(crate) use lookup::{TableLookup, lookup};
+
 use crate::memtable::Memtable;
 use crate::sealing::Sealing;
-use crate::statistics::{Statistics, Ticker};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
-
-/// What a table holds for a key at a snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TableLookup {
-    /// The newest visible version holds this value.
-    Value(Vec<u8>),
-    /// The newest visible version is a delete: older tables must not be consulted.
-    Deleted,
-    /// No version is visible here: older tables decide.
-    Absent,
-}
 
 /// A table file built from an in-memory table, and what the manifest records about it.
 pub(crate) struct BuiltTable {
@@ -102,8 +95,10 @@ pub(crate) fn table_builder(
 }
 
 /// Writes every version and range delete of `memtable` as a table file, handing its bytes to
-/// `write` in order as they are built. Runs on a blocking thread. The recorded key range spans
-/// the point entries and the starts of the range deletes.
+/// `write` in order as they are built, and every value `blobs` (when given) takes to its blob
+/// file. Runs on
+/// a blocking thread. The recorded key range spans the point entries and the starts of the range
+/// deletes.
 ///
 /// # Errors
 ///
@@ -114,6 +109,7 @@ pub(crate) fn build(
     memtable: &Memtable,
     options: TableOptions,
     sealing: Option<&Sealing>,
+    mut blobs: Option<&mut BlobWriter>,
     write: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<BuiltTable> {
     let mut builder = table_builder(options, sealing)?;
@@ -124,14 +120,26 @@ pub(crate) fn build(
     let (mut min_sequence, mut max_sequence) = (u64::MAX, 0);
     while let Some(entry) = versions.entry() {
         key.clear();
-        encode_internal(
-            entry.user_key,
-            Trailer::new(entry.sequence, entry.kind),
-            &mut key,
-        );
-        builder
-            .add(&key, entry.value)
-            .map_err(|error| format_error(&error, None))?;
+        let index = match blobs.as_deref_mut() {
+            Some(blobs) if entry.kind == ValueKind::Value && blobs.separates(entry.value.len()) => {
+                Some(blobs.add(entry.value)?)
+            }
+            _ => None,
+        };
+        let kind = if index.is_some() {
+            ValueKind::BlobIndex
+        } else {
+            entry.kind
+        };
+        encode_internal(entry.user_key, Trailer::new(entry.sequence, kind), &mut key);
+        let added = match index {
+            Some(index) => {
+                builder.references_blob(index.file);
+                builder.add(&key, &index.encode())
+            }
+            None => builder.add(&key, entry.value),
+        };
+        added.map_err(|error| format_error(&error, None))?;
         hand_off(&mut builder, write)?;
         if smallest.is_none() {
             smallest = Some(key.clone());
@@ -208,77 +216,6 @@ pub(crate) fn tombstones(table: &Table, out: &mut Vec<RangeTombstone>) -> Result
         });
     }
     Ok(())
-}
-
-/// The newest version of `key` in `file` at `snapshot`, deleted when below `floor`, keeping the
-/// blocks it reads in the cache unless `fill_cache` is false, and counting the filter's answer in
-/// `statistics`.
-///
-/// # Errors
-///
-/// [`Error::Corruption`] when a block on the way is damaged, and the errors of
-/// [`super::table_blocks::TableBlocks::load`].
-pub(crate) async fn lookup(
-    file: &TableFile,
-    key: &LookupKey,
-    floor: u64,
-    fill_cache: bool,
-    statistics: Option<&Statistics>,
-) -> Result<TableLookup> {
-    let target = key.target();
-    let may_contain = file.table.may_contain(target);
-    if let Some(statistics) = statistics {
-        let ticker = if may_contain {
-            Ticker::BloomMaybe
-        } else {
-            Ticker::BloomUseful
-        };
-        statistics.record(ticker, 1);
-    }
-    if !may_contain {
-        return Ok(TableLookup::Absent);
-    }
-    let mut versions = file.table.iter();
-    versions.seek(target);
-    file.blocks.complete(&mut versions, fill_cache).await?;
-    versions
-        .status()
-        .map_err(|error| format_error(&error, None))?;
-    if !versions.valid() {
-        return Ok(TableLookup::Absent);
-    }
-    let found = InternalKeyRef::parse(versions.key()).map_err(|_| Error::Corruption {
-        what: "table",
-        path: None,
-        offset: None,
-        detail: "a stored key has no trailer".to_owned(),
-    })?;
-    if found.user_key() != key.user_key() {
-        return Ok(TableLookup::Absent);
-    }
-    // A range delete at `floor` covers the key: every version below it is deleted.
-    if found.trailer().sequence().get() < floor {
-        return Ok(TableLookup::Deleted);
-    }
-    // The seek lands on the newest version at or below the snapshot.
-    Ok(match found.trailer().kind() {
-        Ok(kind @ (ValueKind::Value | ValueKind::ExpiringValue | ValueKind::Delete)) => {
-            match seen(kind, versions.value()) {
-                Seen::Value(value) => TableLookup::Value(value.to_vec()),
-                Seen::Absent => TableLookup::Deleted,
-                Seen::Malformed => return Err(malformed()),
-            }
-        }
-        // Range deletes are kept in their own block, never among the versions.
-        Ok(ValueKind::RangeDelete) | Err(_) => {
-            return Err(Error::Corruption {
-                what: "table",
-                path: None,
-                offset: None,
-                detail: "a stored key has a kind this build does not read".to_owned(),
-            });
-        }
-    })
 }
 
 /// The engine error for a table the format refused, read from `path` when it came from a file.

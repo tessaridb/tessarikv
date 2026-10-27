@@ -37,6 +37,6 @@ pub use seal::{
 pub use table::block::{Block, BlockBuilder, BlockIter, Compare};
 pub use table::filter::{BloomBuilder, BloomFilter, hash as key_hash};
 pub use table::{
-    BlockHandle, BlockSource, Compression, FOOTER_BYTES, OpenError, Table, TableBuilder, TableIter,
-    TableOptions, unseal_block, unseal_block_owned,
+    BlobBuilder, BlobIndex, BlockHandle, BlockSource, Compression, FOOTER_BYTES, OpenError, Table,
+    TableBuilder, TableIter, TableOptions, open_blob, unseal_block, unseal_block_owned,
 };
