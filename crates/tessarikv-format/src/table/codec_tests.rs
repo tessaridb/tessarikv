@@ -2,6 +2,8 @@ use proptest::prelude::*;
 
 use super::Compression;
 use super::codec::{compress, decompress, max_payload};
+use super::handle::write_block;
+use super::unseal::{unseal, unseal_owned};
 use crate::varint;
 
 /// Every way a table can store its data blocks.
@@ -166,6 +168,37 @@ fn a_block_holding_one_entry_past_the_target_size_still_reads() {
             "{codec:?}"
         );
     }
+}
+
+#[test]
+fn an_owned_block_unseals_as_the_borrowed_one_for_every_codec() {
+    for payload in [compressible(), noise(4096)] {
+        for codec in EVERY {
+            let mut sealed = Vec::new();
+            write_block(&mut sealed, 0, &payload, codec, None).expect("written");
+            let borrowed = unseal(&sealed, 0, None).expect("borrowed");
+            assert_eq!(borrowed, payload, "{codec:?}");
+            assert_eq!(
+                unseal_owned(sealed.clone(), 0, None),
+                Ok(borrowed),
+                "{codec:?}"
+            );
+            let last = sealed.len() - 1;
+            sealed[last] ^= 1;
+            assert!(unseal_owned(sealed, 0, None).is_err(), "{codec:?}");
+        }
+    }
+}
+
+#[test]
+fn an_uncompressed_owned_block_becomes_its_payload_without_a_copy() {
+    let payload = noise(4096);
+    let mut sealed = Vec::new();
+    write_block(&mut sealed, 0, &payload, Compression::Lz4, None).expect("written");
+    let buffer = sealed.as_ptr();
+    let unsealed = unseal_owned(sealed, 0, None).expect("unsealed");
+    assert_eq!(unsealed, payload);
+    assert_eq!(unsealed.as_ptr(), buffer, "the read buffer is the payload");
 }
 
 #[test]

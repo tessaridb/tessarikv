@@ -79,12 +79,20 @@ impl BlockIter {
         let (mut low, mut high) = (0, self.block.restart_count.saturating_sub(1));
         while low < high {
             let middle = low.saturating_add(high.saturating_sub(low).saturating_add(1) / 2);
-            self.restart_at(middle);
-            self.step();
-            if !self.valid {
-                return;
-            }
-            if (self.block.compare)(&self.key, target) == Ordering::Less {
+            let compare = self.block.compare;
+            // A restart entry holds its whole key: compare it where it lies, without copying.
+            let order = match self.restart_key(middle) {
+                Some(key) => compare(key, target),
+                None => {
+                    self.restart_at(middle);
+                    self.step();
+                    if !self.valid {
+                        return;
+                    }
+                    compare(&self.key, target)
+                }
+            };
+            if order == Ordering::Less {
                 low = middle;
             } else {
                 high = middle.saturating_sub(1);
@@ -157,6 +165,25 @@ impl BlockIter {
             Some(offset) if index < self.block.restart_count => self.next = offset,
             _ => self.next = self.block.entries_end,
         }
+    }
+
+    /// The key of restart entry `index`, read in place; `None` when the entry does not decode
+    /// as a restart entry (the caller then decodes it the usual way, which reports why).
+    fn restart_key(&self, index: usize) -> Option<&[u8]> {
+        let entries = self.block.bytes.get(..self.block.entries_end)?;
+        let mut at = self.block.restart(index)?;
+        let mut field = || -> Option<usize> {
+            let (value, used) = varint::get_u32(entries.get(at..)?)?;
+            at = at.checked_add(used)?;
+            usize::try_from(value).ok()
+        };
+        let shared = field()?;
+        let unshared = field()?;
+        let _value_len = field()?;
+        if shared != 0 {
+            return None;
+        }
+        entries.get(at..at.checked_add(unshared)?)
     }
 
     /// Decodes the entry at `self.next` into the current position.

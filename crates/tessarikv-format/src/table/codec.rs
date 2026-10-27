@@ -109,6 +109,11 @@ pub(super) fn compress(compression: Compression, payload: &[u8]) -> Option<(Vec<
     (sealed.len() < saved).then_some((sealed, byte))
 }
 
+/// Whether codec `byte` stores a block's payload as it is.
+pub(super) fn is_stored(byte: u8) -> bool {
+    byte == NONE
+}
+
 /// The payload of a block stored by codec `byte`, or why it cannot be restored.
 pub(super) fn decompress(byte: u8, stored: &[u8]) -> Result<Vec<u8>, &'static str> {
     if byte == NONE {

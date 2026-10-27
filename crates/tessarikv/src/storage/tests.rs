@@ -133,6 +133,34 @@ fn a_reader_of_a_replaced_file_keeps_its_bytes() {
 }
 
 #[test]
+fn a_read_into_a_buffer_of_its_own_returns_exactly_the_bytes_asked_for() {
+    for (storage, root, _guard) in backends() {
+        storage.create_dir_all(&root).unwrap();
+        let path = root.join("000001.sst");
+        let bytes: Vec<u8> = (0..20_000_u32)
+            .map(|at| at.to_le_bytes()[0] ^ 0x5a)
+            .collect();
+        write(&*storage, &path, &bytes);
+        let file = storage.open(&path).unwrap();
+        for (offset, len) in [(0, 0), (0, 1), (3, 4096), (4093, 9000), (19_000, 1000)] {
+            let read = file.read_vec_at(offset, len).unwrap();
+            let start = usize::try_from(offset).unwrap();
+            assert_eq!(
+                read,
+                &bytes[start..start + len],
+                "{storage:?} {offset} {len}"
+            );
+            assert_eq!(read.len(), len, "{storage:?}");
+        }
+        let past = file.read_vec_at(19_500, 1000);
+        assert!(
+            matches!(past, Err(Error::ShortRead { .. })),
+            "{storage:?} {past:?}"
+        );
+    }
+}
+
+#[test]
 fn a_read_that_must_not_block_fills_the_buffer_only_where_the_backend_promises_it() {
     for (storage, root, guard) in backends() {
         storage.create_dir_all(&root).unwrap();
@@ -150,6 +178,11 @@ fn a_read_that_must_not_block_fills_the_buffer_only_where_the_backend_promises_i
         );
         if filled {
             assert_eq!(&buf, b"world");
+        }
+        let owned = file.try_read_vec_at(6, 5).unwrap();
+        assert_eq!(owned.is_some(), promised, "{storage:?}");
+        if let Some(owned) = owned {
+            assert_eq!(owned, b"world");
         }
     }
 }

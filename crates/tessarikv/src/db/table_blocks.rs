@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tessarikv_constants::LEVELS;
 use tessarikv_format::{
     Block, BlockHandle, BlockSource, FileKind, FileSealer, OpenError, SEAL_HEADER_BYTES, Table,
-    TableIter, unseal_block,
+    TableIter, unseal_block_owned,
 };
 use tessarikv_types::compare_internal;
 
@@ -124,13 +124,13 @@ impl TableBlocks {
 
     /// Reads and verifies the block at `handle`. Runs on a blocking thread.
     fn read(&self, handle: BlockHandle) -> Result<Block> {
-        let mut sealed = self.buffer(handle)?;
+        let len = self.checked_len(handle)?;
         let file = match &self.file {
             Some(file) => Arc::clone(file),
             None => self.cache.file(self.id, &self.path)?,
         };
-        file.read_at(handle.offset(), &mut sealed)?;
-        self.unseal(handle, &sealed)
+        let sealed = file.read_vec_at(handle.offset(), len)?;
+        self.unseal(handle, sealed)
     }
 
     /// Reads and verifies the block at `handle` if the storage can do it without blocking;
@@ -144,17 +144,16 @@ impl TableBlocks {
         else {
             return Ok(None);
         };
-        let mut sealed = self.buffer(handle)?;
-        if !file.try_read_at(handle.offset(), &mut sealed)? {
+        let Some(sealed) = file.try_read_vec_at(handle.offset(), self.checked_len(handle)?)? else {
             return Ok(None);
-        }
-        self.unseal(handle, &sealed).map(Some)
+        };
+        self.unseal(handle, sealed).map(Some)
     }
 
-    /// A buffer for the sealed block at `handle`. The handle comes from a verified index, but
+    /// The length of the sealed block at `handle`. The handle comes from a verified index, but
     /// the file is still untrusted: nothing is allocated for a block that does not fit inside it.
-    fn buffer(&self, handle: BlockHandle) -> Result<Vec<u8>> {
-        let size = handle
+    fn checked_len(&self, handle: BlockHandle) -> Result<usize> {
+        handle
             .offset()
             .checked_add(handle.size())
             .filter(|end| *end <= self.len)
@@ -164,12 +163,11 @@ impl TableBlocks {
                 path: Some(self.path.clone()),
                 offset: Some(handle.offset()),
                 detail: "a block handle points past the file".to_owned(),
-            })?;
-        Ok(vec![0; size])
+            })
     }
 
-    fn unseal(&self, handle: BlockHandle, sealed: &[u8]) -> Result<Block> {
-        unseal_block(
+    fn unseal(&self, handle: BlockHandle, sealed: Vec<u8>) -> Result<Block> {
+        unseal_block_owned(
             sealed,
             handle.offset(),
             self.sealer.as_deref(),

@@ -5,9 +5,10 @@ use std::sync::Arc;
 use super::block::{Block, Compare};
 use super::builder::{ENTRIES_PROPERTY, RANGE_DELETES_PROPERTY};
 use super::filter::BloomFilter;
-use super::handle::{BlockHandle, FOOTER_BYTES, Footer, unseal};
+use super::handle::{BlockHandle, FOOTER_BYTES, Footer};
 use super::iter::TableIter;
 use super::source::{BlockSource, OpenError, Resident};
+use super::unseal::unseal;
 use crate::error::{Error, Result};
 use crate::seal::{FileSealer, TAG_BYTES};
 

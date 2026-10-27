@@ -38,7 +38,7 @@ const FORMAT_VERSION_1: u32 = 1;
 const MAGIC: u64 = 0x5445_5353_4B56_5442;
 
 /// Bytes after a block's payload: the compression byte and the checksum.
-const SEAL_BYTES: usize = 5;
+pub(super) const SEAL_BYTES: usize = 5;
 
 /// Bytes of one handle.
 const HANDLE_BYTES: usize = 16;
@@ -237,38 +237,5 @@ pub(super) fn read_block(
             what: "table block",
             reason: "handle points past the file",
         })?;
-    unseal(sealed, handle.offset, sealer)
-}
-
-/// The verified, uncompressed payload of a sealed block: its stored bytes and its seal, first
-/// decrypted as the unit at `at` when the file has a `sealer`.
-pub(super) fn unseal(sealed: &[u8], at: u64, sealer: Option<&FileSealer>) -> Result<Vec<u8>> {
-    let opened;
-    let sealed = match sealer {
-        Some(sealer) => {
-            opened = sealer.open(at, sealed)?;
-            opened.as_slice()
-        }
-        None => sealed,
-    };
-    let corrupt = |reason| Error::Malformed {
-        what: "table block",
-        reason,
-    };
-    let stored_len = sealed
-        .len()
-        .checked_sub(SEAL_BYTES)
-        .ok_or(corrupt("shorter than its seal"))?;
-    let (stored, seal) = sealed.split_at(stored_len);
-    let kind = *seal.first().ok_or(corrupt("seal"))?;
-    let expected = seal
-        .get(1..)
-        .and_then(|field| field.try_into().ok())
-        .map(u32::from_le_bytes)
-        .ok_or(corrupt("seal"))?;
-    // A fuzzing build skips the comparison so mutated input reaches the decompressors.
-    if !cfg!(fuzzing) && crc32c::crc32c_append(crc32c::crc32c(stored), &[kind]) != expected {
-        return Err(corrupt("checksum mismatch"));
-    }
-    codec::decompress(kind, stored).map_err(corrupt)
+    super::unseal::unseal(sealed, handle.offset, sealer)
 }

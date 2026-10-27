@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ReadableFile::read_vec_at` and `ReadableFile::try_read_vec_at` read a block into a buffer of its own. Their
+  defaults use `read_at` and `try_read_at`; the OS storage reads into memory that is not zeroed first.
+
+### Changed
+
+- A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed
+  block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
+
 ### Fixed
 
 - A table block that claims to decompress to more than any data block can hold (the largest block size plus one

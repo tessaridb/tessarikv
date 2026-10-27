@@ -25,6 +25,7 @@ mod handle;
 mod iter;
 mod reader;
 mod source;
+mod unseal;
 
 #[cfg(test)]
 mod codec_tests;
@@ -44,7 +45,7 @@ pub use codec::Compression;
 pub use handle::{BlockHandle, FOOTER_BYTES};
 pub use iter::TableIter;
 pub use reader::Table;
-pub use source::{BlockSource, OpenError, unseal_block};
+pub use source::{BlockSource, OpenError, unseal_block, unseal_block_owned};
 
 /// How a table is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

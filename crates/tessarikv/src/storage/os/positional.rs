@@ -8,6 +8,24 @@ pub(super) fn read_exact_at(file: &File, offset: u64, buf: &mut [u8]) -> std::io
     std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
 }
 
+/// `len` bytes from `offset` read with `pread` straight into a new buffer's unwritten memory, so
+/// nothing is zeroed first; `UnexpectedEof` when the file ends first.
+#[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+pub(super) fn read_vec_at(file: &File, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(len);
+    // Each read fills the unwritten capacity and lengthens the buffer by what it read.
+    while buf.len() < len {
+        let at = offset.saturating_add(u64::try_from(buf.len()).unwrap_or(u64::MAX));
+        match rustix::io::pread(file, rustix::buffer::spare_capacity(&mut buf), at) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    buf.truncate(len);
+    Ok(buf)
+}
+
 /// Fills `buf` from `offset` with positioned `ReadFile` calls.
 #[cfg(windows)]
 pub(super) fn read_exact_at(

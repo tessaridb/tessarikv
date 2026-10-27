@@ -147,8 +147,30 @@ impl ReadableFile for OsReadable {
         }
     }
 
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+    fn read_vec_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        match positional::read_vec_at(&self.file, offset, len) {
+            Ok(buf) => Ok(buf),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                let wanted = u64::try_from(len).unwrap_or(u64::MAX);
+                Err(Error::ShortRead {
+                    path: self.path.clone(),
+                    requested_end: offset.saturating_add(wanted),
+                    available: self.len()?,
+                })
+            }
+            Err(error) => Err(Error::io("read", &self.path, error)),
+        }
+    }
+
     fn try_read_at(&self, offset: u64, buf: &mut [u8]) -> Result<bool> {
         Ok(positional::read_exact_at_nowait(&self.file, offset, buf))
+    }
+
+    /// No read here promises not to wait: answer without allocating a buffer for nothing.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    fn try_read_vec_at(&self, _offset: u64, _len: usize) -> Result<Option<Vec<u8>>> {
+        Ok(None)
     }
 
     fn len(&self) -> Result<u64> {
