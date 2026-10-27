@@ -125,6 +125,14 @@ impl Compactions {
         !self.jobs.is_empty()
     }
 
+    /// Whether no job runs, waits for the manifest or waits to start on request.
+    pub(super) fn is_idle(&self) -> bool {
+        self.jobs.is_empty()
+            && self.ready.is_empty()
+            && self.queued.is_empty()
+            && self.active.is_none()
+    }
+
     /// Queues a range request; [`Compactions::step`] serves it.
     pub(super) fn request(&mut self, request: Request) {
         self.queued.push_back(request);

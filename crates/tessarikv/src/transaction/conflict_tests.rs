@@ -198,3 +198,44 @@ async fn increment(db: &Db) -> std::result::Result<(), Error> {
     txn.put(KS, b"counter", &(current + 1).to_le_bytes())?;
     txn.commit(&WriteOptions::default()).await.map(|_| ())
 }
+
+#[tokio::test]
+async fn a_key_read_for_update_refuses_the_commit_after_a_later_write_to_it() {
+    let db = memory().await;
+    put(&db, b"guard", b"0").await;
+    // Read for update: a write to the key after the transaction began refuses its commit.
+    let mut locked = db.begin().expect("began");
+    let seen = locked
+        .get_for_update(KS, b"guard", &ReadOptions::default())
+        .await
+        .expect("read");
+    assert_eq!(seen, Some(b"0".to_vec()));
+    locked.put(KS, b"other", b"locked").expect("put");
+    put(&db, b"guard", b"1").await;
+    assert_conflict(locked.commit(&WriteOptions::default()).await);
+    assert_eq!(read(&db, b"other").await, None, "nothing was written");
+    // Control: a plain read of the same key does not hold the commit back.
+    let mut plain = db.begin().expect("began");
+    plain
+        .get(KS, b"guard", &ReadOptions::default())
+        .await
+        .expect("read");
+    plain.put(KS, b"other", b"plain").expect("put");
+    put(&db, b"guard", b"2").await;
+    plain
+        .commit(&WriteOptions::default())
+        .await
+        .expect("a plain read commits");
+    // Read for update with no write to the key since commits.
+    let mut quiet = db.begin().expect("began");
+    quiet
+        .get_for_update(KS, b"guard", &ReadOptions::default())
+        .await
+        .expect("read");
+    quiet.put(KS, b"other", b"quiet").expect("put");
+    quiet
+        .commit(&WriteOptions::default())
+        .await
+        .expect("an untouched key commits");
+    assert_eq!(read(&db, b"other").await, Some(b"quiet".to_vec()));
+}

@@ -36,6 +36,10 @@ All notable changes to this project are documented here. The format follows
   three times). Compaction moves the values of the oldest blob files into new ones as it passes them, and a blob file
   is removed once no table refers to it. Checkpoints, `Db::destroy` and `Db::verify_checksums` cover blob files;
   `Table::blob_files` names those a table refers to.
+- `Transaction::get_for_update`: a read that holds its key for the commit — a write to it committed after the
+  transaction began refuses the commit with `Conflict`, as for a key the transaction writes. Nothing waits.
+- `WriteBatch::single_delete`: the delete of a key put exactly once; it reads as a delete.
+- `Db::wait_for_compact`: returns once no flush or compaction is running, queued or due.
 
 ### Changed
 

@@ -1,5 +1,6 @@
-//! Expiring puts: an expiring put stores its expiry stamp (8 bytes, see
-//! [`split_expiring`](tessarikv_types::split_expiring)) at the start of its value.
+//! Entries beyond a put, a delete and a range delete: expiring puts, which store their expiry
+//! stamp (8 bytes, see [`split_expiring`](tessarikv_types::split_expiring)) at the start of
+//! their value, and single deletes.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,5 +43,20 @@ impl WriteBatch {
             Some(&stamp),
             Some(value),
         )
+    }
+
+    /// Removes `key` from `keyspace`, for a key put exactly once since it was last absent and
+    /// never overwritten; it reads as [`WriteBatch::delete`] does.
+    ///
+    /// The precondition is the caller's to keep: this build stores a single delete as a delete,
+    /// so a key that broke it still reads as absent, but a later build may cancel a single
+    /// delete against the one put below it during compaction, and a key put twice would then
+    /// show its older value again. Use [`WriteBatch::delete`] for a key that may be overwritten.
+    ///
+    /// # Errors
+    ///
+    /// As for [`WriteBatch::put`].
+    pub fn single_delete(&mut self, keyspace: KeyspaceId, key: &[u8]) -> Result<()> {
+        self.append(keyspace, ValueKind::Delete, key, None, None)
     }
 }

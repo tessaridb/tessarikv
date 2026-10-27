@@ -56,6 +56,8 @@ pub(crate) struct Check<'a> {
     pub(crate) snapshot: u64,
     /// What it read, when it is serializable.
     pub(crate) reads: Option<&'a Reads>,
+    /// The keys it read for update.
+    pub(crate) for_update: &'a [(KeyspaceId, Vec<u8>)],
 }
 
 /// The keys and ranges a serializable transaction read from its snapshot.
@@ -170,6 +172,10 @@ impl Commits {
             }
         });
         writes_current
+            && check
+                .for_update
+                .iter()
+                .all(|(keyspace, key)| self.key_current(*keyspace, key, snapshot, ranges))
             && check
                 .reads
                 .is_none_or(|reads| self.reads_current(reads, snapshot, ranges))

@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tessarikv_sync::{Sequencer, SnapshotRegistry};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::block_cache::BlockCache;
@@ -158,6 +158,8 @@ async fn run(
     let mut compactions = Compactions::default();
     let mut catalog = Catalog::default();
     let mut stopping = false;
+    // Waiters for a database with nothing to flush or compact.
+    let mut idle: Vec<oneshot::Sender<()>> = Vec::new();
     let cache = Arc::clone(&flusher.cache);
     // Levels recovered past a trigger compact now: no write may come to wake the installer
     // while the levels hold writes.
@@ -194,6 +196,7 @@ async fn run(
                 Command::Create(create) => catalog.create(create),
                 Command::Drop(drop) => catalog.drop_keyspace(drop),
                 Command::Checkpoint(reply) => catalog.checkpoint(reply),
+                Command::Idle(reply) => idle.push(reply),
             },
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
@@ -221,6 +224,12 @@ async fn run(
             && let Some(oldest) = frozen.front()
         {
             running = Some(flusher.start_flush(oldest, &signals)?);
+        }
+        // The step just taken started nothing, so nothing is due either.
+        if running.is_none() && frozen.is_empty() && compactions.is_idle() {
+            for waiter in idle.drain(..) {
+                let _ = waiter.send(());
+            }
         }
     }
 }

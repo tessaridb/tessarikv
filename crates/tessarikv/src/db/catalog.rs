@@ -38,6 +38,9 @@ pub(crate) enum Command {
     /// Hand over the version and the view naming the same table files (see
     /// [`crate::Db::checkpoint`]).
     Checkpoint(oneshot::Sender<Pinned>),
+    /// Answer once no flush or compaction is running, queued or due (see
+    /// [`crate::Db::wait_for_compact`]).
+    Idle(oneshot::Sender<()>),
 }
 
 /// A version and the view naming its table files; the view keeps them from removal while held.

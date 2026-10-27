@@ -260,3 +260,15 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+fn a_single_delete_is_a_delete_of_its_key() {
+    let mut batch = WriteBatch::new();
+    batch
+        .single_delete(KeyspaceId::new(3), b"once")
+        .expect("entry");
+    assert_eq!(
+        entries(&batch),
+        vec![(3, ValueKind::Delete, b"once".to_vec(), None)]
+    );
+}

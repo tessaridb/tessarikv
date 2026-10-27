@@ -21,7 +21,7 @@
 //! deletes, and version 2 batches, which hold no expiring puts, are still read.
 
 mod codec;
-mod expiring;
+mod kinds;
 
 #[cfg(test)]
 mod tests;
