@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format follows
 
 - A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed
   block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
+- A `Durability::Buffered` write whose log frames fit the open segment is appended by the log task itself instead of
+  on a blocking thread; a write that syncs, starts a new segment or removes one is still handed over.
 
 ### Fixed
 

@@ -221,14 +221,28 @@ impl Writer {
         }
         let through = self.released_through();
         let mut segments = self.segments.take().ok_or(Error::LogFailed)?;
-        let (segments, written) = tokio::task::spawn_blocking(move || {
-            let written = segments
-                .write(frames, sync)
-                .and_then(|()| segments.remove_through(through));
+        let bytes = frames.iter().fold(0_u64, |total, (frame, _)| {
+            total.saturating_add(u64::try_from(frame.bytes.len()).unwrap_or(u64::MAX))
+        });
+        // A plain append without a sync only copies into the page cache, so it is made here, on
+        // this task: handing it to a blocking thread costs two thread hand-offs, more than the
+        // copy. A write that syncs, rolls to a new segment or removes one is handed over. After
+        // an append made here the task yields: the writers it has just woken may be queued behind
+        // it on this worker, and a full queue of entries would otherwise keep it running.
+        let (segments, written) = if !sync && segments.appends_in_place(bytes, through) {
+            let written = segments.write(frames, false);
+            tokio::task::yield_now().await;
             (segments, written)
-        })
-        .await
-        .map_err(|_| Error::LogFailed)?;
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let written = segments
+                    .write(frames, sync)
+                    .and_then(|()| segments.remove_through(through));
+                (segments, written)
+            })
+            .await
+            .map_err(|_| Error::LogFailed)?
+        };
         self.segments = Some(segments);
         written?;
         progress.send_modify(|progress| {

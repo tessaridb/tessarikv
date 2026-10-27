@@ -95,6 +95,19 @@ impl Segments {
         Ok(())
     }
 
+    /// Whether `bytes` more of frames are a plain append to the open segment: it takes them
+    /// without rolling, and nothing released through `through` is to be removed. Such a write
+    /// neither syncs nor creates nor removes a file.
+    pub(super) fn appends_in_place(&self, bytes: u64, through: u64) -> bool {
+        self.file.is_some()
+            && !self.has_removable(through)
+            && self
+                .used()
+                .ok()
+                .and_then(|used| used.checked_add(bytes))
+                .is_some_and(|total| total <= self.limit)
+    }
+
     /// Bytes in the current segment, gathered ones included.
     fn used(&self) -> Result<u64> {
         let written = self.file.as_ref().map_or(0, |file| file.len());
