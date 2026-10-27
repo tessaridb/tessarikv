@@ -2,11 +2,14 @@
 //! internal-key order. A move finishes once every table file it touches holds the blocks it
 //! needs, which may mean waiting for storage.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
-use tessarikv_types::{SequenceNumber, ValueKind};
+use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
+use super::level_versions::{LevelVersions, Span};
 use super::table_versions::TableVersions;
+use super::view::View;
 use crate::memtable::{MemtableCursor, MemtableEntry, MemtableIter};
 use crate::{Error, Result};
 
@@ -39,6 +42,8 @@ pub(super) enum Source<'a> {
     Shared(MemtableCursor),
     /// A table file; boxed, as its iterator is several times an in-memory one's size.
     Table(Box<TableVersions>),
+    /// The table files of one sorted level, read one file at a time.
+    Level(Box<LevelVersions<'a>>),
 }
 
 impl Source<'_> {
@@ -47,6 +52,7 @@ impl Source<'_> {
             Self::Memtable(versions) => versions.seek(key, snapshot),
             Self::Shared(versions) => versions.seek(key, snapshot),
             Self::Table(versions) => versions.seek(key, snapshot).await,
+            Self::Level(versions) => versions.seek(key, snapshot).await,
         }
     }
 
@@ -55,6 +61,7 @@ impl Source<'_> {
             Self::Memtable(versions) => versions.next(),
             Self::Shared(versions) => versions.next(),
             Self::Table(versions) => versions.next().await,
+            Self::Level(versions) => versions.next().await,
         }
     }
 
@@ -63,6 +70,7 @@ impl Source<'_> {
             Self::Memtable(versions) => versions.seek_to_last(),
             Self::Shared(versions) => versions.seek_to_last(),
             Self::Table(versions) => versions.seek_to_last().await,
+            Self::Level(versions) => versions.seek_to_last().await,
         }
     }
 
@@ -71,6 +79,7 @@ impl Source<'_> {
             Self::Memtable(versions) => versions.seek_for_prev(target),
             Self::Shared(versions) => versions.seek_for_prev(target),
             Self::Table(versions) => versions.seek_for_prev(target).await,
+            Self::Level(versions) => versions.seek_for_prev(target).await,
         }
     }
 
@@ -79,6 +88,7 @@ impl Source<'_> {
             Self::Memtable(versions) => versions.prev(),
             Self::Shared(versions) => versions.prev(),
             Self::Table(versions) => versions.prev().await,
+            Self::Level(versions) => versions.prev().await,
         }
     }
 
@@ -87,6 +97,7 @@ impl Source<'_> {
             Self::Memtable(versions) => versions.entry().map(KeyVersion::from),
             Self::Shared(versions) => versions.entry().map(KeyVersion::from),
             Self::Table(versions) => versions.entry(),
+            Self::Level(versions) => versions.entry(),
         }
     }
 }
@@ -94,8 +105,9 @@ impl Source<'_> {
 /// The versions of every source of a view, by user key ascending and newest version first.
 ///
 /// Each sequence number lives in exactly one source, so two sources never hold the same version
-/// and the merge needs no tie rule. The sources of one view are few, so the next version is
-/// found by comparing the current version of each.
+/// and the merge needs no tie rule. The sources of one view are few — the in-memory tables, the
+/// level-0 files and one per sorted level — so the next version is found by comparing the current
+/// version of each.
 ///
 /// The walk runs in the direction of the last positioning: forward after [`Self::seek`],
 /// backward after [`Self::seek_to_last`] and [`Self::seek_for_prev`]; a caller turning around
@@ -167,6 +179,7 @@ impl<'a> MergedVersions<'a> {
     pub(super) fn take_error(&mut self) -> Option<Error> {
         self.sources.iter_mut().find_map(|source| match source {
             Source::Table(versions) => versions.take_error(),
+            Source::Level(versions) => versions.take_error(),
             Source::Memtable(_) | Source::Shared(_) => None,
         })
     }
@@ -204,4 +217,28 @@ fn version_order(left: &KeyVersion<'_>, right: &KeyVersion<'_>) -> Ordering {
     left.user_key
         .cmp(right.user_key)
         .then_with(|| right.sequence.cmp(&left.sequence))
+}
+
+/// Every source of `keyspace` in `view`, borrowed: the in-memory tables, the level-0 files and
+/// one source per sorted level, leaving out the table files outside `span`.
+pub(super) fn sources<'a>(
+    view: &'a View,
+    keyspace: KeyspaceId,
+    fill_cache: bool,
+    span: Span<'_>,
+) -> Vec<Source<'a>> {
+    let (level_zero, levels) = view.runs(keyspace.get());
+    view.memtables(keyspace.get())
+        .map(|table| Source::Memtable(table.iter()))
+        .chain(
+            level_zero
+                .iter()
+                .filter(|file| span.touches(file))
+                .map(|file| Source::Table(Box::new(TableVersions::new(file, fill_cache)))),
+        )
+        .chain(levels.map(|level| {
+            let files = Cow::Borrowed(span.within(level));
+            Source::Level(Box::new(LevelVersions::new(files, fill_cache)))
+        }))
+        .collect()
 }

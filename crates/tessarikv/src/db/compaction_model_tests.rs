@@ -9,6 +9,7 @@ use tessarikv_types::InternalKeyRef;
 use super::Db;
 use super::compaction_tests::{assert_levels_ordered, options};
 use super::flush_tests::{PATH, key, until};
+use super::level_read_tests::{assert_walks, by_key};
 use crate::log::fault::FaultStorage;
 use crate::{CompactionStyle, DbOptions, KeyspaceId, ReadOptions, WriteBatch, WriteOptions};
 
@@ -70,6 +71,7 @@ async fn assert_reads(db: &Db, model: &Model, what: &str) {
             .unwrap();
         assert_eq!(read.as_ref(), model.get(&index), "{what}: key {index}");
     }
+    assert_walks(db, &by_key(model), what).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

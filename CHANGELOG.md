@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Scans and iterators read each level below 0 as one ordered source and open only the table files their range or
+  bounds reach, so a positioned read touches one file per level instead of every file of the keyspace.
+
 ## [0.1.1] - 2026-10-24
 
 ### Fixed

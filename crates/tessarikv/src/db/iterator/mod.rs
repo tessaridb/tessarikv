@@ -3,11 +3,13 @@
 
 mod backward;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::Db;
+use super::level_versions::{LevelVersions, Span};
 use super::merge::{MergedVersions, Source};
 use super::snapshot::Snapshot;
 use super::table_versions::TableVersions;
@@ -103,12 +105,27 @@ impl<'a> DbIterator<'a> {
         registration: Option<Snapshot<'a>>,
     ) -> Result<Self> {
         let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
+        // Files outside the bounds hold nothing the iterator shows.
+        let span = Span {
+            low: options.lower_bound.as_deref(),
+            high: options.upper_bound.as_deref(),
+        };
+        let (level_zero, levels) = view.runs(keyspace.get());
         let sources = view
             .shared_memtables(keyspace.get())
             .map(|table| Source::Shared(MemtableCursor::new(Arc::clone(table))))
-            .chain(view.files(keyspace.get()).map(|file| {
-                let versions = TableVersions::new(file, options.fill_cache);
-                Source::Table(Box::new(versions))
+            .chain(
+                level_zero
+                    .iter()
+                    .filter(|file| span.touches(file))
+                    .map(|file| {
+                        let versions = TableVersions::new(file, options.fill_cache);
+                        Source::Table(Box::new(versions))
+                    }),
+            )
+            .chain(levels.map(|level| {
+                let files = Cow::Owned(span.within(level).to_vec());
+                Source::Level(Box::new(LevelVersions::new(files, options.fill_cache)))
             }))
             .collect();
         Ok(Self {

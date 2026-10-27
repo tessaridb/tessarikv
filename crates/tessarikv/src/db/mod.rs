@@ -27,6 +27,7 @@ mod installer;
 mod iterator;
 mod key_check;
 mod keyspaces;
+mod level_versions;
 mod merge;
 mod multi_get;
 mod multi_scan;
@@ -100,6 +101,8 @@ mod keyspace_tests;
 mod kill_tests;
 #[cfg(test)]
 mod level0_stall_tests;
+#[cfg(test)]
+mod level_read_tests;
 #[cfg(test)]
 mod level_tests;
 #[cfg(test)]

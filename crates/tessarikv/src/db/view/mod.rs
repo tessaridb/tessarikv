@@ -188,6 +188,18 @@ impl View {
             .chain(deeper)
     }
 
+    /// The table files of `keyspace` split for a merge: the level-0 files newest first, and the
+    /// files of each deeper level in key order, one slice per level.
+    pub(crate) fn runs(&self, keyspace: u32) -> (&[TableFile], impl Iterator<Item = &[TableFile]>) {
+        let files = self.keyspace_files(keyspace);
+        let (level_zero, sorted) =
+            files.split_at(files.partition_point(|file| file.meta.level == 0));
+        (
+            level_zero,
+            sorted.chunk_by(|left, right| left.meta.level == right.meta.level),
+        )
+    }
+
     /// The level-0 table files of `keyspace`: found by binary search, cheap enough for every
     /// write to ask.
     pub(crate) fn level0_files(&self, keyspace: u32) -> usize {

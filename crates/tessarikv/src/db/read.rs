@@ -5,8 +5,8 @@ use std::time::Instant;
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::Db;
-use super::merge::{MergedVersions, Source};
-use super::table_versions::TableVersions;
+use super::level_versions::Span;
+use super::merge::{MergedVersions, sources};
 use super::tables::{TableLookup, lookup};
 use super::view::View;
 use crate::memtable::Lookup;
@@ -213,7 +213,11 @@ pub(super) async fn scan_in(
     let ScanRange { start, end, limit } = range;
     let mut page = ScanPage::default();
     let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
-    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache));
+    let span = Span {
+        low: Some(start),
+        high: end,
+    };
+    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache, span));
     versions.seek(start, snapshot).await;
     // The user key last decided, kept in one buffer reused across keys.
     let mut decided: Option<Vec<u8>> = None;
@@ -244,17 +248,6 @@ pub(super) async fn scan_in(
     Ok(page)
 }
 
-/// Every source of `keyspace` in `view`, borrowed: in-memory tables, then table files.
-fn sources(view: &View, keyspace: KeyspaceId, fill_cache: bool) -> Vec<Source<'_>> {
-    view.memtables(keyspace.get())
-        .map(|table| Source::Memtable(table.iter()))
-        .chain(
-            view.files(keyspace.get())
-                .map(|file| Source::Table(Box::new(TableVersions::new(file, fill_cache)))),
-        )
-        .collect()
-}
-
 /// The value of `key` when range deletes may hide it: the newest version at the snapshot,
 /// unless a fragment with a higher sequence covers it.
 async fn get_merged(
@@ -265,7 +258,11 @@ async fn get_merged(
     fragments: &Fragments,
     fill_cache: bool,
 ) -> Result<Option<Vec<u8>>> {
-    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache));
+    let span = Span {
+        low: Some(key),
+        high: None,
+    };
+    let mut versions = MergedVersions::new(sources(view, keyspace, fill_cache, span));
     versions.seek(key, snapshot).await;
     let value = versions
         .entry()
