@@ -40,6 +40,10 @@ All notable changes to this project are documented here. The format follows
   transaction began refuses the commit with `Conflict`, as for a key the transaction writes. Nothing waits.
 - `WriteBatch::single_delete`: the delete of a key put exactly once; it reads as a delete.
 - `Db::wait_for_compact`: returns once no flush or compaction is running, queued or due.
+- `WriteBatch::merge`, `MergeOperator` and `KeyspaceOptionsBuilder::merge_operator`: a merge adds an operand to a
+  key, and every read combines the operands above the key's last put or delete through the keyspace's operator.
+  A merge to a keyspace without one is refused; operands the operator cannot combine read as `Error::MergeFailed`
+  (code `merge_failed`).
 - `Db::set_keyspace_options`: replaces a keyspace's options while the database runs; work starting afterwards
   follows them. A change of compaction style or of in-memory table sizes is refused.
 - `Db::open_read_only`: opens a database without a lock and reads it as its files hold it, the batches in its
@@ -50,8 +54,8 @@ All notable changes to this project are documented here. The format follows
 - Opening a keyspace that holds tables below level 0 with `CompactionStyle::Fifo` is refused with
   `Error::InvalidOptions` for `keyspace.compaction`: first-in-first-out compaction never removes those tables. Every
   other change of compaction style between opens is allowed.
-- The store format is 3, and the write batch encoding version 3, for expiring puts and blob files. Format 1 and 2
-  databases open and are stamped 3; releases before this one refuse a format 3 database at open.
+- The store format is 4, and the write batch encoding version 4, for expiring puts, blob files and merge operands.
+  Format 1 to 3 databases open and are stamped 4; releases before this one refuse a format 4 database at open.
 - A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed
   block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
 - A `Durability::Buffered` write whose log frames fit the open segment is appended by the log task itself instead of

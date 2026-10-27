@@ -20,6 +20,8 @@ pub(crate) enum TableLookup {
     Deleted,
     /// No version is visible here: older tables decide.
     Absent,
+    /// The newest visible version is a merge operand: the key's versions are read together.
+    Operand,
 }
 
 /// The newest version of `key` in `file` at `snapshot`, deleted when below `floor`, keeping the
@@ -82,9 +84,10 @@ pub(crate) async fn lookup(
             match seen(kind, versions.value()) {
                 Seen::Value(value) => TableLookup::Value(value.to_vec()),
                 Seen::Absent => TableLookup::Deleted,
-                Seen::Malformed => return Err(malformed()),
+                Seen::Operand(_) | Seen::Malformed => return Err(malformed()),
             }
         }
+        Ok(ValueKind::Merge) => TableLookup::Operand,
         // Range deletes are kept in their own block, never among the versions.
         Ok(ValueKind::RangeDelete) | Err(_) => {
             return Err(Error::Corruption {

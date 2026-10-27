@@ -2,6 +2,7 @@
 //! direction.
 
 mod backward;
+mod operands;
 #[cfg(test)]
 mod prefix_tests;
 
@@ -16,10 +17,11 @@ use super::merge::{MergedVersions, Source};
 use super::snapshot::Snapshot;
 use super::table_versions::TableVersions;
 use super::view::View;
+use crate::db::read::operands::operator_of;
 use crate::expiry::{Seen, malformed, seen, written_value};
 use crate::memtable::MemtableCursor;
 use crate::tombstones::Deletions;
-use crate::{ReadOptions, Result};
+use crate::{MergeOperator, ReadOptions, Result};
 
 /// A walk over the live keys of one keyspace, in key order forward or backward, at one
 /// snapshot and inside the bounds of its [`ReadOptions`]. A deleted key is not shown.
@@ -72,6 +74,9 @@ pub struct DbIterator<'a> {
     /// Walking backward: the merge is already before the current key, whose value is `saved`.
     backward: bool,
     saved: Vec<u8>,
+    /// The keyspace and its merge operator; `merged` while the current value is in `saved`.
+    merging: (u32, Option<Arc<dyn MergeOperator>>),
+    merged: bool,
     /// The snapshot's registration, when the iterator took its own.
     _snapshot: Option<Snapshot<'a>>,
 }
@@ -141,6 +146,8 @@ impl<'a> DbIterator<'a> {
             valid: false,
             backward: false,
             saved: Vec::new(),
+            merging: (keyspace.get(), operator_of(view, keyspace.get())),
+            merged: false,
             _snapshot: registration,
         })
     }
@@ -161,7 +168,7 @@ impl<'a> DbIterator<'a> {
         if !self.valid {
             return &[];
         }
-        if self.backward {
+        if self.backward || self.merged {
             return &self.saved;
         }
         self.versions
@@ -233,6 +240,7 @@ impl<'a> DbIterator<'a> {
     /// versions of the current key are passed over: it has been decided.
     async fn settle(&mut self, mut skipping: bool) -> Result<()> {
         self.valid = false;
+        self.merged = false;
         while let Some(version) = self.versions.entry() {
             if self
                 .upper
@@ -247,15 +255,19 @@ impl<'a> DbIterator<'a> {
             if !passed {
                 self.key.clear();
                 self.key.extend_from_slice(version.user_key);
-                let live = match seen(version.kind, version.value) {
-                    Seen::Value(_) => true,
-                    Seen::Absent => false,
+                let (live, operand) = match seen(version.kind, version.value) {
+                    Seen::Value(_) => (true, false),
+                    Seen::Absent => (false, false),
+                    Seen::Operand(_) => (true, true),
                     Seen::Malformed => {
                         self.key.clear();
                         return Err(malformed());
                     }
                 };
                 if live && !self.fragments.deletes(version.user_key, version.sequence) {
+                    if operand {
+                        self.merge_here().await?;
+                    }
                     self.valid = true;
                     break;
                 }

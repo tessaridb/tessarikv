@@ -151,8 +151,7 @@ impl Db {
                 names.len(),
             )?;
             let id = current.next_keyspace();
-            let table = Memtable::sized(options.memtable_bytes());
-            let next = Arc::new(current.with_keyspace(id, name, table)?);
+            let next = Arc::new(current.with_keyspace(id, name, table_of(options))?);
             let previous = self.view.compare_and_swap(&current, next);
             if Arc::ptr_eq(&previous, &current) {
                 return Ok(KeyspaceId::new(id));
@@ -161,25 +160,26 @@ impl Db {
     }
 }
 
+/// An empty in-memory table for a keyspace with `options`: its size and its merge operator.
+pub(super) fn table_of(options: &KeyspaceOptions) -> Memtable {
+    Memtable::sized(options.memtable_bytes()).with_operator(options.merge_operator().cloned())
+}
+
 /// One empty table per keyspace, the default one first, each sized by its options, and the
 /// names of the keyspaces beside the default one; `held` gives their ids and names.
 pub(super) fn tables_for<'a>(
     options: &DbOptions,
     held: impl Iterator<Item = (u32, &'a str)>,
 ) -> (Vec<(u32, Memtable)>, Names) {
-    let mut tables = vec![(
-        0,
-        Memtable::sized(options.default_keyspace().memtable_bytes()),
-    )];
+    let mut tables = vec![(0, table_of(options.default_keyspace()))];
     let mut names = Vec::new();
     for (id, name) in held {
-        let bytes = options
+        let keyspace = options
             .keyspaces()
             .iter()
             .find(|(named, _)| named == name)
-            .map_or(options.default_keyspace(), |(_, keyspace)| keyspace)
-            .memtable_bytes();
-        tables.push((id, Memtable::sized(bytes)));
+            .map_or(options.default_keyspace(), |(_, keyspace)| keyspace);
+        tables.push((id, table_of(keyspace)));
         names.push((id, name.to_owned()));
     }
     (tables, Arc::from(names))

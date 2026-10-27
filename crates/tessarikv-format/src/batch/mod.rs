@@ -33,13 +33,16 @@ use tessarikv_types::{EXPIRY_STAMP_BYTES, KeyspaceId, ValueKind};
 use crate::{Error, Result};
 
 /// The batch encoding version this build writes.
-const FORMAT_VERSION: u8 = 3;
+const FORMAT_VERSION: u8 = 4;
 
 /// The first version, without range deletes; still read.
 const FORMAT_VERSION_1: u8 = 1;
 
 /// The second version, without expiring puts; still read.
 const FORMAT_VERSION_2: u8 = 2;
+
+/// The third version, without merges; still read.
+const FORMAT_VERSION_3: u8 = 3;
 
 /// Bytes before the first entry: the version and the entry count.
 const HEADER_BYTES: usize = 5;
@@ -177,10 +180,7 @@ impl WriteBatch {
     pub fn from_bytes(rep: Vec<u8>) -> Result<Self> {
         check_size("write batch", rep.len(), MAX_BATCH_BYTES)?;
         let version = codec::read_u8(&rep, 0, "write batch")?;
-        if !matches!(
-            version,
-            FORMAT_VERSION | FORMAT_VERSION_2 | FORMAT_VERSION_1
-        ) {
+        if !(FORMAT_VERSION_1..=FORMAT_VERSION).contains(&version) {
             return Err(Error::UnsupportedVersion {
                 what: "write batch",
                 version,

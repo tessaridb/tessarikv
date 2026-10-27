@@ -157,7 +157,8 @@ fn parse(encoded: &[u8]) -> Option<(InternalKeyRef<'_>, ValueKind)> {
             kind @ (ValueKind::Value
             | ValueKind::ExpiringValue
             | ValueKind::Delete
-            | ValueKind::BlobIndex),
+            | ValueKind::BlobIndex
+            | ValueKind::Merge),
         ) => Some((key, kind)),
         Ok(ValueKind::RangeDelete) | Err(_) => None,
     }

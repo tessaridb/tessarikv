@@ -4,6 +4,7 @@
 //! last one at or below the snapshot decides the key, and its value is kept as the walk moves on
 //! to the keys before.
 
+use crate::db::read::operands::Operands;
 use tessarikv_types::{SequenceNumber, Trailer, ValueKind, encode_internal, seek_trailer};
 
 use super::DbIterator;
@@ -94,28 +95,52 @@ impl DbIterator<'_> {
             }
             self.key.clear();
             self.key.extend_from_slice(version.user_key);
-            let mut live = false;
+            // Oldest first: the value so far, and the operands above it.
+            let mut value: Option<Vec<u8>> = None;
+            let mut operands = Vec::new();
             while let Some(version) = self.versions.entry() {
                 if version.user_key != self.key.as_slice() {
                     break;
                 }
                 if version.sequence <= self.snapshot {
-                    let value = match seen(version.kind, version.value) {
-                        Seen::Value(value) => Some(value),
-                        Seen::Absent => None,
+                    let deleted = self.fragments.deletes(version.user_key, version.sequence);
+                    match seen(version.kind, version.value) {
+                        Seen::Operand(operand) if !deleted => operands.push(operand.to_vec()),
+                        Seen::Value(found) if !deleted => {
+                            value = Some(found.to_vec());
+                            operands.clear();
+                        }
+                        Seen::Value(_) | Seen::Absent | Seen::Operand(_) => {
+                            value = None;
+                            operands.clear();
+                        }
                         Seen::Malformed => {
                             self.key.clear();
                             return Err(malformed());
                         }
-                    };
-                    live = value.is_some()
-                        && !self.fragments.deletes(version.user_key, version.sequence);
-                    if let Some(value) = value.filter(|_| live) {
-                        self.saved.clear();
-                        self.saved.extend_from_slice(value);
                     }
                 }
                 self.versions.prev().await;
+            }
+            if !operands.is_empty() {
+                let (keyspace, operator) = &self.merging;
+                let combined = Operands::from_oldest_first(operands).combine(
+                    operator.as_ref(),
+                    *keyspace,
+                    &self.key,
+                    value.as_deref(),
+                );
+                match combined {
+                    Ok(combined) => value = Some(combined),
+                    Err(error) => {
+                        self.key.clear();
+                        return Err(error);
+                    }
+                }
+            }
+            let live = value.is_some();
+            if let Some(value) = value {
+                self.saved = value;
             }
             if live {
                 self.valid = true;

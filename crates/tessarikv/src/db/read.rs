@@ -15,6 +15,8 @@ use crate::memtable::Lookup;
 use crate::statistics::{Histogram, Statistics, Ticker};
 use crate::{ReadOptions, Result};
 
+pub(super) mod operands;
+
 /// One page of a scan: live entries in key order, and where the next page starts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanPage {
@@ -158,10 +160,15 @@ async fn get_uncounted(
         .map_or(0, SequenceNumber::get);
     // Newest first, in-memory tables before table files: the first that decides the key
     // answers for it, and a table file whose key range misses the key cannot decide it.
+    let mut operand = false;
     let decided = view.memtables(keyspace.get()).find_map(|table| {
         match table.get_above(key, snapshot, floor) {
             Lookup::Value(value) => Some(Some(value.to_vec())),
             Lookup::Deleted => Some(None),
+            Lookup::Operand => {
+                operand = true;
+                Some(None)
+            }
             Lookup::Absent => None,
         }
     });
@@ -173,6 +180,9 @@ async fn get_uncounted(
         };
         statistics.record(ticker, 1);
     }
+    if operand {
+        return operands::merged(view, keyspace, key, snapshot, floor, fill_cache).await;
+    }
     if let Some(value) = decided {
         return Ok(value);
     }
@@ -181,6 +191,9 @@ async fn get_uncounted(
         match lookup(file, &lookup_key, floor, fill_cache, statistics).await? {
             TableLookup::Value(value) => return Ok(Some(value)),
             TableLookup::Deleted => return Ok(None),
+            TableLookup::Operand => {
+                return operands::merged(view, keyspace, key, snapshot, floor, fill_cache).await;
+            }
             TableLookup::Absent => {}
         }
     }
@@ -233,20 +246,34 @@ pub(super) async fn scan_in(
             let key = decided.get_or_insert_with(Vec::new);
             key.clear();
             key.extend_from_slice(version.user_key);
-            let value = match seen(version.kind, version.value) {
-                Seen::Value(value) => Some(value),
-                Seen::Absent => None,
+            let (value, operand) = match seen(version.kind, version.value) {
+                Seen::Value(value) => (Some(value.to_vec()), false),
+                Seen::Absent => (None, false),
+                Seen::Operand(_) => (Some(Vec::new()), true),
                 Seen::Malformed => return Err(malformed()),
             };
-            if let Some(value) = value
+            if let Some(mut value) = value
                 && !fragments.deletes(version.user_key, version.sequence)
             {
                 if page.entries.len() >= limit {
                     page.next = Some(version.user_key.to_vec());
                     break;
                 }
-                page.entries
-                    .push((version.user_key.to_vec(), value.to_vec()));
+                if operand {
+                    let operator = operands::operator_of(view, keyspace.get());
+                    let walk = &mut versions;
+                    value = operands::merged_in_walk(
+                        walk,
+                        operator.as_ref(),
+                        keyspace.get(),
+                        snapshot,
+                        &fragments,
+                    )
+                    .await?;
+                    // Back onto the key, whose other versions the walk then passes over.
+                    versions.seek(key.as_slice(), snapshot).await;
+                }
+                page.entries.push((key.clone(), value));
             }
         }
         versions.next().await;

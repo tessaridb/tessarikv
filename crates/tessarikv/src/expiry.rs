@@ -14,6 +14,8 @@ pub(crate) enum Seen<'a> {
     Value(&'a [u8]),
     /// The key is absent from this version on: a delete, an expired put, or a range delete.
     Absent,
+    /// An operand of the keyspace's merge operator, combined with the older versions.
+    Operand(&'a [u8]),
     /// An expiring put too short to hold its stamp; only a damaged file holds one.
     Malformed,
 }
@@ -47,6 +49,7 @@ pub(crate) fn seen_at(kind: ValueKind, stored: &[u8], now: u64) -> Seen<'_> {
             None => Seen::Malformed,
         },
         ValueKind::Delete | ValueKind::RangeDelete => Seen::Absent,
+        ValueKind::Merge => Seen::Operand(stored),
         // Readers see the value an index names, resolved where the table is read.
         ValueKind::BlobIndex => Seen::Malformed,
     }

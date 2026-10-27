@@ -25,6 +25,7 @@ fn expected(table: &Memtable, key: &[u8], snapshot: SequenceNumber) -> TableLook
         Lookup::Value(value) => TableLookup::Value(value.to_vec()),
         Lookup::Deleted => TableLookup::Deleted,
         Lookup::Absent => TableLookup::Absent,
+        Lookup::Operand => TableLookup::Operand,
     }
 }
 

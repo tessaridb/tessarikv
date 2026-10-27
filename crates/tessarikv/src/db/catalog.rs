@@ -22,7 +22,6 @@ use super::compaction::Compactions;
 use super::compaction::manual::Request;
 use super::installer::Flusher;
 use super::view::View;
-use crate::memtable::Memtable;
 use crate::options::DEFAULT_NAME;
 use crate::version::Version;
 use crate::{Error, KeyspaceOptions, Result};
@@ -164,7 +163,7 @@ async fn created(flusher: &mut Flusher, create: Create) -> Result<bool> {
         },
     )
     .await?;
-    let table = Memtable::sized(options.memtable_bytes());
+    let table = super::keyspaces::table_of(&options);
     flusher.keyspaces.push((id, options));
     let current = flusher.view.load_full();
     flusher

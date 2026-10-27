@@ -146,3 +146,32 @@ async fn a_database_in_memory_checks_the_keyspace_and_nothing_else() {
         Err(Error::UnknownKeyspace { keyspace: 3 })
     ));
 }
+
+#[derive(Debug)]
+struct Keep;
+
+impl crate::MergeOperator for Keep {
+    fn name(&self) -> &str {
+        "keep"
+    }
+
+    fn full_merge(&self, _key: &[u8], base: Option<&[u8]>, _operands: &[&[u8]]) -> Option<Vec<u8>> {
+        base.map(<[u8]>::to_vec)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_merge_operator_of_an_open_keyspace_is_fixed() {
+    let storage = FaultStorage::default();
+    let db = open(&storage, KeyspaceOptions::default()).await;
+    let operated = KeyspaceOptions::builder()
+        .merge_operator(Arc::new(Keep))
+        .build()
+        .expect("valid");
+    assert!(matches!(
+        db.set_keyspace_options(KeyspaceId::DEFAULT, operated).await,
+        Err(Error::InvalidArgument { reason, .. })
+            if reason == "the merge operator of an open keyspace cannot change"
+    ));
+    db.close().await.expect("closed");
+}

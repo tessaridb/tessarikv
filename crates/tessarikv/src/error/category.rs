@@ -25,3 +25,33 @@ pub enum ErrorCategory {
     /// The engine broke one of its own invariants.
     Internal,
 }
+
+impl super::Error {
+    /// The category a caller branches on.
+    #[must_use]
+    pub const fn category(&self) -> ErrorCategory {
+        match self {
+            Self::Io { .. } => ErrorCategory::Io,
+            Self::NotFound { .. } => ErrorCategory::NotFound,
+            Self::Locked { .. } => ErrorCategory::Unavailable,
+            Self::InvalidOptions { .. } => ErrorCategory::Validation,
+            Self::Corruption { .. } | Self::ShortRead { .. } => ErrorCategory::Corruption,
+            Self::UnknownKeyspace { .. }
+            | Self::Unsupported { .. }
+            | Self::UnsupportedFormat { .. } => ErrorCategory::Validation,
+            Self::Memtable { .. } | Self::SequenceExhausted | Self::ReadFailed => {
+                ErrorCategory::Internal
+            }
+            Self::LogFailed | Self::FlushFailed | Self::CompactionFailed => ErrorCategory::Io,
+            Self::WriteStalled { .. } => ErrorCategory::Unavailable,
+            Self::AlreadyExists { .. } | Self::Conflict => ErrorCategory::Conflict,
+            Self::Closed => ErrorCategory::ShutDown,
+            Self::ReadOnly { .. } => ErrorCategory::ReadOnly,
+            Self::MergeFailed { .. } => ErrorCategory::Corruption,
+            Self::TooLarge { .. } | Self::InvalidArgument { .. } | Self::WrongKey { .. } => {
+                ErrorCategory::Validation
+            }
+            Self::KeyNotFound { .. } => ErrorCategory::NotFound,
+        }
+    }
+}

@@ -5,7 +5,7 @@ use tessarikv_format::{
     FRAME_HEADER_BYTES, FileSealer, SEAL_TAG_BYTES, WriteBatch, concat_checksum, payload_checksum,
 };
 use tessarikv_sync::Claim;
-use tessarikv_types::{KeyspaceId, SequenceNumber};
+use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::recover::SEQUENCE_BYTES;
 use super::visibility::Completion;
@@ -57,19 +57,29 @@ impl Db {
         check: Option<Check<'_>>,
     ) -> Result<SequenceNumber> {
         self.refuse_read_only("a write")?;
-        // The default keyspace is always held, so only a batch naming another loads the view.
+        // The default keyspace is always held, so only a batch naming another, or merging, loads
+        // the view.
         let mut view = None;
         for entry in batch {
-            let keyspace = entry.keyspace;
-            if keyspace == KeyspaceId::DEFAULT {
+            let (keyspace, merge) = (entry.keyspace, entry.kind == ValueKind::Merge);
+            if keyspace == KeyspaceId::DEFAULT && !merge {
                 continue;
             }
-            if !view
-                .get_or_insert_with(|| self.view.load())
-                .holds(keyspace.get())
-            {
+            let view = view.get_or_insert_with(|| self.view.load());
+            if keyspace != KeyspaceId::DEFAULT && !view.holds(keyspace.get()) {
                 return Err(Error::UnknownKeyspace {
                     keyspace: keyspace.get(),
+                });
+            }
+            let mut tables = view.memtables(keyspace.get());
+            if merge
+                && !tables
+                    .next()
+                    .is_some_and(|table| table.operator().is_some())
+            {
+                return Err(Error::InvalidArgument {
+                    what: "a merge",
+                    reason: "the keyspace has no merge operator",
                 });
             }
         }

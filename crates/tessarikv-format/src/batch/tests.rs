@@ -249,6 +249,28 @@ fn an_expiring_put_shorter_than_its_stamp_is_refused() {
     ));
 }
 
+#[test]
+fn a_merge_round_trips_and_older_versions_may_not_carry_one() {
+    let mut batch = WriteBatch::new();
+    batch.merge(KeyspaceId::DEFAULT, b"k", b"+1").unwrap();
+    let decoded = WriteBatch::from_bytes(batch.as_bytes().to_vec()).unwrap();
+    let merge = (0, ValueKind::Merge, b"k".to_vec(), Some(b"+1".to_vec()));
+    assert_eq!(entries(&decoded), vec![merge]);
+    for version in [1, 2, 3] {
+        let mut old = batch.as_bytes().to_vec();
+        old[0] = version;
+        let refused = WriteBatch::from_bytes(old);
+        let kind = matches!(
+            refused,
+            Err(Error::Malformed {
+                what: "write batch entry kind",
+                ..
+            })
+        );
+        assert!(kind, "version {version}");
+    }
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
 

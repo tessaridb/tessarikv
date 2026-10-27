@@ -148,6 +148,13 @@ pub enum Error {
         /// The operation refused.
         what: &'static str,
     },
+    /// A read met operands of keyspace `keyspace` that its merge operator did not combine: the
+    /// open names no operator for it, or the operator refused them.
+    #[error("the merge operands of keyspace {keyspace} could not be combined")]
+    MergeFailed {
+        /// The keyspace holding the operands.
+        keyspace: u32,
+    },
     /// An argument the operation cannot accept.
     #[error("invalid {what}: {reason}")]
     InvalidArgument {
@@ -189,33 +196,6 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    /// The category a caller branches on.
-    #[must_use]
-    pub const fn category(&self) -> ErrorCategory {
-        match self {
-            Self::Io { .. } => ErrorCategory::Io,
-            Self::NotFound { .. } => ErrorCategory::NotFound,
-            Self::Locked { .. } => ErrorCategory::Unavailable,
-            Self::InvalidOptions { .. } => ErrorCategory::Validation,
-            Self::Corruption { .. } | Self::ShortRead { .. } => ErrorCategory::Corruption,
-            Self::UnknownKeyspace { .. }
-            | Self::Unsupported { .. }
-            | Self::UnsupportedFormat { .. } => ErrorCategory::Validation,
-            Self::Memtable { .. } | Self::SequenceExhausted | Self::ReadFailed => {
-                ErrorCategory::Internal
-            }
-            Self::LogFailed | Self::FlushFailed | Self::CompactionFailed => ErrorCategory::Io,
-            Self::WriteStalled { .. } => ErrorCategory::Unavailable,
-            Self::AlreadyExists { .. } | Self::Conflict => ErrorCategory::Conflict,
-            Self::Closed => ErrorCategory::ShutDown,
-            Self::ReadOnly { .. } => ErrorCategory::ReadOnly,
-            Self::TooLarge { .. } | Self::InvalidArgument { .. } | Self::WrongKey { .. } => {
-                ErrorCategory::Validation
-            }
-            Self::KeyNotFound { .. } => ErrorCategory::NotFound,
-        }
-    }
-
     /// A stable machine-readable code; codes are added, never changed.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -239,6 +219,7 @@ impl Error {
             Self::AlreadyExists { .. } => "already_exists",
             Self::Closed => "closed",
             Self::ReadOnly { .. } => "read_only",
+            Self::MergeFailed { .. } => "merge_failed",
             Self::TooLarge { .. } => "too_large",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::Conflict => "conflict",
@@ -272,6 +253,7 @@ impl Error {
             | Self::AlreadyExists { .. }
             | Self::Closed
             | Self::ReadOnly { .. }
+            | Self::MergeFailed { .. }
             | Self::TooLarge { .. }
             | Self::InvalidArgument { .. }
             | Self::WrongKey { .. }

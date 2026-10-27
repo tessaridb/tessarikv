@@ -31,8 +31,8 @@ pub use error::{Error, ErrorCategory, Result};
 pub use options::{
     CompactionCompleted, CompactionFilter, CompactionStyle, DbOptions, DbOptionsBuilder,
     Durability, Encryption, EventListener, FilterDecision, FlushCompleted, Isolation, KeyProvider,
-    KeyspaceOptions, KeyspaceOptionsBuilder, ReadOptions, StallCondition, StorageMode,
-    TransactionOptions, WalRecovery, WriteOptions,
+    KeyspaceOptions, KeyspaceOptionsBuilder, MergeOperator, ReadOptions, StallCondition,
+    StorageMode, TransactionOptions, WalRecovery, WriteOptions,
 };
 pub use statistics::{Histogram, HistogramSnapshot, StatisticsSnapshot, Ticker};
 pub use storage::{

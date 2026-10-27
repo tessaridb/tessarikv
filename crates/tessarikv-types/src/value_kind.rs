@@ -21,6 +21,9 @@ pub enum ValueKind {
     /// The key holds a value kept in a blob file; the entry's value says where (see
     /// `tessarikv_format::BlobIndex`). Only table files hold it: writes never carry it.
     BlobIndex = 4,
+    /// An operand of the keyspace's merge operator: the key holds what the operator makes of
+    /// the older versions' value and every operand up to this one. It hides no older version.
+    Merge = 5,
 }
 
 impl ValueKind {
@@ -36,6 +39,7 @@ impl ValueKind {
             Self::RangeDelete => 2,
             Self::ExpiringValue => 3,
             Self::BlobIndex => 4,
+            Self::Merge => 5,
         }
     }
 
@@ -51,6 +55,7 @@ impl ValueKind {
             2 => Ok(Self::RangeDelete),
             3 => Ok(Self::ExpiringValue),
             4 => Ok(Self::BlobIndex),
+            5 => Ok(Self::Merge),
             other => Err(Error::UnknownValueKind(other)),
         }
     }

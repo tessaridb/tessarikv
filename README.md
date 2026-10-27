@@ -30,7 +30,7 @@ still change in a minor release before 1.0.
 
 | Part | State |
 |---|---|
-| Writes | atomic batches of puts, deletes, single deletes and range deletes through a write-ahead log; a put may expire at a time it names (`WriteBatch::put_expiring`), after which it reads as absent and compaction removes it; each write chooses its durability: synced, handed to the OS, or not logged; `sync_wal` makes everything written durable on demand |
+| Writes | atomic batches of puts, merges (through a keyspace's merge operator), deletes, single deletes and range deletes through a write-ahead log; a put may expire at a time it names (`WriteBatch::put_expiring`), after which it reads as absent and compaction removes it; each write chooses its durability: synced, handed to the OS, or not logged; `sync_wal` makes everything written durable on demand |
 | Reads | point reads, many-key reads and many-range scans at one snapshot, paged scans and bounded iterators at a consistent snapshot; snapshots held on demand, the oldest one reported; approximate range sizes from table indexes |
 | Transactions | snapshot isolation (first committer wins, checked without locks) and opt-in serializable (reads and scanned ranges validated too): point reads and range scans at one snapshot plus the transaction's own writes, reads that hold their key for the commit (`get_for_update`, refused rather than waited for), savepoints, an atomic commit |
 | In-memory table | lock-free skiplist with a whole-key filter that lets reads of absent keys skip it; a database can also live entirely in memory; `DbOptions::total_memtable_bytes` caps the newest tables of every keyspace together |

@@ -8,6 +8,7 @@
 //! describe the keyspace's in-memory tables or the shape of its levels are refused.
 
 use std::mem::discriminant;
+use std::sync::Arc;
 
 use tessarikv_types::KeyspaceId;
 use tokio::sync::oneshot;
@@ -34,9 +35,9 @@ impl Db {
     /// # Errors
     ///
     /// [`Error::UnknownKeyspace`] for a keyspace this database does not hold,
-    /// [`Error::InvalidArgument`] when the options change the compaction style or the sizes of
-    /// the in-memory tables (`memtable_bytes`, `max_immutable_memtables`), which hold while the
-    /// database is open, [`Error::ReadOnly`] on a database opened read-only, and
+    /// [`Error::InvalidArgument`] when the options change the compaction style, the sizes of
+    /// the in-memory tables (`memtable_bytes`, `max_immutable_memtables`) or the merge operator,
+    /// which hold while the database is open, [`Error::ReadOnly`] on a database opened read-only, and
     /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work stopped.
     pub async fn set_keyspace_options(
         &self,
@@ -104,6 +105,10 @@ fn changeable(current: &KeyspaceOptions, next: &KeyspaceOptions) -> Result<()> {
         || current.max_immutable_memtables() != next.max_immutable_memtables()
     {
         return refuse("the in-memory table sizes of an open keyspace cannot change");
+    }
+    let operator = |options: &KeyspaceOptions| options.merge_operator().map(Arc::as_ptr);
+    if operator(current) != operator(next) {
+        return refuse("the merge operator of an open keyspace cannot change");
     }
     Ok(())
 }

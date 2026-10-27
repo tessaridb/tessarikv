@@ -11,6 +11,9 @@
 //! so it is dropped too, unless an older version of the key may remain in a level below the
 //! compaction's output, which the delete must go on hiding.
 //!
+//! A merge operand hides nothing: the versions below it in its stripe are kept down to the first
+//! that is not an operand, which readers combine with it.
+//!
 //! A version a range delete hides is dropped when no reader can tell: the range delete is newer
 //! and in the same stripe (see [`super::job`]). A range delete in the oldest stripe is dropped
 //! once nothing outside the compaction can hold a version under it.
@@ -32,6 +35,9 @@ pub(crate) struct KeyRetention<'a> {
     retention: &'a Retention,
     /// The stripe of the last version kept or dropped at or below the visible sequence.
     last_stripe: Option<usize>,
+    /// Whether the last version kept was a merge operand, whose older versions in its stripe
+    /// are read with it and kept down to the first that is not one.
+    under_operand: bool,
 }
 
 impl Retention {
@@ -77,6 +83,7 @@ impl Retention {
         KeyRetention {
             retention: self,
             last_stripe: None,
+            under_operand: false,
         }
     }
 }
@@ -106,9 +113,14 @@ impl KeyRetention<'_> {
             return true;
         }
         if self.last_stripe == Some(stripe) {
-            return false;
+            if !self.under_operand {
+                return false;
+            }
+            self.under_operand = kind == ValueKind::Merge;
+            return true;
         }
         self.last_stripe = Some(stripe);
+        self.under_operand = kind == ValueKind::Merge;
         !(kind == ValueKind::Delete && stripe == 0 && !deeper_holds_key())
     }
 }

@@ -19,6 +19,7 @@ mod keyspace_builder;
 mod keyspaces;
 mod manifest;
 mod memory;
+mod merge_operator;
 mod modes;
 mod prefix;
 mod read;
@@ -46,6 +47,7 @@ pub use events::{CompactionCompleted, EventListener, FlushCompleted, StallCondit
 pub use keyspace::KeyspaceOptions;
 pub use keyspace_builder::KeyspaceOptionsBuilder;
 pub(crate) use keyspaces::DEFAULT_NAME;
+pub use merge_operator::MergeOperator;
 pub use modes::{StorageMode, WalRecovery};
 pub use read::ReadOptions;
 pub use transaction::{Isolation, TransactionOptions};

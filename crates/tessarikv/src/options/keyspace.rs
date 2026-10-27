@@ -35,6 +35,7 @@ pub struct KeyspaceOptions {
     pub(super) prefix_length: Option<u32>,
     pub(super) blob_threshold: Option<u64>,
     pub(super) blob_gc_age_cutoff_percent: u32,
+    pub(super) merge_operator: Option<super::merge_operator::OperatorHandle>,
 }
 
 impl Default for KeyspaceOptions {
@@ -63,6 +64,7 @@ impl Default for KeyspaceOptions {
             prefix_length: None,
             blob_threshold: None,
             blob_gc_age_cutoff_percent: limits::DEFAULT_BLOB_GC_AGE_CUTOFF_PERCENT,
+            merge_operator: None,
         }
     }
 }

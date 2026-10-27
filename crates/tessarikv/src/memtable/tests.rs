@@ -14,6 +14,7 @@ fn value(lookup: Lookup<'_>) -> Option<Option<Vec<u8>>> {
         Lookup::Value(bytes) => Some(Some(bytes.to_vec())),
         Lookup::Deleted => Some(None),
         Lookup::Absent => None,
+        Lookup::Operand => panic!("no merges here"),
     }
 }
 

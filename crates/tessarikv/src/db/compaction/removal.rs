@@ -77,6 +77,8 @@ impl Removal<'_> {
                     && filter.filter(key, value) == FilterDecision::Remove
             }),
             Seen::Absent => true,
+            // Only values reach here.
+            Seen::Operand(_) => false,
             Seen::Malformed => return Err(malformed()),
         };
         Ok((if removed { ValueKind::Delete } else { kind }, hides))

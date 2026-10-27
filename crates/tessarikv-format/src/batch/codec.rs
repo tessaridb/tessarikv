@@ -3,7 +3,9 @@
 use tessarikv_constants::{MAX_KEY_BYTES, MAX_VALUE_BYTES};
 use tessarikv_types::{EXPIRY_STAMP_BYTES, KeyspaceId, ValueKind};
 
-use super::{BatchEntry, FORMAT_VERSION_1, FORMAT_VERSION_2, check_size, empty_range};
+use super::{
+    BatchEntry, FORMAT_VERSION_1, FORMAT_VERSION_2, FORMAT_VERSION_3, check_size, empty_range,
+};
 use crate::{Error, Result};
 
 /// Bytes of an entry with `key` and, for a put, `value`.
@@ -51,17 +53,25 @@ pub(super) fn read_entry(rep: &[u8], at: usize, version: u8) -> Result<(BatchEnt
         Ok(ValueKind::ExpiringValue) if !matches!(version, FORMAT_VERSION_1 | FORMAT_VERSION_2) => {
             ValueKind::ExpiringValue
         }
+        Ok(ValueKind::Merge)
+            if !matches!(
+                version,
+                FORMAT_VERSION_1 | FORMAT_VERSION_2 | FORMAT_VERSION_3
+            ) =>
+        {
+            ValueKind::Merge
+        }
         _ => {
             return Err(Error::Malformed {
                 what: "write batch entry kind",
-                reason: "not a put, an expiring put, a delete or a range delete of this version",
+                reason: "not a put, an expiring put, a merge, a delete or a range delete of this version",
             });
         }
     };
     let keyspace = KeyspaceId::new(read_u32(rep, offset(at, 1)?, "write batch entry")?);
     let (key, mut next) = read_bytes(rep, offset(at, 5)?, "key", MAX_KEY_BYTES)?;
     let value = match kind {
-        ValueKind::Value => {
+        ValueKind::Value | ValueKind::Merge => {
             let (value, after) = read_bytes(rep, next, "value", MAX_VALUE_BYTES)?;
             next = after;
             Some(value)
@@ -90,7 +100,7 @@ pub(super) fn read_entry(rep: &[u8], at: usize, version: u8) -> Result<(BatchEnt
         ValueKind::BlobIndex => {
             return Err(Error::Malformed {
                 what: "write batch entry kind",
-                reason: "not a put, an expiring put, a delete or a range delete of this version",
+                reason: "not a put, an expiring put, a merge, a delete or a range delete of this version",
             });
         }
     };

@@ -59,4 +59,15 @@ impl WriteBatch {
     pub fn single_delete(&mut self, keyspace: KeyspaceId, key: &[u8]) -> Result<()> {
         self.append(keyspace, ValueKind::Delete, key, None, None)
     }
+
+    /// Adds `operand` to `key` in `keyspace` for the keyspace's merge operator (see
+    /// `KeyspaceOptionsBuilder::merge_operator`): the key then holds what the operator makes of
+    /// its older value and every operand up to this one. Older versions stay visible to it.
+    ///
+    /// # Errors
+    ///
+    /// As for [`WriteBatch::put`].
+    pub fn merge(&mut self, keyspace: KeyspaceId, key: &[u8], operand: &[u8]) -> Result<()> {
+        self.append(keyspace, ValueKind::Merge, key, None, Some(operand))
+    }
 }
