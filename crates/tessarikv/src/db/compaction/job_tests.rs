@@ -30,6 +30,7 @@ fn destination() -> Destination {
             restart_interval: 2,
             bloom_bits_per_key: 10,
             compression: Compression::None,
+            prefix_length: None,
         },
         target_bytes: 4096,
         numbers: Arc::new(FileNumbers::new(100)),

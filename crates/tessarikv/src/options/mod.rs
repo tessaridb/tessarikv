@@ -19,6 +19,7 @@ mod keyspaces;
 mod manifest;
 mod memory;
 mod modes;
+mod prefix;
 mod read;
 mod statistics;
 mod transaction;

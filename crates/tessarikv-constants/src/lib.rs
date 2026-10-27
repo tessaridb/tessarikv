@@ -96,6 +96,10 @@ pub const DEFAULT_BLOOM_BITS_PER_KEY: u32 = 10;
 /// Zero bits per key means no filter.
 pub const MAX_BLOOM_BITS_PER_KEY: u32 = 64;
 
+/// Longest key prefix a keyspace may filter tables by: the leading bytes of a key that a prefix
+/// filter records. A longer prefix would cost a filter entry per key without excluding more.
+pub const MAX_PREFIX_LENGTH: u32 = 256;
+
 /// The highest Deflate level a keyspace may compress its tables with.
 pub const MAX_DEFLATE_LEVEL: u8 = 10;
 

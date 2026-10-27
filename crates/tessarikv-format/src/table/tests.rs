@@ -8,20 +8,21 @@ use super::handle::Footer;
 use super::*;
 use crate::error::{Error, Result};
 
-fn bytewise(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+pub(super) fn bytewise(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
     left.cmp(right)
 }
 
-fn whole(key: &[u8]) -> &[u8] {
+pub(super) fn whole(key: &[u8]) -> &[u8] {
     key
 }
 
-fn options(compression: Compression) -> TableOptions {
+pub(super) fn options(compression: Compression) -> TableOptions {
     TableOptions {
         block_bytes: 64,
         restart_interval: 4,
         bloom_bits_per_key: 10,
         compression,
+        prefix_length: None,
     }
 }
 

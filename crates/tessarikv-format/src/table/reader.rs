@@ -7,6 +7,7 @@ use super::builder::{ENTRIES_PROPERTY, RANGE_DELETES_PROPERTY};
 use super::filter::BloomFilter;
 use super::handle::{BlockHandle, FOOTER_BYTES, Footer};
 use super::iter::TableIter;
+use super::prefix::{PREFIX_FILTER_PROPERTY, PrefixFilter, decode_entry};
 use super::source::{BlockSource, OpenError, Resident};
 use super::unseal::unseal;
 use crate::error::{Error, Result};
@@ -23,6 +24,7 @@ pub struct Table {
     compare: Compare,
     entries: u64,
     range_deletes: Option<Block>,
+    prefix_filter: Option<Arc<PrefixFilter>>,
 }
 
 impl Table {
@@ -136,8 +138,12 @@ impl Table {
         let index = block(footer.index)?;
         let filter = block(footer.filter)?;
         let properties = block(footer.properties)?;
-        let (entries, range_deletes) = properties_of(properties).map_err(OpenError::Format)?;
+        let (entries, range_deletes, prefix) =
+            properties_of(properties).map_err(OpenError::Format)?;
         let range_deletes = range_deletes.map(&mut block).transpose()?;
+        let prefix = prefix
+            .map(|(handle, length)| block(handle).map(|payload| (payload, length)))
+            .transpose()?;
         let decoded = (|| {
             Ok(Self {
                 source,
@@ -149,6 +155,10 @@ impl Table {
                 range_deletes: range_deletes
                     .map(|payload| Block::new(payload, compare))
                     .transpose()?,
+                prefix_filter: prefix
+                    .map(|(payload, length)| PrefixFilter::new(payload, length, footer.probing))
+                    .transpose()?
+                    .map(Arc::new),
             })
         })();
         decoded.map_err(OpenError::Format)
@@ -177,6 +187,16 @@ impl Table {
     /// Whether `key` may be in the table: `false` means it certainly is not.
     pub fn may_contain(&self, key: &[u8]) -> bool {
         self.filter.may_contain((self.filter_key)(key))
+    }
+
+    /// Whether the table may hold a key in `[low, high)` (unbounded above when `high` is
+    /// `None`): `false` means it certainly holds none. Only a table written with a prefix length
+    /// answers `false`, and only for a range that lies inside one prefix of that length which
+    /// none of its keys has; every other answer is `true`.
+    pub fn may_hold_prefix_range(&self, low: &[u8], high: Option<&[u8]>) -> bool {
+        self.prefix_filter
+            .as_ref()
+            .is_none_or(|filter| filter.may_hold(low, high))
     }
 
     /// Entries in the table.
@@ -218,8 +238,12 @@ impl Table {
     }
 }
 
-/// The entry count and the range-delete block's handle, from the properties block.
-fn properties_of(payload: Vec<u8>) -> Result<(u64, Option<BlockHandle>)> {
+/// What the properties block records: the entry count, the range-delete block's handle, and
+/// the prefix filter's handle and prefix length.
+type Properties = (u64, Option<BlockHandle>, Option<(BlockHandle, u32)>);
+
+/// The table's [`Properties`], from the properties block.
+fn properties_of(payload: Vec<u8>) -> Result<Properties> {
     let properties = Block::new(payload, |left, right| left.cmp(right))?;
     let mut property = properties.iter();
     property.seek(ENTRIES_PROPERTY);
@@ -244,6 +268,12 @@ fn properties_of(payload: Vec<u8>) -> Result<(u64, Option<BlockHandle>)> {
     } else {
         None
     };
+    property.seek(PREFIX_FILTER_PROPERTY);
+    let prefix = if property.valid() && property.key() == PREFIX_FILTER_PROPERTY {
+        Some(decode_entry(property.value())?)
+    } else {
+        None
+    };
     property.status()?;
-    Ok((entries, range_deletes))
+    Ok((entries, range_deletes, prefix))
 }

@@ -32,6 +32,7 @@ pub struct KeyspaceOptions {
     pub(super) compression: Compression,
     pub(super) bottommost_compression: Option<Compression>,
     pub(super) compaction_filter: Option<FilterHandle>,
+    pub(super) prefix_length: Option<u32>,
 }
 
 impl Default for KeyspaceOptions {
@@ -57,6 +58,7 @@ impl Default for KeyspaceOptions {
             compression: Compression::Lz4,
             bottommost_compression: None,
             compaction_filter: None,
+            prefix_length: None,
         }
     }
 }

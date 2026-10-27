@@ -45,6 +45,14 @@ pub(super) fn validate(options: &KeyspaceOptions) -> Result<()> {
         0,
         u64::from(limits::MAX_BLOOM_BITS_PER_KEY),
     )?;
+    if let Some(length) = options.prefix_length() {
+        check_range(
+            "keyspace.prefix_length",
+            u64::from(length),
+            1,
+            u64::from(limits::MAX_PREFIX_LENGTH),
+        )?;
+    }
     check_range(
         "keyspace.level0_compaction_trigger",
         u64::from(options.level0_compaction_trigger()),

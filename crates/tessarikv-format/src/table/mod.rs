@@ -23,6 +23,7 @@ mod builder;
 mod codec;
 mod handle;
 mod iter;
+mod prefix;
 mod reader;
 mod source;
 mod unseal;
@@ -33,6 +34,8 @@ mod codec_tests;
 mod hostile_tests;
 #[cfg(test)]
 mod offset_tests;
+#[cfg(test)]
+mod prefix_tests;
 #[cfg(test)]
 mod sealed_tests;
 #[cfg(test)]
@@ -60,4 +63,9 @@ pub struct TableOptions {
     pub bloom_bits_per_key: u32,
     /// How data blocks are stored.
     pub compression: Compression,
+    /// Length of the key prefixes a second filter records, at most
+    /// `tessarikv_constants::MAX_PREFIX_LENGTH`; `None` writes no prefix filter. The filter lets
+    /// a read whose bounds lie inside one prefix pass over a table that holds no key with it
+    /// (see [`Table::may_hold_prefix_range`]).
+    pub prefix_length: Option<u32>,
 }

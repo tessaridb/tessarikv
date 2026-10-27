@@ -2,7 +2,6 @@
 //! internal-key order. A move finishes once every table file it touches holds the blocks it
 //! needs, which may mean waiting for storage.
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
@@ -233,11 +232,11 @@ pub(super) fn sources<'a>(
         .chain(
             level_zero
                 .iter()
-                .filter(|file| span.touches(file))
+                .filter(|file| span.admits(file))
                 .map(|file| Source::Table(Box::new(TableVersions::new(file, fill_cache)))),
         )
         .chain(levels.map(|level| {
-            let files = Cow::Borrowed(span.within(level));
+            let files = span.files_in(level);
             Source::Level(Box::new(LevelVersions::new(files, fill_cache)))
         }))
         .collect()

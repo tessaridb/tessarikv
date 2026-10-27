@@ -51,6 +51,7 @@ fn options(compression: Compression) -> TableOptions {
         restart_interval: 4,
         bloom_bits_per_key: 10,
         compression,
+        prefix_length: None,
     }
 }
 

@@ -25,6 +25,7 @@ fn build(model: &BTreeMap<Vec<u8>, Vec<u8>>, compression: Compression) -> Vec<u8
         restart_interval: 4,
         bloom_bits_per_key: 10,
         compression,
+        prefix_length: None,
     };
     let mut builder = TableBuilder::new(options, bytewise, whole);
     for (key, value) in model {

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use super::block::{BlockBuilder, Compare};
 use super::filter::{BloomBuilder, Probing};
 use super::handle::{Footer, write_block};
+use super::prefix::{PREFIX_FILTER_PROPERTY, PrefixFilterBuilder};
 use super::{Compression, TableOptions};
 use crate::error::{Error, Result};
 use crate::seal::{FileSealer, SealHeader};
@@ -33,7 +34,11 @@ pub struct TableBuilder {
     entries: u64,
     range_deletes: BlockBuilder,
     last_range_key: Vec<u8>,
+    prefixes: Option<PrefixFilterBuilder>,
     sealer: Option<Arc<FileSealer>>,
+    /// A prefix-filter property value written in place of the real one.
+    #[cfg(test)]
+    prefix_entry: Option<Vec<u8>>,
 }
 
 impl TableBuilder {
@@ -53,7 +58,12 @@ impl TableBuilder {
             entries: 0,
             range_deletes: BlockBuilder::new(options.restart_interval, compare),
             last_range_key: Vec::new(),
+            prefixes: options
+                .prefix_length
+                .and_then(|length| PrefixFilterBuilder::new(length, options.bloom_bits_per_key)),
             sealer: None,
+            #[cfg(test)]
+            prefix_entry: None,
         }
     }
 
@@ -90,6 +100,9 @@ impl TableBuilder {
         }
         self.data.add(key, value)?;
         self.filter.add((self.filter_key)(key));
+        if let Some(prefixes) = self.prefixes.as_mut() {
+            prefixes.add((self.filter_key)(key));
+        }
         self.last_key.clear();
         self.last_key.extend_from_slice(key);
         self.entries = self.entries.saturating_add(1);
@@ -183,8 +196,12 @@ impl TableBuilder {
             )
         });
         let range_deletes = range_deletes.transpose()?;
+        let prefix_entry = self.prefix_filter()?;
         let mut properties = BlockBuilder::new(1, |left, right| left.cmp(right));
         properties.add(ENTRIES_PROPERTY, &self.entries.to_le_bytes())?;
+        if let Some(entry) = prefix_entry {
+            properties.add(PREFIX_FILTER_PROPERTY, &entry)?;
+        }
         if let Some(handle) = range_deletes {
             properties.add(RANGE_DELETES_PROPERTY, &handle.encode())?;
         }
@@ -212,6 +229,34 @@ impl TableBuilder {
             None => self.out.extend_from_slice(&footer),
         }
         Ok(self.out)
+    }
+
+    /// Writes the prefix filter's block, when there is one, and returns its property value.
+    fn prefix_filter(&mut self) -> Result<Option<Vec<u8>>> {
+        #[cfg(test)]
+        if let Some(entry) = self.prefix_entry.take() {
+            return Ok(Some(entry));
+        }
+        let Some(prefixes) = self.prefixes.as_mut() else {
+            return Ok(None);
+        };
+        let Some(payload) = prefixes.finish() else {
+            return Ok(None);
+        };
+        let handle = write_block(
+            &mut self.out,
+            self.drained,
+            &payload,
+            Compression::None,
+            self.sealer.as_deref(),
+        )?;
+        Ok(Some(prefixes.entry(handle).to_vec()))
+    }
+
+    /// Writes `value` as the prefix filter's property in place of the real one.
+    #[cfg(test)]
+    pub(super) fn prefix_entry_for_tests(&mut self, value: &[u8]) {
+        self.prefix_entry = Some(value.to_vec());
     }
 
     /// Writes the current data block and indexes it under its last key.

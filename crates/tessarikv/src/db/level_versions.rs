@@ -154,6 +154,35 @@ impl Span<'_> {
                 .is_none_or(|high| user_key(&file.meta.smallest) < high)
     }
 
+    /// Whether `file` may hold a key the span reads: its key range meets the span, and its
+    /// prefix filter, when it has one, does not rule the span out.
+    pub(super) fn admits(&self, file: &TableFile) -> bool {
+        self.touches(file) && self.may_hold(file)
+    }
+
+    /// The files of a sorted level, in key order, that may hold a key the span reads: those that
+    /// meet it, less those whose prefix filter rules it out. The level's own slice when no file
+    /// is ruled out.
+    pub(super) fn files_in<'f>(&self, level: &'f [TableFile]) -> Cow<'f, [TableFile]> {
+        let within = self.within(level);
+        if within.iter().all(|file| self.may_hold(file)) {
+            return Cow::Borrowed(within);
+        }
+        Cow::Owned(
+            within
+                .iter()
+                .filter(|file| self.may_hold(file))
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Whether `file`'s prefix filter lets it hold a key the span reads.
+    fn may_hold(&self, file: &TableFile) -> bool {
+        file.table
+            .may_hold_prefix_range(self.low.unwrap_or_default(), self.high)
+    }
+
     /// The files of a sorted level, in key order, that meet the span.
     pub(super) fn within<'f>(&self, level: &'f [TableFile]) -> &'f [TableFile] {
         let start = self.low.map_or(0, |low| {

@@ -155,5 +155,6 @@ pub(super) fn table_options(keyspace: &KeyspaceOptions, level: usize) -> Result<
             .map_err(|_| invalid("keyspace.block_restart_interval"))?,
         bloom_bits_per_key: keyspace.bloom_bits_per_key(),
         compression: keyspace.compression_at(level),
+        prefix_length: keyspace.prefix_length(),
     })
 }

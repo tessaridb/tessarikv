@@ -2,6 +2,8 @@
 //! direction.
 
 mod backward;
+#[cfg(test)]
+mod prefix_tests;
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -118,14 +120,14 @@ impl<'a> DbIterator<'a> {
             .chain(
                 level_zero
                     .iter()
-                    .filter(|file| span.touches(file))
+                    .filter(|file| span.admits(file))
                     .map(|file| {
                         let versions = TableVersions::new(file, options.fill_cache);
                         Source::Table(Box::new(versions))
                     }),
             )
             .chain(levels.map(|level| {
-                let files = Cow::Owned(span.within(level).to_vec());
+                let files = Cow::Owned(span.files_in(level).into_owned());
                 Source::Level(Box::new(LevelVersions::new(files, options.fill_cache)))
             }))
             .collect();

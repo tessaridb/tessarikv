@@ -25,6 +25,11 @@ All notable changes to this project are documented here. The format follows
 - `DbOptionsBuilder::block_reads_on_worker`: whether a block missing from the cache is read on the reading task's own
   thread. On by default — a read of many tasks keeps a short tail (p99.9 about 9× lower at 16 readers) — at the cost
   of holding the worker for a device read; off hands such reads to the runtime as before.
+- `KeyspaceOptionsBuilder::prefix_length`: tables of the keyspace keep a second filter over the first bytes of their
+  keys, and a scan or iterator whose bounds lie inside one such prefix passes over every table that holds none of
+  it (about 10× more scans of an absent prefix over 19 level-0 tables). Reads spanning prefixes read as before.
+  `Table::may_hold_prefix_range` answers for one table; a table written before this filter existed has none and is
+  read as before.
 
 ### Changed
 

@@ -28,6 +28,7 @@ fn options() -> TableOptions {
         restart_interval: 2,
         bloom_bits_per_key: 10,
         compression: Compression::None,
+        prefix_length: None,
     }
 }
 
