@@ -9,11 +9,9 @@ use std::path::Path;
 
 use tessarikv_constants::{TABLE_WRITE_CHUNK_BYTES, TRAILER_BYTES};
 use tessarikv_format::{FileKind, Table, TableBuilder, TableOptions};
-use tessarikv_types::{
-    InternalKeyRef, SequenceNumber, Trailer, ValueKind, compare_internal, encode_internal,
-    seek_trailer,
-};
+use tessarikv_types::{InternalKeyRef, Trailer, ValueKind, compare_internal, encode_internal};
 
+use super::lookup_key::LookupKey;
 use super::view::TableFile;
 use crate::memtable::Memtable;
 use crate::sealing::Sealing;
@@ -221,15 +219,13 @@ pub(crate) fn tombstones(table: &Table, out: &mut Vec<RangeTombstone>) -> Result
 /// [`super::table_blocks::TableBlocks::load`].
 pub(crate) async fn lookup(
     file: &TableFile,
-    key: &[u8],
-    snapshot: SequenceNumber,
+    key: &LookupKey,
     floor: u64,
     fill_cache: bool,
     statistics: Option<&Statistics>,
 ) -> Result<TableLookup> {
-    let mut target = Vec::with_capacity(key.len().saturating_add(TRAILER_BYTES));
-    encode_internal(key, seek_trailer(snapshot), &mut target);
-    let may_contain = file.table.may_contain(&target);
+    let target = key.target();
+    let may_contain = file.table.may_contain(target);
     if let Some(statistics) = statistics {
         let ticker = if may_contain {
             Ticker::BloomMaybe
@@ -242,7 +238,7 @@ pub(crate) async fn lookup(
         return Ok(TableLookup::Absent);
     }
     let mut versions = file.table.iter();
-    versions.seek(&target);
+    versions.seek(target);
     file.blocks.complete(&mut versions, fill_cache).await?;
     versions
         .status()
@@ -256,7 +252,7 @@ pub(crate) async fn lookup(
         offset: None,
         detail: "a stored key has no trailer".to_owned(),
     })?;
-    if found.user_key() != key {
+    if found.user_key() != key.user_key() {
         return Ok(TableLookup::Absent);
     }
     // A range delete at `floor` covers the key: every version below it is deleted.

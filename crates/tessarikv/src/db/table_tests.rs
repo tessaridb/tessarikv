@@ -5,6 +5,7 @@ use tessarikv_format::{Compression, TableOptions};
 use tessarikv_types::{SequenceNumber, ValueKind};
 
 use super::block_cache::BlockCache;
+use super::lookup_key::LookupKey;
 use super::read_tests::{block_on, built, cache_bytes, table_file};
 use super::tables::{TableLookup, lookup};
 use crate::memtable::{Lookup, Memtable};
@@ -59,7 +60,7 @@ proptest! {
             for key in 0_u8..13 {
                 let user_key = [b'k', key];
                 prop_assert_eq!(
-                    block_on(lookup(&file, &user_key, snapshot, 0, true, None)).unwrap(),
+                    block_on(lookup(&file, &LookupKey::new(&user_key, snapshot), 0, true, None)).unwrap(),
                     expected(&memtable, &user_key, snapshot),
                     "key {} at snapshot {}", key, snapshot.get()
                 );
@@ -100,7 +101,14 @@ fn a_table_larger_than_a_write_chunk_is_written_in_pieces_and_reads_back_whole()
     let snapshot = SequenceNumber::new(u64::MAX >> 8).unwrap();
     for id in (0_u32..3 * 1024).step_by(97) {
         assert_eq!(
-            block_on(lookup(&file, &id.to_be_bytes(), snapshot, 0, true, None)).unwrap(),
+            block_on(lookup(
+                &file,
+                &LookupKey::new(&id.to_be_bytes(), snapshot),
+                0,
+                true,
+                None
+            ))
+            .unwrap(),
             TableLookup::Value(value.clone()),
             "key {id}"
         );

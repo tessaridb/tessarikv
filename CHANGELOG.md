@@ -17,6 +17,8 @@ All notable changes to this project are documented here. The format follows
   block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
 - A `Durability::Buffered` write whose log frames fit the open segment is appended by the log task itself instead of
   on a blocking thread; a write that syncs, starts a new segment or removes one is still handed over.
+- A point read builds the key it seeks in table files once, not once per file it consults, and a table seek copies
+  its target only when it has to wait for a block.
 
 ### Fixed
 

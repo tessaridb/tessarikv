@@ -28,6 +28,7 @@ mod iterator;
 mod key_check;
 mod keyspaces;
 mod level_versions;
+mod lookup_key;
 mod merge;
 mod multi_get;
 mod multi_scan;

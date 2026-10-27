@@ -6,6 +6,7 @@ use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
 use super::Db;
 use super::level_versions::Span;
+use super::lookup_key::LookupKey;
 use super::merge::{MergedVersions, sources};
 use super::tables::{TableLookup, lookup};
 use super::view::View;
@@ -174,8 +175,9 @@ async fn get_uncounted(
     if let Some(value) = decided {
         return Ok(value);
     }
+    let lookup_key = LookupKey::new(key, snapshot);
     for file in view.candidates(keyspace.get(), key) {
-        match lookup(file, key, snapshot, floor, fill_cache, statistics).await? {
+        match lookup(file, &lookup_key, floor, fill_cache, statistics).await? {
             TableLookup::Value(value) => return Ok(Some(value)),
             TableLookup::Deleted => return Ok(None),
             TableLookup::Absent => {}
