@@ -98,3 +98,32 @@ async fn an_encrypted_checkpoint_opens_with_the_same_key() {
         assert_eq!(read(&copy, index).await, Some(value(index)), "key {index}");
     }
 }
+
+/// On the file system the copy's table files are links to the database's own: the same file
+/// under a second name, so a checkpoint costs no table bytes.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_checkpoint_on_disk_links_the_table_files() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("db");
+    let db = Db::open(&path, DbOptions::default()).await.expect("opened");
+    write(&db, 0..40).await;
+    db.flush().await.expect("flushed");
+    let copy = dir.path().join("copy");
+    db.checkpoint(&copy).await.expect("checkpoint");
+    let tables: Vec<_> = std::fs::read_dir(&copy)
+        .expect("listed")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sst"))
+        .collect();
+    assert!(!tables.is_empty(), "the copy holds table files");
+    for table in &tables {
+        let links = std::fs::metadata(table).expect("metadata").nlink();
+        assert_eq!(links, 2, "{} is linked", table.display());
+    }
+    db.close().await.expect("closed");
+    let copied = Db::open(&copy, DbOptions::default()).await.expect("opened");
+    assert_eq!(read(&copied, 39).await, Some(value(39)));
+}

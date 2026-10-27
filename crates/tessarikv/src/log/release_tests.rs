@@ -62,15 +62,22 @@ async fn a_release_removes_the_finished_segments_it_covers_without_another_write
     assert!(exists(&storage, 4), "segment 4 holds 7");
 }
 
+/// A release covering every frame finishes the segment being written and removes it with the
+/// rest; the next frame starts a new segment, which stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_segment_being_written_is_never_removed() {
+async fn a_release_of_every_frame_finishes_the_segment_being_written() {
     let storage = FaultStorage::default();
     let log = seven_frames(&storage).await;
-    log.releaser().release_through(100);
-    removed(&storage, 3).await;
+    log.releaser().release_through(7);
+    removed(&storage, 4).await;
+    assert!(!exists(&storage, 1) && !exists(&storage, 2) && !exists(&storage, 3));
+    let record = Record::Frame {
+        frame: frame(&payload(8)),
+        wait: Wait::Written,
+    };
+    append(&log, 8, 8, record).await.expect("written");
     log.close().await.expect("closed");
-    assert!(!exists(&storage, 1) && !exists(&storage, 2));
-    assert!(exists(&storage, 4), "segment 4 was still being written");
+    assert!(exists(&storage, 5), "segment 5 holds 8");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

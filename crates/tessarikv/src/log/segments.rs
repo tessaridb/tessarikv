@@ -117,8 +117,15 @@ impl Segments {
 
     /// Finishes the current segment, synced, and moves to the next log number.
     fn roll(&mut self) -> Result<()> {
+        self.finish_current(true)
+    }
+
+    /// Finishes the current segment, synced when `sync`, and moves to the next log number.
+    fn finish_current(&mut self, sync: bool) -> Result<()> {
         self.append()?;
-        if let Some(mut file) = self.file.take() {
+        if let Some(mut file) = self.file.take()
+            && sync
+        {
             file.sync()?;
             self.count(Ticker::WalSyncs, 1);
         }
@@ -137,17 +144,33 @@ impl Segments {
         }
     }
 
-    /// Whether the oldest finished segment holds nothing past `through`.
+    /// Whether a segment holds nothing past `through`: the oldest finished one, or the current
+    /// one, which [`Segments::remove_through`] then finishes.
     pub(super) fn has_removable(&self, through: u64) -> bool {
         self.finished
             .front()
             .is_some_and(|segment| segment.last <= through)
+            || self.current_released(through)
     }
 
-    /// Removes finished segments, oldest first, while every frame in them is at or below
-    /// `through`. Runs on a blocking thread. A segment whose removal fails stays first in line
-    /// for the next round: nothing acknowledged depends on it being gone.
-    pub(super) fn remove_through(&mut self, through: u64) {
+    /// Whether the current segment is open and holds nothing past `through`.
+    fn current_released(&self, through: u64) -> bool {
+        self.file.is_some() && self.current_last <= through
+    }
+
+    /// Removes the segments, oldest first, while every frame in them is at or below `through`;
+    /// the current one is finished first when that holds for it too, so a flush that released
+    /// every frame leaves no log behind. Runs on a blocking thread. A segment whose removal fails
+    /// stays first in line for the next round: nothing acknowledged depends on it being gone.
+    ///
+    /// # Errors
+    ///
+    /// The storage's error when the frames gathered for the current segment cannot be written.
+    pub(super) fn remove_through(&mut self, through: u64) -> Result<()> {
+        if self.current_released(through) {
+            // Not synced: every frame in it is already held by a synced table.
+            self.finish_current(false)?;
+        }
         while let Some(segment) = self.finished.front().copied() {
             if segment.last > through {
                 break;
@@ -162,6 +185,7 @@ impl Segments {
                 Err(_) => break,
             }
         }
+        Ok(())
     }
 
     /// Creates the current segment and makes its directory entry durable.

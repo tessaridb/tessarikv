@@ -144,8 +144,8 @@ impl Memtable {
         self.get_above(key, snapshot, 0)
     }
 
-    /// As [`Memtable::get`], with every version below sequence `floor` deleted: a range delete
-    /// at `floor` covers the key.
+    /// The newest version of `key` whose sequence is at most `snapshot`, with every version
+    /// below sequence `floor` deleted: a range delete at `floor` covers the key.
     pub(crate) fn get_above(&self, key: &[u8], snapshot: SequenceNumber, floor: u64) -> Lookup<'_> {
         if !self.keys.may_contain(key_hash(key)) {
             return Lookup::Absent;

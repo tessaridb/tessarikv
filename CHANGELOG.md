@@ -26,6 +26,16 @@ All notable changes to this project are documented here. The format follows
   range (with `serializable_transactions`) or a later range delete of its keyspace, as before by any later commit
   without it.
 
+- A flush releases the log segment it emptied: the segment being written is closed and removed once every frame in
+  it is held by a table, so the log no longer keeps flushed writes until it reaches its size limit, and opening
+  replays less.
+- `Db::checkpoint` links the table files into the copy where the storage can, instead of copying their bytes.
+
+### Added
+
+- `Storage::link`, which gives a file that is never written again a second name; it returns `false` by default, and
+  the operating-system storage makes a hard link.
+
 ### Fixed
 
 - Range deletes now free their space: a compaction drops the versions a newer range delete hides when no snapshot

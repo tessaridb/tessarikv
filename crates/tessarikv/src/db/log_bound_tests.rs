@@ -46,10 +46,9 @@ fn log_bytes(storage: &FaultStorage) -> u64 {
         .expect("listable")
         .iter()
         .filter(|name| name.ends_with(".log"))
-        .map(|name| {
-            let file = storage.open(&Path::new(PATH).join(name)).expect("open");
-            file.len().expect("length")
-        })
+        // A segment listed may be removed before it is opened.
+        .filter_map(|name| storage.open(&Path::new(PATH).join(name)).ok())
+        .map(|file| file.len().expect("length"))
         .sum()
 }
 
@@ -86,4 +85,42 @@ async fn an_idle_keyspace_does_not_hold_the_log() {
         .await
         .expect("read");
     assert_eq!(read.as_deref(), Some(&b"written once"[..]));
+}
+
+/// A flush releases the segment it emptied: no log is left on storage until the next write, and
+/// what was written reads back after a reopen.
+#[tokio::test]
+async fn a_flush_leaves_no_log_behind() {
+    let storage = FaultStorage::default();
+    let db = open(&storage).await;
+    let busy = db.keyspace("busy").expect("busy");
+    for index in 0..100 {
+        let mut batch = WriteBatch::new();
+        batch.put(busy, &key(index), &value(index)).expect("entry");
+        db.write(&batch, &WriteOptions::default())
+            .await
+            .expect("written");
+    }
+    db.flush().await.expect("flushed");
+    until("the flushed segment is removed", || {
+        log_bytes(&storage) == 0
+    })
+    .await;
+    let mut batch = WriteBatch::new();
+    batch.put(busy, b"after", b"the flush").expect("entry");
+    db.write(&batch, &WriteOptions::default())
+        .await
+        .expect("written");
+    db.close().await.expect("closed");
+    let db = open(&storage).await;
+    for (key, value) in [
+        (key(99), value(99)),
+        (b"after".to_vec(), b"the flush".to_vec()),
+    ] {
+        let read = db
+            .get(busy, &key, &ReadOptions::default())
+            .await
+            .expect("read");
+        assert_eq!(read, Some(value));
+    }
 }

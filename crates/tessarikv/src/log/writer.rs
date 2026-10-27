@@ -190,14 +190,14 @@ impl Writer {
             return Ok(());
         }
         let mut segments = self.segments.take().ok_or(Error::LogFailed)?;
-        let segments = tokio::task::spawn_blocking(move || {
-            segments.remove_through(through);
-            segments
+        let (segments, removed) = tokio::task::spawn_blocking(move || {
+            let removed = segments.remove_through(through);
+            (segments, removed)
         })
         .await
         .map_err(|_| Error::LogFailed)?;
         self.segments = Some(segments);
-        Ok(())
+        removed
     }
 
     /// Writes the entries that continue the log without a gap; syncs when one of them waits
@@ -222,10 +222,9 @@ impl Writer {
         let through = self.released_through();
         let mut segments = self.segments.take().ok_or(Error::LogFailed)?;
         let (segments, written) = tokio::task::spawn_blocking(move || {
-            let written = segments.write(frames, sync);
-            if written.is_ok() {
-                segments.remove_through(through);
-            }
+            let written = segments
+                .write(frames, sync)
+                .and_then(|()| segments.remove_through(through));
             (segments, written)
         })
         .await
