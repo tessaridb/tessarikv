@@ -15,7 +15,7 @@ use super::snapshot::Snapshot;
 use super::table_versions::TableVersions;
 use super::view::View;
 use crate::memtable::MemtableCursor;
-use crate::tombstones::Fragments;
+use crate::tombstones::Deletions;
 use crate::{ReadOptions, Result};
 
 /// A walk over the live keys of one keyspace, in key order forward or backward, at one
@@ -60,7 +60,7 @@ pub struct DbIterator<'a> {
     versions: MergedVersions<'static>,
     snapshot: SequenceNumber,
     /// The range deletes visible at the snapshot, from every source.
-    fragments: Fragments,
+    fragments: Deletions,
     lower: Option<Vec<u8>>,
     upper: Option<Vec<u8>>,
     /// The current key; empty when not valid.
@@ -104,7 +104,7 @@ impl<'a> DbIterator<'a> {
         options: &ReadOptions,
         registration: Option<Snapshot<'a>>,
     ) -> Result<Self> {
-        let fragments = Fragments::new(&view.tombstones(keyspace.get())?, snapshot);
+        let fragments = view.deletions(keyspace.get(), snapshot);
         // Files outside the bounds hold nothing the iterator shows.
         let span = Span {
             low: options.lower_bound.as_deref(),

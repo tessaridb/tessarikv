@@ -15,6 +15,7 @@
 //! publishing a view is lock-free. A view, and the tables only it still names, are freed when the
 //! last reader holding it lets go.
 
+mod deletions;
 mod memtables;
 
 use std::sync::Arc;
@@ -24,7 +25,9 @@ use tessarikv_types::compare_internal;
 
 use super::table_blocks::TableBlocks;
 use super::tables;
+use crate::Result;
 use crate::memtable::Memtable;
+use crate::tombstones::RangeTombstone;
 
 /// The tables of one read view.
 pub(crate) struct View {
@@ -33,6 +36,8 @@ pub(crate) struct View {
     /// Table files ordered by keyspace, then level; level 0 newest first, every other level by
     /// key.
     files: Vec<TableFile>,
+    /// The range deletes of the table files, by keyspace.
+    deletes: Arc<[deletions::FileDeletes]>,
     /// The keyspaces beside the default one, by id, with their names.
     names: Names,
     /// Above every keyspace id this view has held: ids are never handed out twice.
@@ -49,6 +54,30 @@ pub(crate) struct TableFile {
     pub(crate) meta: Arc<TableMeta>,
     pub(crate) table: Table,
     pub(crate) blocks: Arc<TableBlocks>,
+    /// The table's range deletes, read once when it was opened.
+    pub(crate) tombstones: Arc<[RangeTombstone]>,
+}
+
+impl TableFile {
+    /// The table file `meta` describes, read through `table` and `blocks`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Corruption`] for a damaged range-delete block.
+    pub(crate) fn new(
+        meta: Arc<TableMeta>,
+        table: Table,
+        blocks: Arc<TableBlocks>,
+    ) -> Result<Self> {
+        let mut tombstones = Vec::new();
+        tables::tombstones(&table, &mut tombstones)?;
+        Ok(Self {
+            meta,
+            table,
+            blocks,
+            tombstones: tombstones.into(),
+        })
+    }
 }
 
 /// The in-memory tables holding the writes of one epoch: one per keyspace, by keyspace id.
@@ -67,6 +96,7 @@ impl View {
                 keyspaces: vec![(0, Arc::new(table))],
             }],
             files: Vec::new(),
+            deletes: Arc::new([]),
             names: Arc::new([]),
             next_keyspace: 1,
         }
@@ -96,6 +126,7 @@ impl View {
                     .map(|(keyspace, table)| (keyspace, Arc::new(table)))
                     .collect(),
             }],
+            deletes: deletions::gather(&files),
             files,
             names,
             next_keyspace,
@@ -145,6 +176,7 @@ impl View {
         });
         Self {
             tables: self.shared_tables(),
+            deletes: deletions::gather(&files),
             files,
             names: Arc::clone(&self.names),
             next_keyspace: self.next_keyspace,
@@ -164,8 +196,8 @@ impl View {
     /// The table files of `keyspace` whose key range holds `key`, in the order a point read
     /// consults them: those of level 0 newest first, then at most one of each deeper level.
     ///
-    /// The ranges cover point entries only, so a read may skip the others only when no range
-    /// delete can hide the key.
+    /// The ranges cover point entries only; a range delete covering the key is applied apart
+    /// (see [`View::deletions`]).
     pub(crate) fn candidates<'a>(
         &'a self,
         keyspace: u32,

@@ -275,11 +275,7 @@ pub(super) fn restore_tables(
         for meta in (0..LEVELS).flat_map(|level| version.tables(keyspace, level)) {
             let path = table_path(dir, meta.id);
             let (table, blocks) = open_table(storage, &path, meta.id, cache, None)?;
-            files.push(TableFile {
-                meta: Arc::clone(meta),
-                table,
-                blocks,
-            });
+            files.push(TableFile::new(Arc::clone(meta), table, blocks)?);
         }
     }
     for name in storage.list(dir)? {

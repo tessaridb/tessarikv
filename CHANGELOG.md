@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows
 
 - Scans and iterators read each level below 0 as one ordered source and open only the table files their range or
   bounds reach, so a positioned read touches one file per level instead of every file of the keyspace.
+- A point read beside range deletes keeps its usual path through the table filters: it finds the newest range delete
+  covering the key and reads the key as deleted when its newest version is older. Before, any range delete in a
+  keyspace made every point read merge all of its sources. A table file's range deletes are read once when it opens
+  and cut into fragments once per view, not on every read.
 
 ## [0.1.1] - 2026-10-24
 

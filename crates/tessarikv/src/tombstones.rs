@@ -6,6 +6,9 @@
 //! tombstones covering it. A version is deleted when the fragment covering its key carries a
 //! higher sequence than the version.
 
+use std::collections::BinaryHeap;
+use std::sync::Arc;
+
 use tessarikv_types::SequenceNumber;
 
 /// One range delete.
@@ -35,24 +38,35 @@ impl Fragments {
             return Self::default();
         }
         // Every start and end is a boundary; between two neighbouring boundaries the set of
-        // covering tombstones does not change.
+        // covering tombstones does not change. A sweep over the boundaries keeps the tombstones
+        // started so far in a heap by sequence, dropping those that ended, so the heap's top is
+        // the highest sequence covering the piece.
         let mut boundaries: Vec<&[u8]> = visible
             .iter()
             .flat_map(|tombstone| [tombstone.start.as_slice(), tombstone.end.as_slice()])
             .collect();
         boundaries.sort_unstable();
         boundaries.dedup();
+        let mut by_start = visible;
+        by_start.sort_unstable_by(|left, right| left.start.cmp(&right.start));
+        let mut starting = by_start.into_iter().peekable();
+        let mut active: BinaryHeap<(SequenceNumber, &[u8])> = BinaryHeap::new();
         let mut pieces: Vec<(Vec<u8>, Vec<u8>, SequenceNumber)> = Vec::new();
         for pair in boundaries.windows(2) {
             let [from, to] = pair else { continue };
-            let covering = visible
-                .iter()
-                .filter(|tombstone| {
-                    tombstone.start.as_slice() <= *from && *to <= tombstone.end.as_slice()
-                })
-                .map(|tombstone| tombstone.sequence)
-                .max();
-            let Some(sequence) = covering else { continue };
+            while let Some(tombstone) =
+                starting.next_if(|tombstone| tombstone.start.as_slice() <= *from)
+            {
+                active.push((tombstone.sequence, tombstone.end.as_slice()));
+            }
+            while active.peek().is_some_and(|(_, end)| *end <= *from) {
+                active.pop();
+            }
+            // A tombstone ended below the top stays in the heap until it reaches the top; its
+            // sequence is lower, so it never decides a piece it no longer covers.
+            let Some(&(sequence, _)) = active.peek() else {
+                continue;
+            };
             match pieces.last_mut() {
                 // A neighbour with the same sequence is one piece.
                 Some(last) if last.1.as_slice() == *from && last.2 == sequence => {
@@ -64,13 +78,16 @@ impl Fragments {
         Self { pieces }
     }
 
-    /// Whether there is no fragment.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.pieces.is_empty()
+    /// Whether the version `sequence` of `key` is deleted by a fragment.
+    #[cfg(test)]
+    pub(crate) fn deletes(&self, key: &[u8], sequence: SequenceNumber) -> bool {
+        self.covering(key)
+            .is_some_and(|covering| sequence < covering)
     }
 
-    /// Whether the version `sequence` of `key` is deleted by a fragment.
-    pub(crate) fn deletes(&self, key: &[u8], sequence: SequenceNumber) -> bool {
+    /// The highest sequence of the range deletes covering `key`: every version of it below
+    /// that is deleted.
+    pub(crate) fn covering(&self, key: &[u8]) -> Option<SequenceNumber> {
         // The last piece starting at or before the key.
         let after = self
             .pieces
@@ -78,7 +95,35 @@ impl Fragments {
         after
             .checked_sub(1)
             .and_then(|index| self.pieces.get(index))
-            .is_some_and(|(_, end, covering)| key < end.as_slice() && sequence < *covering)
+            .filter(|(_, end, _)| key < end.as_slice())
+            .map(|(_, _, covering)| *covering)
+    }
+}
+
+/// What the range deletes a read sees hide: those of the table files, cut into fragments once
+/// for every reader, and those of the in-memory tables, cut per read.
+#[derive(Debug, Default)]
+pub(crate) struct Deletions {
+    files: Option<Arc<Fragments>>,
+    recent: Fragments,
+}
+
+impl Deletions {
+    /// The deletions of `files`, the table files' fragments, and `recent`, the in-memory tables'.
+    pub(crate) fn new(files: Option<Arc<Fragments>>, recent: Fragments) -> Self {
+        Self { files, recent }
+    }
+
+    /// Whether the version `sequence` of `key` is deleted by a range delete.
+    pub(crate) fn deletes(&self, key: &[u8], sequence: SequenceNumber) -> bool {
+        self.covering(key)
+            .is_some_and(|covering| sequence < covering)
+    }
+
+    /// The highest sequence of the range deletes covering `key`.
+    pub(crate) fn covering(&self, key: &[u8]) -> Option<SequenceNumber> {
+        let files = self.files.as_deref().and_then(|files| files.covering(key));
+        files.max(self.recent.covering(key))
     }
 }
 

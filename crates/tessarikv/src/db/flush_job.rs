@@ -88,11 +88,7 @@ impl Job {
                 &self.cache,
                 Some((built.tail_offset, &built.tail)),
             )?;
-            files.push(TableFile {
-                meta: Arc::new(meta),
-                table,
-                blocks,
-            });
+            files.push(TableFile::new(Arc::new(meta), table, blocks)?);
         }
         Ok(files)
     }

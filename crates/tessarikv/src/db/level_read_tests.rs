@@ -215,3 +215,44 @@ async fn scans_and_iterators_over_many_files_list_what_was_written() {
     assert_walks(&db, &model, "with deletes above").await;
     db.close().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_point_read_beside_range_deletes_still_asks_the_filters() {
+    let (db, _) = loaded(300).await;
+    // Range deletes over keys nobody reads below, flushed into a table file.
+    let mut batch = WriteBatch::new();
+    for index in (0..50).step_by(5) {
+        batch
+            .delete_range(KeyspaceId::DEFAULT, &key(index), &key(index + 2))
+            .unwrap();
+    }
+    db.write(&batch, &WriteOptions::default()).await.unwrap();
+    db.flush().await.unwrap();
+    let asked = |db: &Db| {
+        let statistics = db.statistics().unwrap();
+        statistics.ticker(Ticker::BloomUseful) + statistics.ticker(Ticker::BloomMaybe)
+    };
+    let before = asked(&db);
+    let absent = db
+        .get(
+            KeyspaceId::DEFAULT,
+            b"key00150-absent",
+            &ReadOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(absent, None);
+    assert!(asked(&db) > before, "the filters were not asked");
+    // A key a range delete hides reads as deleted, one beside it as written.
+    let hidden = db
+        .get(KeyspaceId::DEFAULT, &key(10), &ReadOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(hidden, None);
+    let kept = db
+        .get(KeyspaceId::DEFAULT, &key(12), &ReadOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(kept, Some(super::compaction_model_tests::value(12)));
+    db.close().await.unwrap();
+}

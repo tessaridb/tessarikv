@@ -176,11 +176,8 @@ impl<'a> Outputs<'a> {
         };
         let written = Some((tail_offset, tail.as_slice()));
         let (table, blocks) = open_table(to.storage.as_ref(), &path, id, &to.cache, written)?;
-        self.written.push(TableFile {
-            meta: Arc::new(meta),
-            table,
-            blocks,
-        });
+        self.written
+            .push(TableFile::new(Arc::new(meta), table, blocks)?);
         Ok(())
     }
 }

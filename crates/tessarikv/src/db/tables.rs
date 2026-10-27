@@ -211,8 +211,9 @@ pub(crate) fn tombstones(table: &Table, out: &mut Vec<RangeTombstone>) -> Result
     Ok(())
 }
 
-/// The newest version of `key` in `file` at `snapshot`, keeping the blocks it reads in the
-/// cache unless `fill_cache` is false, and counting the filter's answer in `statistics`.
+/// The newest version of `key` in `file` at `snapshot`, deleted when below `floor`, keeping the
+/// blocks it reads in the cache unless `fill_cache` is false, and counting the filter's answer in
+/// `statistics`.
 ///
 /// # Errors
 ///
@@ -222,6 +223,7 @@ pub(crate) async fn lookup(
     file: &TableFile,
     key: &[u8],
     snapshot: SequenceNumber,
+    floor: u64,
     fill_cache: bool,
     statistics: Option<&Statistics>,
 ) -> Result<TableLookup> {
@@ -256,6 +258,10 @@ pub(crate) async fn lookup(
     })?;
     if found.user_key() != key {
         return Ok(TableLookup::Absent);
+    }
+    // A range delete at `floor` covers the key: every version below it is deleted.
+    if found.trailer().sequence().get() < floor {
+        return Ok(TableLookup::Deleted);
     }
     // The seek lands on the newest version at or below the snapshot.
     Ok(match found.trailer().kind() {
