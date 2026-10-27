@@ -110,6 +110,7 @@ impl Db {
                 )?
                 .rolling_at(max_manifest_bytes, sealing);
                 reconcile_keyspaces(&mut manifest, &options)?;
+                super::compaction::refuse_deep_tables(&manifest.version(), &options)?;
                 super::options_file::record(
                     storage.as_ref(),
                     &path,

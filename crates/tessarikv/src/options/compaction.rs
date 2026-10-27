@@ -13,7 +13,8 @@ pub enum CompactionStyle {
     /// Tables stay in level 0 and are never merged; once they hold more than `max_table_bytes`,
     /// the oldest are dropped. For data that may expire by age, such as metrics or caches: data
     /// older than what fits is lost, and a key reads its newest kept value or nothing, never an
-    /// older one.
+    /// older one. Opening a keyspace that holds tables below level 0 (written in another style)
+    /// with it is refused: it would never remove them.
     Fifo {
         /// Bytes of table files kept before the oldest go.
         max_table_bytes: u64,

@@ -25,6 +25,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Opening a keyspace that holds tables below level 0 with `CompactionStyle::Fifo` is refused with
+  `Error::InvalidOptions` for `keyspace.compaction`: first-in-first-out compaction never removes those tables. Every
+  other change of compaction style between opens is allowed.
 - The store format is 2, and the write batch encoding version 3, for expiring puts. Format 1 databases open and are
   stamped 2; releases before this one refuse a format 2 database at open.
 - A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed

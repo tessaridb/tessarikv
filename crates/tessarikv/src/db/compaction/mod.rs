@@ -56,6 +56,8 @@ mod running_tests;
 #[cfg(test)]
 mod split_tests;
 #[cfg(test)]
+mod style_change_tests;
+#[cfg(test)]
 mod universal_tests;
 
 use std::collections::VecDeque;
@@ -66,6 +68,7 @@ use tessarikv_constants::LEVELS;
 use tessarikv_format::TableMeta;
 use tokio::task::JoinSet;
 
+pub(super) use self::fifo::refuse_deep_tables;
 use self::job::Job;
 pub(super) use self::levels::owed;
 use self::levels::shape_of;

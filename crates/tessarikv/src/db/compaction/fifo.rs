@@ -11,6 +11,9 @@ use tessarikv_constants::LEVELS;
 use tessarikv_format::TableMeta;
 
 use super::pick::{Busy, Pick, bytes_of};
+use crate::options::DEFAULT_NAME;
+use crate::version::Version;
+use crate::{CompactionStyle, DbOptions, Error, Result};
 
 /// The oldest level-0 tables to drop so the rest hold at most `max_table_bytes`; none when they
 /// already fit, or when a table to drop is held by a running compaction.
@@ -37,4 +40,32 @@ pub(crate) fn pick(
             drop: true,
         })
         .filter(|pick| busy.allows(pick))
+}
+
+/// Refuses first-in-first-out compaction for a keyspace of `version` that holds tables below
+/// level 0: it drops level-0 tables only, so those would stay whatever its limit.
+///
+/// # Errors
+///
+/// [`Error::InvalidOptions`] naming `keyspace.compaction`.
+pub(crate) fn refuse_deep_tables(version: &Version, options: &DbOptions) -> Result<()> {
+    let named = version.keyspaces().filter_map(|(id, name)| {
+        let (_, keyspace) = options.keyspaces().iter().find(|(held, _)| held == name)?;
+        Some((id, name, keyspace))
+    });
+    for (id, name, keyspace) in
+        std::iter::once((0, DEFAULT_NAME, options.default_keyspace())).chain(named)
+    {
+        let deep = (1..LEVELS).any(|level| !version.tables(id, level).is_empty());
+        if deep && matches!(keyspace.compaction(), CompactionStyle::Fifo { .. }) {
+            return Err(Error::InvalidOptions {
+                option: "keyspace.compaction",
+                reason: format!(
+                    "keyspace `{name}` holds tables below level 0, which first-in-first-out \
+                     compaction never removes"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
