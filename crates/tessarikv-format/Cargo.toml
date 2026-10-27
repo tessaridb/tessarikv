@@ -1,7 +1,7 @@
 [package]
 name = "tessarikv-format"
 description = "On-disk formats of TessariKV: log records and table blocks"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
