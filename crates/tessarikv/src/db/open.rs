@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tessarikv_constants::COMMIT_RING_SLOTS;
-use tessarikv_format::{FileKind, KeyspaceRecord, ManifestEdit};
+use tessarikv_format::FileKind;
 use tessarikv_sync::Sequencer;
 
 use super::Db;
@@ -32,6 +32,10 @@ use crate::storage::{Storage, StorageLock};
 use crate::version::Version;
 use crate::version::manifest::{CURRENT, ManifestStore};
 use crate::{DbOptions, Error, Result};
+
+mod read_only;
+
+pub(super) use read_only::Access;
 
 /// The file whose presence marks a directory as holding a database.
 pub(super) const IDENTITY: &str = "IDENTITY";
@@ -65,13 +69,7 @@ impl Db {
             .map(|encryption| Arc::new(Sealing::new(encryption, options.encryption_cipher())));
         let statistics = options.statistics().then(|| Arc::new(Statistics::new()));
         let events = Reporter::of(&options);
-        let cache = Arc::new(
-            BlockCache::new(options.block_cache_bytes(), keyspace.block_bytes())
-                .with_open_files(options.max_open_files(), Arc::clone(&storage))
-                .with_sealing(sealing.clone())
-                .with_statistics(statistics.clone())
-                .with_reads_on_worker(options.block_reads_on_worker()),
-        );
+        let cache = block_cache(&options, &storage, sealing.clone(), statistics.clone());
         let opened = {
             let storage = Arc::clone(&storage);
             let max_manifest_bytes = options.max_manifest_bytes();
@@ -81,7 +79,7 @@ impl Db {
                 let lock = prepare(storage.as_ref(), &path, &options)?;
                 // The key is checked before any encrypted file is read.
                 let existing = storage.exists(&path.join(CURRENT))?;
-                check_key(storage.as_ref(), &path, cache.sealing(), existing)?;
+                check_key(storage.as_ref(), &path, cache.sealing(), existing, true)?;
                 let found = ManifestStore::recover(storage.as_ref(), &path, cache.sealing())?;
                 // One key for every log segment this open writes; a new open, a new salt.
                 let log_seal = cache
@@ -90,7 +88,7 @@ impl Db {
                     .transpose()?;
                 let (version, number) = found.unwrap_or_else(|| (Version::empty(), 0));
                 let mut files =
-                    super::view::restore_tables(storage.as_ref(), &path, &version, &cache)?;
+                    super::view::restore_tables(storage.as_ref(), &path, &version, &cache, true)?;
                 let (replay, _) = super::keyspaces::tables_for(&options, version.keyspaces());
                 let flushed = version.flushed_sequence();
                 let recovered = recover(
@@ -100,6 +98,7 @@ impl Db {
                     recovery,
                     flushed,
                     cache.sealing(),
+                    true,
                 )?;
                 let number = number.checked_add(1).ok_or(Error::SequenceExhausted)?;
                 let mut manifest = ManifestStore::create(
@@ -110,7 +109,7 @@ impl Db {
                     cache.sealing(),
                 )?
                 .rolling_at(max_manifest_bytes, sealing);
-                reconcile_keyspaces(&mut manifest, &options)?;
+                super::keyspaces::reconcile_keyspaces(&mut manifest, &options)?;
                 super::compaction::refuse_deep_tables(&manifest.version(), &options)?;
                 super::options_file::record(
                     storage.as_ref(),
@@ -221,51 +220,28 @@ impl Db {
             log: Some(log),
             installer: Some(installer),
             statistics,
-            _lock: Some(lock),
+            access: Access::Exclusive { _lock: lock },
         })
     }
 }
 
-/// Refuses options that leave out a keyspace the database holds, and adds the keyspaces they
-/// name that it does not hold when they ask for that, refusing them otherwise.
-fn reconcile_keyspaces(manifest: &mut ManifestStore, options: &DbOptions) -> Result<()> {
-    let refuse = |reason| Error::InvalidArgument {
-        what: "opening a database",
-        reason,
-    };
-    let version = manifest.version();
-    let named = |held: &str| options.keyspaces().iter().any(|(name, _)| name == held);
-    if version.keyspaces().any(|(_, held)| !named(held)) {
-        return Err(refuse("it holds a keyspace the options do not name"));
-    }
-    let missing: Vec<&str> = options
-        .keyspaces()
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .filter(|name| !version.keyspaces().any(|(_, held)| held == *name))
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    if !options.create_missing_keyspaces() {
-        return Err(refuse("the options name a keyspace it does not hold"));
-    }
-    let mut next = version.next_keyspace().max(1);
-    let mut added = Vec::with_capacity(missing.len());
-    for name in missing {
-        added.push(KeyspaceRecord {
-            id: next,
-            name: name.to_owned(),
-        });
-        next = next
-            .checked_add(1)
-            .ok_or_else(|| refuse("its keyspace ids are exhausted"))?;
-    }
-    manifest.append(&ManifestEdit {
-        added_keyspaces: added,
-        next_keyspace: Some(next),
-        ..ManifestEdit::default()
-    })
+/// The block cache of a database opened on `storage` with `options`.
+fn block_cache(
+    options: &DbOptions,
+    storage: &Arc<dyn Storage>,
+    sealing: Option<Arc<Sealing>>,
+    statistics: Option<Arc<Statistics>>,
+) -> Arc<BlockCache> {
+    Arc::new(
+        BlockCache::new(
+            options.block_cache_bytes(),
+            options.default_keyspace().block_bytes(),
+        )
+        .with_open_files(options.max_open_files(), Arc::clone(storage))
+        .with_sealing(sealing)
+        .with_statistics(statistics)
+        .with_reads_on_worker(options.block_reads_on_worker()),
+    )
 }
 
 /// Checks whether a database exists at `path` against `options`, creates one when asked, and

@@ -56,6 +56,7 @@ impl Db {
         options: &WriteOptions,
         check: Option<Check<'_>>,
     ) -> Result<SequenceNumber> {
+        self.refuse_read_only("a write")?;
         // The default keyspace is always held, so only a batch naming another loads the view.
         let mut view = None;
         for entry in batch {

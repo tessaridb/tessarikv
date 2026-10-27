@@ -35,6 +35,7 @@ impl Db {
     /// holds anything, [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background
     /// work stopped, and the storage's error for a failed read or write.
     pub async fn checkpoint(&self, dir: impl AsRef<Path>) -> Result<()> {
+        self.refuse_read_only("a checkpoint")?;
         let Some(installer) = &self.installer else {
             return Err(Error::Unsupported {
                 what: "a checkpoint of a database in memory",

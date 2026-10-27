@@ -144,6 +144,7 @@ impl Db {
     ///
     /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work stopped.
     pub async fn flush(&self) -> Result<()> {
+        self.refuse_read_only("a flush")?;
         let Some(installer) = &self.installer else {
             return Ok(());
         };
@@ -161,6 +162,7 @@ impl Db {
     ///
     /// [`Error::LogFailed`] when the log stopped or the sync failed.
     pub async fn sync_wal(&self) -> Result<()> {
+        self.refuse_read_only("a log sync")?;
         match &self.log {
             Some(log) => log.sync().await,
             None => Ok(()),

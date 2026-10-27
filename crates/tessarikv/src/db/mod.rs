@@ -167,7 +167,7 @@ use tessarikv_types::SequenceNumber;
 
 use crate::log::LogWriter;
 use crate::statistics::{Statistics, StatisticsSnapshot};
-use crate::storage::{OsStorage, Storage, StorageLock};
+use crate::storage::{OsStorage, Storage};
 use crate::{DbOptions, Error, Result, StorageMode};
 use view::View;
 
@@ -216,9 +216,9 @@ pub struct Db {
     installer: Option<installer::Installer>,
     /// What the engine counts, when [`DbOptions::statistics`] is set.
     statistics: Option<Arc<Statistics>>,
-    /// The directory lock, shared with the background tasks: it is released when the last of
-    /// them ends, so no other database opens the directory while this one still writes there.
-    _lock: Option<Arc<dyn StorageLock>>,
+    /// How this database holds its files: not at all, under the directory lock, or read-only
+    /// (see `open`).
+    access: open::Access,
 }
 
 impl Db {

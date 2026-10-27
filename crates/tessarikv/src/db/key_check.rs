@@ -23,7 +23,8 @@ const KEY_CHECK_TEXT: &[u8] = b"tessarikv key check";
 
 /// Checks the key of the database in `dir` against its key-check file, writing that file when
 /// an encrypted database is created; `existing` tells whether the database already holds data.
-/// Runs on a blocking thread, before any other file is read.
+/// With `refresh` off a file checked under an older key is left as it is. Runs on a blocking
+/// thread, before any other file is read.
 ///
 /// # Errors
 ///
@@ -35,6 +36,7 @@ pub(super) fn check_key(
     dir: &Path,
     sealing: Option<&Sealing>,
     existing: bool,
+    refresh: bool,
 ) -> Result<()> {
     let path = dir.join(KEY_CHECK);
     if !storage.exists(&path)? {
@@ -57,7 +59,7 @@ pub(super) fn check_key(
     match sealer.open(position(), sealed) {
         // A file checked under an older key is written again under the current one, so a
         // retired key is needed only while a data file still names it.
-        Ok(text) if text == KEY_CHECK_TEXT && key_id != sealing.key_id() => {
+        Ok(text) if text == KEY_CHECK_TEXT && refresh && key_id != sealing.key_id() => {
             write_key_check(storage, dir, sealing)
         }
         Ok(text) if text == KEY_CHECK_TEXT => Ok(()),

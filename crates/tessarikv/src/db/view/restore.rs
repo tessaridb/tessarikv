@@ -19,12 +19,13 @@ use crate::version::Version;
 /// Opens every table file `version` names, newest first, reading their data blocks through
 /// `cache`, with the blob files they hold, and removes the table files it does not name and the
 /// blob files no named table holds: those a crash left between writing a table and naming it in
-/// the manifest. Runs on a blocking thread.
+/// the manifest; with `remove_orphans` off those are left in place. Runs on a blocking thread.
 pub(in crate::db) fn restore_tables(
     storage: &dyn Storage,
     dir: &Path,
     version: &Version,
     cache: &Arc<BlockCache>,
+    remove_orphans: bool,
 ) -> Result<Vec<TableFile>> {
     let mut files = Vec::new();
     let mut blobs = HashMap::new();
@@ -36,6 +37,9 @@ pub(in crate::db) fn restore_tables(
             let held = resolve(table.blob_files(), &mut blobs, storage, dir, cache)?;
             files.push(TableFile::new(Arc::clone(meta), table, blocks)?.with_blobs(held)?);
         }
+    }
+    if !remove_orphans {
+        return Ok(files);
     }
     for name in storage.list(dir)? {
         let id = |suffix| {

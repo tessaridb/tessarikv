@@ -33,8 +33,10 @@ impl Db {
     /// [`Error::Corruption`] naming the first damaged file found, the storage's error for a
     /// failed read, and [`Error::ReadFailed`] when a reading thread stopped without an answer.
     pub async fn verify_checksums(&self) -> Result<()> {
-        let Some(installer) = &self.installer else {
-            return Ok(());
+        let (storage, dir, cache) = match (self.read_only_files(), &self.installer) {
+            (Some(files), _) => (&files.storage, &files.dir, &files.cache),
+            (None, Some(installer)) => (&installer.storage, &installer.dir, &installer.cache),
+            (None, None) => return Ok(()),
         };
         let ids: Vec<(u64, Arc<[Arc<BlobFile>]>)> = self
             .view
@@ -49,12 +51,11 @@ impl Db {
             if running.len() >= at_once {
                 joined(running.join_next().await)?;
             }
-            let storage = Arc::clone(&installer.storage);
-            let path = table_path(&installer.dir, id);
+            let storage = Arc::clone(storage);
+            let path = table_path(dir, id);
             // Holds nothing: every block is read from storage.
             let cache = Arc::new(
-                BlockCache::new(0, DEFAULT_BLOCK_BYTES)
-                    .with_sealing(installer.cache.shared_sealing()),
+                BlockCache::new(0, DEFAULT_BLOCK_BYTES).with_sealing(cache.shared_sealing()),
             );
             running
                 .spawn_blocking(move || verify_table(storage.as_ref(), &path, id, &cache, &blobs));

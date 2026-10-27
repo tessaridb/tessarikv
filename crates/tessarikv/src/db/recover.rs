@@ -46,7 +46,9 @@ pub(super) struct Recovered {
 }
 
 /// Replays the log in `dir` into `tables`, one per keyspace by id, from above sequence
-/// `flushed`. Runs on a blocking thread.
+/// `flushed`. With `repair` off nothing in `dir` changes: a damaged tail under
+/// [`WalRecovery::PointInTime`] ends the replay where it starts, and is left in place. Runs on a
+/// blocking thread.
 pub(super) fn recover(
     storage: &dyn Storage,
     dir: &Path,
@@ -54,8 +56,9 @@ pub(super) fn recover(
     mode: WalRecovery,
     flushed: u64,
     sealing: Option<&Sealing>,
+    repair: bool,
 ) -> Result<Recovered> {
-    let segments = segments(storage, dir)?;
+    let segments = segments(storage, dir, repair)?;
     // Segments are created and removed in log-number order, so the ones left are consecutive;
     // a number missing between two of them is a segment removed from outside, with writes the
     // replay would otherwise skip without a word, whatever the recovery mode.
@@ -127,6 +130,9 @@ pub(super) fn recover(
                 format!("{:?} frame ends the valid log", end.kind),
             ));
         }
+        if !repair {
+            break;
+        }
         cut(storage, dir, log_number, &bytes, end.offset)?;
         for later in segments.get(index.saturating_add(1)..).unwrap_or_default() {
             storage.remove(&segment_path(dir, *later))?;
@@ -196,12 +202,14 @@ fn replay(
 }
 
 /// The log numbers of the segments in `dir`, ascending. Leftovers of an interrupted cut are
-/// removed.
-fn segments(storage: &dyn Storage, dir: &Path) -> Result<Vec<u64>> {
+/// removed when `repair` is on, and passed over otherwise.
+fn segments(storage: &dyn Storage, dir: &Path, repair: bool) -> Result<Vec<u64>> {
     let mut numbers = Vec::new();
     for name in storage.list(dir)? {
         if name.ends_with(CUT_SUFFIX) {
-            storage.remove(&dir.join(&name))?;
+            if repair {
+                storage.remove(&dir.join(&name))?;
+            }
         } else if let Some(number) = name
             .strip_suffix(".log")
             .and_then(|stem| stem.parse::<u64>().ok())

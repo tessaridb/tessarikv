@@ -35,7 +35,7 @@ impl Db {
             log: None,
             installer: None,
             statistics: options.statistics().then(|| Arc::new(Statistics::new())),
-            _lock: None,
+            access: super::open::Access::Memory,
         }
     }
 }

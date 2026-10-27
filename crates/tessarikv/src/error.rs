@@ -141,6 +141,13 @@ pub enum Error {
     /// The database was closed.
     #[error("the database is closed")]
     Closed,
+    /// The database was opened read-only (see [`crate::Db::open_read_only`]): `what` would
+    /// change it.
+    #[error("{what} cannot run on a database opened read-only")]
+    ReadOnly {
+        /// The operation refused.
+        what: &'static str,
+    },
     /// An argument the operation cannot accept.
     #[error("invalid {what}: {reason}")]
     InvalidArgument {
@@ -201,6 +208,7 @@ impl Error {
             Self::WriteStalled { .. } => ErrorCategory::Unavailable,
             Self::AlreadyExists { .. } | Self::Conflict => ErrorCategory::Conflict,
             Self::Closed => ErrorCategory::ShutDown,
+            Self::ReadOnly { .. } => ErrorCategory::ReadOnly,
             Self::TooLarge { .. } | Self::InvalidArgument { .. } | Self::WrongKey { .. } => {
                 ErrorCategory::Validation
             }
@@ -230,6 +238,7 @@ impl Error {
             Self::WriteStalled { .. } => "write_stalled",
             Self::AlreadyExists { .. } => "already_exists",
             Self::Closed => "closed",
+            Self::ReadOnly { .. } => "read_only",
             Self::TooLarge { .. } => "too_large",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::Conflict => "conflict",
@@ -262,6 +271,7 @@ impl Error {
             | Self::ReadFailed
             | Self::AlreadyExists { .. }
             | Self::Closed
+            | Self::ReadOnly { .. }
             | Self::TooLarge { .. }
             | Self::InvalidArgument { .. }
             | Self::WrongKey { .. }
