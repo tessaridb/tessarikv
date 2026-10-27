@@ -21,6 +21,7 @@ struct State {
     /// Bytes of each file the last successful sync covered.
     synced: papaya::HashMap<PathBuf, u64>,
     fail_sync: AtomicBool,
+    fail_table_writes: AtomicBool,
     /// Holds syncs while paused.
     gate: SyncGate,
     /// When armed, crash images are taken around every durable step outside the log.
@@ -52,6 +53,12 @@ impl FaultStorage {
     pub(crate) fn fail_syncs(&self) {
         // SeqCst: a test flag, read by the log writer on another thread.
         self.state.fail_sync.store(true, Ordering::SeqCst);
+    }
+
+    /// Refuses every later append to a table file, until called again with `false`.
+    pub(crate) fn fail_table_writes(&self, fail: bool) {
+        // SeqCst: a test flag, read by compaction threads.
+        self.state.fail_table_writes.store(fail, Ordering::SeqCst);
     }
 
     /// Every later sync waits until [`FaultStorage::resume_syncs`].
@@ -246,6 +253,19 @@ struct FaultFile {
 
 impl WritableFile for FaultFile {
     fn append(&mut self, data: &[u8]) -> Result<()> {
+        let state = &self.storage.state;
+        if state.fail_table_writes.load(Ordering::SeqCst)
+            && self
+                .path
+                .extension()
+                .is_some_and(|extension| extension == "sst")
+        {
+            return Err(Error::Io {
+                operation: "append",
+                path: self.path.clone(),
+                source: std::io::Error::other("injected write failure"),
+            });
+        }
         let _change = self.storage.change();
         self.inner.append(data)
     }

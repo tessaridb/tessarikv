@@ -60,6 +60,8 @@ mod cache_tests;
 #[cfg(test)]
 mod checkpoint_tests;
 #[cfg(test)]
+mod compaction_error_tests;
+#[cfg(test)]
 mod compaction_model_tests;
 #[cfg(test)]
 mod compaction_tests;

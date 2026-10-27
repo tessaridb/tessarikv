@@ -18,6 +18,7 @@ use crate::db::rate_limiter::RateLimiter;
 use crate::db::table_blocks::open_table;
 use crate::db::tables::{finish, format_error, hand_off, table_builder, user_key};
 use crate::db::view::TableFile;
+use crate::statistics::{Statistics, Ticker};
 use crate::storage::{Storage, WritableFile};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
@@ -44,6 +45,8 @@ pub(super) struct Outputs<'a> {
     next_tombstone: Option<(Vec<u8>, Vec<u8>)>,
     open: Option<Open>,
     written: Vec<TableFile>,
+    /// Every table file created, so a failed compaction can remove them.
+    created: Vec<u64>,
 }
 
 /// The table being written, its file, and the range and sequences it holds.
@@ -84,6 +87,7 @@ impl<'a> Outputs<'a> {
             next_tombstone,
             open: None,
             written: Vec::new(),
+            created: Vec::new(),
         }
     }
 
@@ -101,11 +105,23 @@ impl<'a> Outputs<'a> {
         self.current()?.add(to, key, value, true)
     }
 
-    /// Writes the remaining range deletes and closes the last table; returns every table.
+    /// Writes the remaining range deletes and closes the last table; returns every table, or
+    /// removes them all when that fails.
     pub(super) fn finish(mut self) -> Result<Vec<TableFile>> {
-        self.write_tombstones(None)?;
-        self.close()?;
-        Ok(self.written)
+        match self.write_tombstones(None).and_then(|()| self.close()) {
+            Ok(()) => Ok(std::mem::take(&mut self.written)),
+            Err(error) => {
+                self.discard();
+                Err(error)
+            }
+        }
+    }
+
+    /// Removes every table file this compaction created: no manifest edit will name them.
+    pub(super) fn discard(mut self) {
+        self.written.clear();
+        self.open = None;
+        remove(self.to, &self.created);
     }
 
     /// Writes the range deletes starting at or before `through` (all of them for `None`).
@@ -127,6 +143,7 @@ impl<'a> Outputs<'a> {
             let id = self.to.numbers.take()?;
             let path = table_path(&self.to.dir, id);
             let file = self.to.storage.create(&path)?;
+            self.created.push(id);
             self.open = Some(Open {
                 builder: table_builder(self.to.options, self.to.cache.sealing())?,
                 id,
@@ -182,6 +199,23 @@ impl<'a> Outputs<'a> {
     }
 }
 
+/// Removes the output tables `tables`, written by a compaction that failed.
+pub(super) fn discard(to: &Destination, tables: Vec<TableFile>) {
+    let ids: Vec<u64> = tables.iter().map(|table| table.meta.id).collect();
+    // The tables' files are closed before they are removed.
+    drop(tables);
+    remove(to, &ids);
+}
+
+/// Removes the table files `ids` from the cache and the disk. A removal that fails leaves a file
+/// no manifest edit names, which the next open removes.
+fn remove(to: &Destination, ids: &[u64]) {
+    for &id in ids {
+        to.cache.forget_file(id);
+        let _ = to.storage.remove(&table_path(&to.dir, id));
+    }
+}
+
 /// Appends `piece` of an output table to `file`, paced when compactions are.
 fn write(to: &Destination, file: &mut dyn WritableFile, piece: &[u8]) -> Result<()> {
     if let Some(limiter) = &to.limiter {
@@ -222,4 +256,23 @@ impl Open {
         }
         Ok(())
     }
+}
+
+/// Counts a compaction of `inputs` into `outputs`: the bytes it read and wrote, and the entries
+/// it left out.
+pub(super) fn count(statistics: &Statistics, inputs: &[TableFile], outputs: &[TableFile]) {
+    let bytes = |files: &[TableFile]| {
+        files
+            .iter()
+            .fold(0_u64, |total, file| total.saturating_add(file.meta.size))
+    };
+    let entries = |files: &[TableFile]| {
+        files.iter().fold(0_u64, |total, file| {
+            total.saturating_add(file.table.entries())
+        })
+    };
+    statistics.record(Ticker::CompactionBytesRead, bytes(inputs));
+    statistics.record(Ticker::CompactionBytesWritten, bytes(outputs));
+    let dropped = entries(inputs).saturating_sub(entries(outputs));
+    statistics.record(Ticker::CompactionKeysDropped, dropped);
 }

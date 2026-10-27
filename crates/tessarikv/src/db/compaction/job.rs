@@ -20,7 +20,7 @@ use tessarikv_types::{
 
 use super::below::{Outside, deeper, deeper_holds};
 use super::hidden::Hidden;
-use super::output::{Destination, Outputs};
+use super::output::{self, Destination, Outputs};
 use super::pick::Pick;
 use super::retain::Retention;
 use super::split;
@@ -28,7 +28,6 @@ use crate::db::flush_job::table_options;
 use crate::db::installer::Flusher;
 use crate::db::tables::{format_error, user_key};
 use crate::db::view::TableFile;
-use crate::statistics::{Statistics, Ticker};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
@@ -136,8 +135,8 @@ impl Job {
                 .map(|file| user_key(&file.meta.smallest).to_vec()),
             self.parts,
         );
-        let written = if cuts.is_empty() {
-            self.merge(None, None, &tombstones, &hidden)?
+        let parts = if cuts.is_empty() {
+            vec![self.merge(None, None, &tombstones, &hidden)]
         } else {
             let lows = std::iter::once(None).chain(cuts.iter().map(|cut| Some(cut.as_slice())));
             let highs = cuts.iter().map(|cut| Some(cut.as_slice())).chain([None]);
@@ -153,19 +152,37 @@ impl Job {
                             .spawn_scoped(scope, move || job.merge(low, high, tombstones, hidden))
                     })
                     .collect();
-                let mut written = Vec::new();
-                for part in parts {
-                    let part = part.map_err(|_| Error::CompactionFailed)?;
-                    written.extend(part.join().map_err(|_| Error::CompactionFailed)??);
-                }
-                Ok::<_, Error>(written)
-            })?
+                // Every part is waited for, so a failed one's siblings' tables can be removed.
+                parts
+                    .into_iter()
+                    .map(|part| {
+                        part.map_err(|_| Error::CompactionFailed)?
+                            .join()
+                            .map_err(|_| Error::CompactionFailed)?
+                    })
+                    .collect()
+            })
         };
-        if !written.is_empty() {
-            self.to.storage.sync_dir(&self.to.dir)?;
+        let mut written = Vec::new();
+        let mut failed = None;
+        for part in parts {
+            match part {
+                Ok(tables) => written.extend(tables),
+                Err(error) => failed = failed.or(Some(error)),
+            }
+        }
+        if failed.is_none()
+            && !written.is_empty()
+            && let Err(error) = self.to.storage.sync_dir(&self.to.dir)
+        {
+            failed = Some(error);
+        }
+        if let Some(error) = failed {
+            output::discard(&self.to, written);
+            return Err(error);
         }
         if let Some(statistics) = self.to.cache.statistics() {
-            count(statistics, &self.inputs, &written);
+            output::count(statistics, &self.inputs, &written);
         }
         Ok(written)
     }
@@ -187,6 +204,25 @@ impl Job {
             .cloned()
             .collect();
         let mut outputs = Outputs::new(&self.to, &tombstones);
+        match self.fill(&mut outputs, low, high, hidden) {
+            Ok(()) => outputs.finish(),
+            Err(error) => {
+                outputs.discard();
+                Err(error)
+            }
+        }
+    }
+
+    /// Writes the versions of the user keys in `[low, high)` that are kept to `outputs`.
+    fn fill(
+        &self,
+        outputs: &mut Outputs<'_>,
+        low: Option<&[u8]>,
+        high: Option<&[u8]>,
+        hidden: &Hidden,
+    ) -> Result<()> {
+        let inside =
+            |key: &[u8]| low.is_none_or(|low| low <= key) && high.is_none_or(|high| key < high);
         let mut target = Vec::new();
         if let Some(low) = low {
             encode_internal(low, seek_trailer(SequenceNumber::MAX), &mut target);
@@ -233,7 +269,7 @@ impl Job {
             walk.versions.next();
             settle(walk.file, &mut walk.versions)?;
         }
-        outputs.finish()
+        Ok(())
     }
 }
 
@@ -252,23 +288,4 @@ fn corrupt() -> Error {
         offset: None,
         detail: "a stored key has no trailer or a kind this build does not read".to_owned(),
     }
-}
-
-/// Counts a compaction of `inputs` into `outputs`: the bytes it read and wrote, and the entries
-/// it left out.
-fn count(statistics: &Statistics, inputs: &[TableFile], outputs: &[TableFile]) {
-    let bytes = |files: &[TableFile]| {
-        files
-            .iter()
-            .fold(0_u64, |total, file| total.saturating_add(file.meta.size))
-    };
-    let entries = |files: &[TableFile]| {
-        files.iter().fold(0_u64, |total, file| {
-            total.saturating_add(file.table.entries())
-        })
-    };
-    statistics.record(Ticker::CompactionBytesRead, bytes(inputs));
-    statistics.record(Ticker::CompactionBytesWritten, bytes(outputs));
-    let dropped = entries(inputs).saturating_sub(entries(outputs));
-    statistics.record(Ticker::CompactionKeysDropped, dropped);
 }

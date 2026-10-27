@@ -129,6 +129,12 @@ impl Active {
         let _ = self.request.done.send(Ok(()));
     }
 
+    /// Reports why the compaction it waited for failed, to the caller, who may have stopped
+    /// waiting.
+    pub(super) fn fail(self, error: crate::Error) {
+        let _ = self.request.done.send(Err(error));
+    }
+
     /// The request being served.
     pub(super) fn request(&self) -> &Request {
         &self.request

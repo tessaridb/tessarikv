@@ -156,8 +156,10 @@ impl Db {
     }
 
     /// The failure that stopped this database's background work, if one did: a failed log
-    /// write or sync ([`Error::LogFailed`]), else a failed flush or compaction
-    /// ([`Error::FlushFailed`], [`Error::CompactionFailed`]). Writes are refused from then on
+    /// write or sync ([`Error::LogFailed`]), else a failed flush or a failed manifest edit of a
+    /// compaction ([`Error::FlushFailed`], [`Error::CompactionFailed`]). A compaction that fails
+    /// before its edit changes nothing and runs again later, so it is not reported here, only
+    /// counted ([`crate::Ticker::CompactionFailures`]). Writes are refused from then on
     /// until the database is reopened; this reads the state without attempting one. `None`
     /// while healthy, and always in memory.
     pub fn background_error(&self) -> Option<Error> {

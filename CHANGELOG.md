@@ -15,6 +15,11 @@ All notable changes to this project are documented here. The format follows
   keyspace made every point read merge all of its sources. A table file's range deletes are read once when it opens
   and cut into fragments once per view, not on every read.
 
+- A compaction that fails — an output that cannot be written or synced, an input that cannot be read — no longer
+  stops writes. It removes the files it began, leaves its inputs as they were and runs again after a wait that starts
+  at 100 ms and doubles up to 30 s; `Db::compact_range` returns the error of the compaction it waited for. Failures
+  are counted by the new `Ticker::CompactionFailures`. A failed manifest edit still stops writes.
+
 ### Fixed
 
 - Range deletes now free their space: a compaction drops the versions a newer range delete hides when no snapshot

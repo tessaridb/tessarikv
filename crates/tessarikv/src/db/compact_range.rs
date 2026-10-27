@@ -23,9 +23,10 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// [`crate::Error::UnknownKeyspace`] for a keyspace this database does not hold, and
-    /// [`crate::Error::FlushFailed`] or [`crate::Error::CompactionFailed`] when the background
-    /// work stopped.
+    /// [`crate::Error::UnknownKeyspace`] for a keyspace this database does not hold; the
+    /// storage's error (such as [`crate::Error::Io`]) when one of its compactions failed, which
+    /// leaves the database as it was and writable; and [`crate::Error::FlushFailed`] or
+    /// [`crate::Error::CompactionFailed`] when the background work stopped.
     pub async fn compact_range(
         &self,
         keyspace: KeyspaceId,
