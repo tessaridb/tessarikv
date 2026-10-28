@@ -38,6 +38,8 @@ pub(in crate::db) enum Access {
     Exclusive {
         /// Held, never read.
         _lock: Arc<dyn StorageLock>,
+        /// The options that differ from the previous open's record.
+        changed: Vec<crate::OptionChange>,
     },
     /// Read-only: read, never written.
     ReadOnly(ReadOnlyFiles),

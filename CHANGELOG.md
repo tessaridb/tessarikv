@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `Db::changed_options` and `OptionChange`: each option an open runs with whose recorded value differs from the
+  previous open's options record, compared as text; empty in memory, read-only, or when nothing changed.
 - `ReadableFile::read_vec_at` and `ReadableFile::try_read_vec_at` read a block into a buffer of its own. Their
   defaults use `read_at` and `try_read_at`; the OS storage reads into memory that is not zeroed first.
 - `WritableFile::syncer` and the `FileSyncer` trait: a handle that syncs a file from another thread while appends

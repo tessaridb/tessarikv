@@ -13,8 +13,11 @@ use std::path::Path;
 use tessarikv_format::{FileKind, SEAL_HEADER_BYTES};
 
 use crate::sealing::{Sealing, corruption};
-use crate::storage::Storage;
+use crate::storage::{Storage, read_all};
 use crate::{DbOptions, Result};
+
+mod changes;
+pub use changes::OptionChange;
 
 /// The start of every options file's name.
 pub(super) const PREFIX: &str = "OPTIONS-";
@@ -24,7 +27,8 @@ const WRITING: &str = ".writing";
 const KEEP: usize = 2;
 
 /// Records `options` as the options of the open that started manifest `number` in `dir`, and
-/// removes older records past the newest [`KEEP`]. Runs on a blocking thread.
+/// removes older records past the newest [`KEEP`]. Returns the options that differ from the
+/// newest earlier record. Runs on a blocking thread.
 ///
 /// # Errors
 ///
@@ -35,12 +39,15 @@ pub(super) fn record(
     options: &DbOptions,
     number: u64,
     sealing: Option<&Sealing>,
-) -> Result<()> {
+) -> Result<Vec<OptionChange>> {
     let name = format!("{PREFIX}{number:020}");
     let writing = dir.join(format!("{name}{WRITING}"));
     let text = format!(
         "# The options this database was opened with; for reading, not parsing.\n{options:#?}\n"
     );
+    let changed = previous(storage, dir, sealing)
+        .map(|previous| changes::between(&previous, &text))
+        .unwrap_or_default();
     let mut file = storage.create(&writing)?;
     match sealing {
         Some(sealing) => {
@@ -75,5 +82,28 @@ pub(super) fn record(
     for name in recorded.get(..older).unwrap_or_default() {
         storage.remove(&dir.join(name))?;
     }
-    Ok(())
+    Ok(changed)
+}
+
+/// The text of the newest record in `dir`, unsealed; `None` when there is none or it cannot be
+/// read, which only means there is nothing to compare with.
+fn previous(storage: &dyn Storage, dir: &Path, sealing: Option<&Sealing>) -> Option<String> {
+    let newest = storage
+        .list(dir)
+        .ok()?
+        .into_iter()
+        .filter(|name| name.starts_with(PREFIX) && !name.ends_with(WRITING))
+        .max()?;
+    let path = dir.join(newest);
+    let bytes = read_all(storage, &path, "options record").ok()?;
+    let text = match sealing {
+        Some(sealing) => {
+            let (header, sealed) = bytes.split_at_checked(SEAL_HEADER_BYTES)?;
+            let sealer = sealing.open_file(header, FileKind::Options, &path).ok()?;
+            let at = u64::try_from(SEAL_HEADER_BYTES).ok()?;
+            sealer.open(at, sealed).ok()?
+        }
+        None => bytes,
+    };
+    String::from_utf8(text).ok()
 }

@@ -26,6 +26,7 @@ mod tombstones;
 mod transaction;
 mod version;
 
+pub use db::options_file::OptionChange;
 pub use db::view::properties::KeyspaceProperties;
 pub use db::{Db, DbIterator, ScanPage, ScanRange, Snapshot};
 pub use error::{Error, ErrorCategory, Result};

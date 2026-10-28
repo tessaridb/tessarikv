@@ -111,7 +111,7 @@ impl Db {
                 .rolling_at(max_manifest_bytes, sealing);
                 super::keyspaces::reconcile_keyspaces(&mut manifest, &options)?;
                 super::compaction::refuse_deep_tables(&manifest.version(), &options)?;
-                super::options_file::record(
+                let changed = super::options_file::record(
                     storage.as_ref(),
                     &path,
                     &options,
@@ -147,6 +147,7 @@ impl Db {
                     super::keyspaces::tables_for(&options, manifest.version().keyspaces());
                 Ok::<_, Error>((
                     lock,
+                    changed,
                     View::recovered(tables, names, files),
                     recovered,
                     manifest,
@@ -160,7 +161,7 @@ impl Db {
                 what: "opening a database after its opening task panicked",
             })??
         };
-        let (lock, view, recovered, manifest, last_sequence, replayed, log_seal) = opened;
+        let (lock, changed, view, recovered, manifest, last_sequence, replayed, log_seal) = opened;
         let lock: Arc<dyn StorageLock> = Arc::from(lock);
         let next_sequence = last_sequence
             .checked_add(1)
@@ -220,7 +221,10 @@ impl Db {
             log: Some(log),
             installer: Some(installer),
             statistics,
-            access: Access::Exclusive { _lock: lock },
+            access: Access::Exclusive {
+                _lock: lock,
+                changed,
+            },
         })
     }
 }

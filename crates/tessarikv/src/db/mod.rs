@@ -34,7 +34,7 @@ mod multi_get;
 mod multi_scan;
 mod open;
 mod open_memory;
-mod options_file;
+pub(crate) mod options_file;
 mod prefixes;
 mod pressure;
 mod rate_limiter;
