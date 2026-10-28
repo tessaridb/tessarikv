@@ -14,6 +14,8 @@
 
 mod db;
 mod error;
+mod expiry;
+mod ingest;
 mod log;
 mod memtable;
 mod options;
@@ -24,15 +26,23 @@ mod tombstones;
 mod transaction;
 mod version;
 
+pub use db::options_file::OptionChange;
+pub use db::view::properties::KeyspaceProperties;
 pub use db::{Db, DbIterator, ScanPage, ScanRange, Snapshot};
 pub use error::{Error, ErrorCategory, Result};
+pub use ingest::TableWriter;
 pub use options::{
-    CompactionStyle, DbOptions, DbOptionsBuilder, Durability, Encryption, Isolation, KeyProvider,
-    KeyspaceOptions, KeyspaceOptionsBuilder, ReadOptions, StorageMode, TransactionOptions,
-    WalRecovery, WriteOptions,
+    CompactionCompleted, CompactionFilter, CompactionStyle, DbOptions, DbOptionsBuilder,
+    Durability, Encryption, EventListener, FilterDecision, FlushCompleted, Isolation, KeyProvider,
+    KeyspaceOptions, KeyspaceOptionsBuilder, MergeOperator, ReadOptions, StallCondition,
+    StorageMode, TransactionOptions, WalRecovery, WriteOptions,
 };
 pub use statistics::{Histogram, HistogramSnapshot, StatisticsSnapshot, Ticker};
-pub use storage::{MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile};
-pub use tessarikv_format::{BatchEntry, Cipher, Compression, ROOT_KEY_BYTES, RootKey, WriteBatch};
+pub use storage::{
+    FileSyncer, MemoryStorage, OsStorage, ReadableFile, Storage, StorageLock, WritableFile,
+};
+pub use tessarikv_format::{
+    BatchEntry, Cipher, Compression, FilterPolicy, ROOT_KEY_BYTES, RootKey, WriteBatch,
+};
 pub use tessarikv_types::{KeyspaceId, SequenceNumber};
 pub use transaction::{Savepoint, Transaction};

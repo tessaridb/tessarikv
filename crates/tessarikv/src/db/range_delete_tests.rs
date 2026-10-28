@@ -110,7 +110,7 @@ proptest! {
     ) {
         let first = 1 + cuts.0.index(writes.len() - 2);
         let second = first + 1 + cuts.1.index(writes.len() - first - 1);
-        let view = view(&writes, first, second, flushed, capacity);
+        let view = std::sync::Arc::new(view(&writes, first, second, flushed, capacity));
         let default = KeyspaceId::DEFAULT;
         for snapshot in 0..=writes.len() {
             let at = SequenceNumber::new(u64::try_from(snapshot).unwrap()).unwrap();

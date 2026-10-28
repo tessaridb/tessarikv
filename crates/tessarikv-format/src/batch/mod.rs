@@ -9,31 +9,40 @@
 //! The encoding is also the log payload, so it is versioned and bounded:
 //!
 //! ```text
-//! [version: u8 = 2][count: u32]
+//! [version: u8 = 3][count: u32]
 //! per entry: [kind: u8][keyspace: u32][key_len: u32][key] then, for a put, [value_len: u32][value]
 //!            and, for a range delete, [end_len: u32][end]
 //! ```
+
 //!
 //! All integers are little-endian. Keys are at most [`MAX_KEY_BYTES`], values at most
 //! [`MAX_VALUE_BYTES`], and the encoded batch at most [`MAX_BATCH_BYTES`]; an entry that would
 //! break a bound is refused and leaves the batch unchanged. Version 1 batches, which hold no range
-//! deletes, are still read.
+//! deletes, and version 2 batches, which hold no expiring puts, are still read.
 
 mod codec;
+mod kinds;
 
 #[cfg(test)]
 mod tests;
 
 use tessarikv_constants::{MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_VALUE_BYTES};
-use tessarikv_types::{KeyspaceId, ValueKind};
+
+use tessarikv_types::{EXPIRY_STAMP_BYTES, KeyspaceId, ValueKind};
 
 use crate::{Error, Result};
 
 /// The batch encoding version this build writes.
-const FORMAT_VERSION: u8 = 2;
+const FORMAT_VERSION: u8 = 4;
 
 /// The first version, without range deletes; still read.
 const FORMAT_VERSION_1: u8 = 1;
+
+/// The second version, without expiring puts; still read.
+const FORMAT_VERSION_2: u8 = 2;
+
+/// The third version, without merges; still read.
+const FORMAT_VERSION_3: u8 = 3;
 
 /// Bytes before the first entry: the version and the entry count.
 const HEADER_BYTES: usize = 5;
@@ -64,12 +73,12 @@ pub struct WriteBatch {
 pub struct BatchEntry<'a> {
     /// The keyspace the entry writes to.
     pub keyspace: KeyspaceId,
-    /// [`ValueKind::Value`] for a put, [`ValueKind::Delete`] for a delete,
-    /// [`ValueKind::RangeDelete`] for a range delete.
+    /// [`ValueKind::Value`] for a put, [`ValueKind::ExpiringValue`] for an expiring put,
+    /// [`ValueKind::Delete`] for a delete, [`ValueKind::RangeDelete`] for a range delete.
     pub kind: ValueKind,
     /// The user key.
     pub key: &'a [u8],
-    /// The value of a put, the end of a range delete; `None` for a delete.
+    /// A put's value (an expiring put's stamp first), a range delete's end; `None` for a delete.
     pub value: Option<&'a [u8]>,
 }
 
@@ -96,7 +105,7 @@ impl WriteBatch {
     /// [`Error::TooLarge`] when the key, the value, the entry count or the encoded batch would
     /// exceed its limit; the batch is then unchanged.
     pub fn put(&mut self, keyspace: KeyspaceId, key: &[u8], value: &[u8]) -> Result<()> {
-        self.append(keyspace, ValueKind::Value, key, Some(value))
+        self.append(keyspace, ValueKind::Value, key, None, Some(value))
     }
 
     /// Removes `key` from `keyspace`: older versions of it become invisible.
@@ -105,7 +114,7 @@ impl WriteBatch {
     ///
     /// As for [`WriteBatch::put`].
     pub fn delete(&mut self, keyspace: KeyspaceId, key: &[u8]) -> Result<()> {
-        self.append(keyspace, ValueKind::Delete, key, None)
+        self.append(keyspace, ValueKind::Delete, key, None, None)
     }
 
     /// Removes every key in `[start, end)` from `keyspace`: older versions of them become
@@ -119,7 +128,7 @@ impl WriteBatch {
             return Err(empty_range());
         }
         check_size("range end", end.len(), MAX_KEY_BYTES)?;
-        self.append(keyspace, ValueKind::RangeDelete, start, Some(end))
+        self.append(keyspace, ValueKind::RangeDelete, start, None, Some(end))
     }
 
     /// The number of entries.
@@ -171,7 +180,7 @@ impl WriteBatch {
     pub fn from_bytes(rep: Vec<u8>) -> Result<Self> {
         check_size("write batch", rep.len(), MAX_BATCH_BYTES)?;
         let version = codec::read_u8(&rep, 0, "write batch")?;
-        if version != FORMAT_VERSION && version != FORMAT_VERSION_1 {
+        if !(FORMAT_VERSION_1..=FORMAT_VERSION).contains(&version) {
             return Err(Error::UnsupportedVersion {
                 what: "write batch",
                 version,
@@ -196,6 +205,7 @@ impl WriteBatch {
         keyspace: KeyspaceId,
         kind: ValueKind,
         key: &[u8],
+        stamp: Option<&[u8; EXPIRY_STAMP_BYTES]>,
         value: Option<&[u8]>,
     ) -> Result<()> {
         check_size("key", key.len(), MAX_KEY_BYTES)?;
@@ -207,14 +217,16 @@ impl WriteBatch {
             size: u64::from(u32::MAX).saturating_add(1),
             limit: u64::from(u32::MAX),
         })?;
-        let entry_bytes = codec::entry_bytes(key, value).ok_or(too_large_batch(usize::MAX))?;
+        let entry_bytes = codec::entry_bytes(key, value)
+            .and_then(|bytes| bytes.checked_add(stamp.map_or(0, |stamp| stamp.len())))
+            .ok_or(too_large_batch(usize::MAX))?;
         let total = self
             .rep
             .len()
             .checked_add(entry_bytes)
             .ok_or(too_large_batch(usize::MAX))?;
         check_size("write batch", total, MAX_BATCH_BYTES)?;
-        codec::write_entry(&mut self.rep, keyspace, kind, key, value)?;
+        codec::write_entry(&mut self.rep, keyspace, kind, key, stamp, value)?;
         self.set_count(count);
         Ok(())
     }

@@ -106,6 +106,8 @@ pub enum FileKind {
     Options,
     /// The file an open checks its key against.
     KeyCheck,
+    /// A blob file of large values.
+    Blob,
 }
 
 impl FileKind {
@@ -116,6 +118,7 @@ impl FileKind {
             Self::Manifest => b"manifest",
             Self::Options => b"options",
             Self::KeyCheck => b"key-check",
+            Self::Blob => b"blob",
         }
     }
 }

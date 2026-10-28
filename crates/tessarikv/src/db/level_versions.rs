@@ -7,18 +7,50 @@
 //! file of the level however many it holds.
 
 use std::borrow::Cow;
+use std::ops::{Deref, Range};
+use std::sync::Arc;
 
 use tessarikv_types::{SequenceNumber, compare_internal};
 
 use super::merge::KeyVersion;
 use super::table_versions::TableVersions;
 use super::tables::user_key;
-use super::view::TableFile;
+use super::view::{TableFile, View};
 use crate::Error;
+
+/// The files a level's source reads: a list of its own or borrowed, or a range of the files of
+/// one keyspace in a view the source keeps alive, which costs one reference however many files
+/// the level holds.
+pub(super) enum LevelFiles<'a> {
+    Listed(Cow<'a, [TableFile]>),
+    Viewed {
+        view: Arc<View>,
+        keyspace: u32,
+        range: Range<usize>,
+    },
+}
+
+impl Deref for LevelFiles<'_> {
+    type Target = [TableFile];
+
+    fn deref(&self) -> &[TableFile] {
+        match self {
+            Self::Listed(files) => files,
+            Self::Viewed {
+                view,
+                keyspace,
+                range,
+            } => view
+                .keyspace_files(*keyspace)
+                .get(range.clone())
+                .unwrap_or_default(),
+        }
+    }
+}
 
 /// The versions of a sorted level's files, read one file at a time.
 pub(super) struct LevelVersions<'a> {
-    files: Cow<'a, [TableFile]>,
+    files: LevelFiles<'a>,
     fill_cache: bool,
     /// The file `open` reads.
     at: usize,
@@ -28,7 +60,7 @@ pub(super) struct LevelVersions<'a> {
 impl<'a> LevelVersions<'a> {
     /// The versions of `files`, one sorted level in key order, keeping the blocks they load in
     /// the cache unless `fill_cache` is false.
-    pub(super) fn new(files: Cow<'a, [TableFile]>, fill_cache: bool) -> Self {
+    pub(super) fn new(files: LevelFiles<'a>, fill_cache: bool) -> Self {
         Self {
             files,
             fill_cache,
@@ -154,14 +186,83 @@ impl Span<'_> {
                 .is_none_or(|high| user_key(&file.meta.smallest) < high)
     }
 
+    /// Whether `file` may hold a key the span reads: its key range meets the span, and its
+    /// prefix filter, when it has one, does not rule the span out.
+    pub(super) fn admits(&self, file: &TableFile) -> bool {
+        self.touches(file) && self.may_hold(file)
+    }
+
+    /// The files of a sorted level, in key order, that may hold a key the span reads: those that
+    /// meet it, less those whose prefix filter rules it out. The level's own slice when no file
+    /// is ruled out.
+    pub(super) fn files_in<'f>(&self, level: &'f [TableFile]) -> Cow<'f, [TableFile]> {
+        let within = self.within(level);
+        if within.iter().all(|file| self.may_hold(file)) {
+            return Cow::Borrowed(within);
+        }
+        Cow::Owned(
+            within
+                .iter()
+                .filter(|file| self.may_hold(file))
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Whether `file`'s prefix filter lets it hold a key the span reads.
+    fn may_hold(&self, file: &TableFile) -> bool {
+        file.table
+            .may_hold_prefix_range(self.low.unwrap_or_default(), self.high)
+    }
+
     /// The files of a sorted level, in key order, that meet the span.
     pub(super) fn within<'f>(&self, level: &'f [TableFile]) -> &'f [TableFile] {
+        level.get(self.within_range(level)).unwrap_or_default()
+    }
+
+    /// Where in a sorted level the files that meet the span lie.
+    fn within_range(&self, level: &[TableFile]) -> Range<usize> {
         let start = self.low.map_or(0, |low| {
             level.partition_point(|file| user_key(&file.meta.largest) < low)
         });
         let end = self.high.map_or(level.len(), |high| {
             level.partition_point(|file| user_key(&file.meta.smallest) < high)
         });
-        level.get(start..end.max(start)).unwrap_or_default()
+        start..end.max(start)
+    }
+
+    /// The files of each sorted level of `keyspace` in `view` that may hold a key the span
+    /// reads, as [`Span::files_in`] chooses them, each kept alive by `view` rather than copied
+    /// unless a prefix filter rules some of them out.
+    pub(super) fn levels_of<'s>(
+        &'s self,
+        view: &'s Arc<View>,
+        keyspace: u32,
+    ) -> impl Iterator<Item = LevelFiles<'static>> + 's {
+        let (level_zero, levels) = view.runs(keyspace);
+        // Where each level starts among the keyspace's files: after level 0 and the levels
+        // above it.
+        let mut start = level_zero.len();
+        levels.map(move |level| {
+            let at = start;
+            start = start.saturating_add(level.len());
+            let within = self.within_range(level);
+            let files = level.get(within.clone()).unwrap_or_default();
+            if files.iter().all(|file| self.may_hold(file)) {
+                LevelFiles::Viewed {
+                    view: Arc::clone(view),
+                    keyspace,
+                    range: at.saturating_add(within.start)..at.saturating_add(within.end),
+                }
+            } else {
+                LevelFiles::Listed(Cow::Owned(
+                    files
+                        .iter()
+                        .filter(|file| self.may_hold(file))
+                        .cloned()
+                        .collect(),
+                ))
+            }
+        })
     }
 }

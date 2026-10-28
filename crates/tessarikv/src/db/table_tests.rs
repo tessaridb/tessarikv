@@ -5,6 +5,7 @@ use tessarikv_format::{Compression, TableOptions};
 use tessarikv_types::{SequenceNumber, ValueKind};
 
 use super::block_cache::BlockCache;
+use super::lookup_key::LookupKey;
 use super::read_tests::{block_on, built, cache_bytes, table_file};
 use super::tables::{TableLookup, lookup};
 use crate::memtable::{Lookup, Memtable};
@@ -14,7 +15,9 @@ fn options(compression: Compression) -> TableOptions {
         block_bytes: 64,
         restart_interval: 2,
         bloom_bits_per_key: 10,
+        filter: tessarikv_format::FilterPolicy::Bloom,
         compression,
+        prefix_length: None,
     }
 }
 
@@ -23,6 +26,7 @@ fn expected(table: &Memtable, key: &[u8], snapshot: SequenceNumber) -> TableLook
         Lookup::Value(value) => TableLookup::Value(value.to_vec()),
         Lookup::Deleted => TableLookup::Deleted,
         Lookup::Absent => TableLookup::Absent,
+        Lookup::Operand => TableLookup::Operand,
     }
 }
 
@@ -59,7 +63,7 @@ proptest! {
             for key in 0_u8..13 {
                 let user_key = [b'k', key];
                 prop_assert_eq!(
-                    block_on(lookup(&file, &user_key, snapshot, 0, true, None)).unwrap(),
+                    block_on(lookup(&file, &LookupKey::new(&user_key, snapshot), 0, true, None)).unwrap(),
                     expected(&memtable, &user_key, snapshot),
                     "key {} at snapshot {}", key, snapshot.get()
                 );
@@ -80,11 +84,17 @@ fn a_table_larger_than_a_write_chunk_is_written_in_pieces_and_reads_back_whole()
     }
     let mut pieces = 0;
     let mut bytes = Vec::new();
-    let built = super::tables::build(&memtable, options(Compression::None), None, &mut |piece| {
-        pieces += 1;
-        bytes.extend_from_slice(piece);
-        Ok(())
-    })
+    let built = super::tables::build(
+        &memtable,
+        options(Compression::None),
+        None,
+        None,
+        &mut |piece| {
+            pieces += 1;
+            bytes.extend_from_slice(piece);
+            Ok(())
+        },
+    )
     .unwrap();
     assert!(pieces > 2, "3 MiB went out in {pieces} pieces");
     assert_eq!(built.size(), u64::try_from(bytes.len()).unwrap());
@@ -100,7 +110,14 @@ fn a_table_larger_than_a_write_chunk_is_written_in_pieces_and_reads_back_whole()
     let snapshot = SequenceNumber::new(u64::MAX >> 8).unwrap();
     for id in (0_u32..3 * 1024).step_by(97) {
         assert_eq!(
-            block_on(lookup(&file, &id.to_be_bytes(), snapshot, 0, true, None)).unwrap(),
+            block_on(lookup(
+                &file,
+                &LookupKey::new(&id.to_be_bytes(), snapshot),
+                0,
+                true,
+                None
+            ))
+            .unwrap(),
             TableLookup::Value(value.clone()),
             "key {id}"
         );

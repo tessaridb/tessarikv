@@ -9,7 +9,7 @@
 use super::compaction;
 use super::installer::Flusher;
 use super::view::View;
-use crate::{CompactionStyle, KeyspaceOptions};
+use crate::{CompactionStyle, KeyspaceOptions, StallCondition};
 
 /// What writers must do, from the mildest to the worst.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -46,6 +46,19 @@ impl Pressure {
             3 => Self::StopOwed,
             4 => Self::StopLevel0,
             _ => Self::None,
+        }
+    }
+
+    /// What it asks of writers, as a listener is told.
+    pub(super) fn condition(self) -> StallCondition {
+        match self {
+            Self::None => StallCondition::Normal,
+            Self::SlowOwed | Self::SlowLevel0 => StallCondition::Delayed {
+                trigger: self.reason(),
+            },
+            Self::StopOwed | Self::StopLevel0 => StallCondition::Stopped {
+                trigger: self.reason(),
+            },
         }
     }
 
@@ -110,5 +123,13 @@ impl Flusher {
     /// What the current levels ask of writers.
     pub(super) fn load(&self) -> Load {
         of(&self.view.load(), self.all_keyspaces())
+    }
+
+    /// What compaction owes each keyspace, by keyspace id.
+    pub(super) fn owed_by_keyspace(&self) -> Vec<(u32, u64)> {
+        let view = self.view.load();
+        self.all_keyspaces()
+            .map(|(keyspace, options)| (keyspace, compaction::owed(&view, keyspace, options)))
+            .collect()
     }
 }

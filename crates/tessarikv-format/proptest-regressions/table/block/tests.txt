@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 7cf1eb96552a0531347a1445be6fd04b645750de5a47c0f46d8bd058040278ae # shrinks to model = {[]: []}, interval = 1, moves = [], start = Index(0)
+cc e2c8c03f683fc9ee900de9dd81984b5a086c942c3050760d29237143a6059376 # shrinks to model = {[]: [], [0]: [], [0, 0]: [], [1]: [], [2]: [], [3]: [], [4]: []}, targets = [[0]], interval = 1
+cc d15549d4ba59d31efb5226d4d42ea6374f9bf47b0bb0a8cfe39657a2ccb2c90f # shrinks to model = {[]: [], [0]: [], [0, 0]: [], [1]: [], [2]: [], [3]: [], [4]: [], [7]: [], [8]: [], [10]: [], [11]: [], [12]: [], [13]: [], [14]: [], [54]: []}, interval = 1, moves = [false], start = Index(1229782938247303442)

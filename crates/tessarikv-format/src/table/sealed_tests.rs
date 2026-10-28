@@ -50,7 +50,9 @@ fn options(compression: Compression) -> TableOptions {
         block_bytes: 256,
         restart_interval: 4,
         bloom_bits_per_key: 10,
+        filter: crate::table::FilterPolicy::Bloom,
         compression,
+        prefix_length: None,
     }
 }
 

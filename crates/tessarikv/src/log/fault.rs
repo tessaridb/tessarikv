@@ -7,8 +7,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
 
 use super::sync_gate::SyncGate;
+use crate::Result;
 use crate::storage::{MemoryStorage, ReadableFile, Storage, StorageLock, WritableFile};
-use crate::{Error, Result};
+use file::FaultFile;
+
+mod file;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FaultStorage {
@@ -22,6 +25,8 @@ struct State {
     synced: papaya::HashMap<PathBuf, u64>,
     fail_sync: AtomicBool,
     fail_table_writes: AtomicBool,
+    /// Files hand out no syncer, as on storage whose syncs do not overlap.
+    serial_syncs: AtomicBool,
     /// Holds syncs while paused.
     gate: SyncGate,
     /// When armed, crash images are taken around every durable step outside the log.
@@ -61,6 +66,12 @@ impl FaultStorage {
         self.state.fail_table_writes.store(fail, Ordering::SeqCst);
     }
 
+    /// Files opened from now on hand out no syncer, so the log syncs one at a time on its task.
+    pub(crate) fn serial_syncs(&self) {
+        // SeqCst: a test flag, read by the log writer on another thread.
+        self.state.serial_syncs.store(true, Ordering::SeqCst);
+    }
+
     /// Every later sync waits until [`FaultStorage::resume_syncs`].
     pub(crate) fn pause_syncs(&self) {
         self.state.gate.pause();
@@ -68,7 +79,17 @@ impl FaultStorage {
 
     /// Whether a sync of a file whose name starts with `prefix` is waiting at the paused gate.
     pub(crate) fn sync_waiting(&self, prefix: &str) -> bool {
+        self.syncs_waiting(prefix) > 0
+    }
+
+    /// How many syncs of files whose names start with `prefix` wait at the paused gate.
+    pub(crate) fn syncs_waiting(&self, prefix: &str) -> usize {
         self.state.gate.waiting(prefix)
+    }
+
+    /// Lets the sync that started waiting last through the paused gate.
+    pub(crate) fn let_newest_sync_through(&self) {
+        self.state.gate.let_newest_through();
     }
 
     /// Lets waiting and later syncs through.
@@ -242,58 +263,5 @@ impl Storage for FaultStorage {
 
     fn lock(&self, path: &Path) -> Result<Box<dyn StorageLock>> {
         self.files.lock(path)
-    }
-}
-
-struct FaultFile {
-    inner: Box<dyn WritableFile>,
-    path: PathBuf,
-    storage: FaultStorage,
-}
-
-impl WritableFile for FaultFile {
-    fn append(&mut self, data: &[u8]) -> Result<()> {
-        let state = &self.storage.state;
-        if state.fail_table_writes.load(Ordering::SeqCst)
-            && self
-                .path
-                .extension()
-                .is_some_and(|extension| extension == "sst")
-        {
-            return Err(Error::Io {
-                operation: "append",
-                path: self.path.clone(),
-                source: std::io::Error::other("injected write failure"),
-            });
-        }
-        let _change = self.storage.change();
-        self.inner.append(data)
-    }
-
-    fn sync(&mut self) -> Result<()> {
-        let state = &self.storage.state;
-        state.gate.pass(&self.path);
-        if state.fail_sync.load(Ordering::SeqCst) {
-            return Err(Error::Io {
-                operation: "sync",
-                path: self.path.clone(),
-                source: std::io::Error::other("injected sync failure"),
-            });
-        }
-        self.storage.capture(&self.path, "before syncing");
-        {
-            let _change = self.storage.change();
-            self.inner.sync()?;
-            state
-                .synced
-                .pin()
-                .insert(self.path.clone(), self.inner.len());
-        }
-        self.storage.capture(&self.path, "after syncing");
-        Ok(())
-    }
-
-    fn len(&self) -> u64 {
-        self.inner.len()
     }
 }

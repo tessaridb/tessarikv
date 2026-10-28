@@ -74,3 +74,39 @@ async fn flushes_stay_uncompacted_until_a_manual_compaction() {
     }
     db.close().await.expect("closed");
 }
+
+/// Level-0 tables of the default keyspace.
+fn level_zero(db: &Db) -> usize {
+    db.view
+        .load()
+        .files(0)
+        .filter(|file| file.meta.level == 0)
+        .count()
+}
+
+/// Eight flushes past a trigger of two: waiting for compactions returns once level 0 is back
+/// under its trigger and nothing more is due.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waiting_for_compactions_returns_once_none_is_running_or_due() {
+    let storage = FaultStorage::default();
+    let db = Db::open_with_storage(PATH, options(false), Arc::new(storage.clone()))
+        .await
+        .expect("opened");
+    for index in 0..8 {
+        let mut batch = WriteBatch::new();
+        batch
+            .put(KeyspaceId::DEFAULT, &key(index), &value(index))
+            .expect("entry");
+        db.write(&batch, &WriteOptions::default())
+            .await
+            .expect("written");
+        db.flush().await.expect("flushed");
+    }
+    db.wait_for_compact().await.expect("settled");
+    assert!(level_zero(&db) < 2, "{} level-0 tables", level_zero(&db));
+    // Nothing is due, so a second wait returns at once and changes nothing.
+    let tables = db.view.load().files(0).count();
+    db.wait_for_compact().await.expect("settled");
+    assert_eq!(db.view.load().files(0).count(), tables);
+    db.close().await.expect("closed");
+}

@@ -1,9 +1,12 @@
 //! Options for one keyspace: its memtables and the tables it writes.
 
+use std::sync::Arc;
+
 use tessarikv_constants::{self as limits, LEVELS};
-use tessarikv_format::Compression;
+use tessarikv_format::{Compression, FilterPolicy};
 
 use super::compaction::CompactionStyle;
+use super::compaction_filter::{CompactionFilter, FilterHandle};
 use super::keyspace_builder::KeyspaceOptionsBuilder;
 
 /// Validated options of one keyspace. Built through [`KeyspaceOptions::builder`] or a preset.
@@ -14,6 +17,7 @@ pub struct KeyspaceOptions {
     pub(super) block_bytes: u64,
     pub(super) block_restart_interval: u32,
     pub(super) bloom_bits_per_key: u32,
+    pub(super) filter_policy: FilterPolicy,
     pub(super) level0_compaction_trigger: u32,
     pub(super) level0_slowdown_trigger: u32,
     pub(super) level0_stop_trigger: u32,
@@ -28,6 +32,11 @@ pub struct KeyspaceOptions {
     pub(super) target_file_bytes: u64,
     pub(super) compression: Compression,
     pub(super) bottommost_compression: Option<Compression>,
+    pub(super) compaction_filter: Option<FilterHandle>,
+    pub(super) prefix_length: Option<u32>,
+    pub(super) blob_threshold: Option<u64>,
+    pub(super) blob_gc_age_cutoff_percent: u32,
+    pub(super) merge_operator: Option<super::merge_operator::OperatorHandle>,
 }
 
 impl Default for KeyspaceOptions {
@@ -38,6 +47,7 @@ impl Default for KeyspaceOptions {
             block_bytes: limits::DEFAULT_BLOCK_BYTES,
             block_restart_interval: limits::DEFAULT_BLOCK_RESTART_INTERVAL,
             bloom_bits_per_key: limits::DEFAULT_BLOOM_BITS_PER_KEY,
+            filter_policy: FilterPolicy::Bloom,
             level0_compaction_trigger: limits::DEFAULT_LEVEL0_COMPACTION_TRIGGER,
             level0_slowdown_trigger: limits::DEFAULT_LEVEL0_SLOWDOWN_TRIGGER,
             level0_stop_trigger: limits::DEFAULT_LEVEL0_STOP_TRIGGER,
@@ -52,6 +62,11 @@ impl Default for KeyspaceOptions {
             target_file_bytes: limits::DEFAULT_TARGET_FILE_BYTES,
             compression: Compression::Lz4,
             bottommost_compression: None,
+            compaction_filter: None,
+            prefix_length: None,
+            blob_threshold: None,
+            blob_gc_age_cutoff_percent: limits::DEFAULT_BLOB_GC_AGE_CUTOFF_PERCENT,
+            merge_operator: None,
         }
     }
 }
@@ -132,6 +147,12 @@ impl KeyspaceOptions {
         self.bloom_bits_per_key
     }
 
+    /// The kind of whole-key filter the keyspace's tables keep; [`FilterPolicy::Bloom`] by default.
+    #[must_use]
+    pub const fn filter_policy(&self) -> FilterPolicy {
+        self.filter_policy
+    }
+
     /// Level-0 tables that start a compaction of level 0 into the levels below.
     #[must_use]
     pub const fn level0_compaction_trigger(&self) -> u32 {
@@ -164,6 +185,13 @@ impl KeyspaceOptions {
     #[must_use]
     pub const fn max_subcompactions(&self) -> u32 {
         self.max_subcompactions
+    }
+
+    /// The filter compaction asks which values to keep (default none); see
+    /// [`CompactionFilter`] for what it is shown.
+    #[must_use]
+    pub fn compaction_filter(&self) -> Option<&Arc<dyn CompactionFilter>> {
+        self.compaction_filter.as_ref().map(|handle| &handle.0)
     }
 
     /// Whether the engine never starts a compaction of this keyspace by itself (default

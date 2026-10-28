@@ -16,7 +16,12 @@
 //! last reader holding it lets go.
 
 mod deletions;
+mod levels;
 mod memtables;
+pub(crate) mod properties;
+#[cfg(test)]
+mod properties_tests;
+mod restore;
 
 use std::sync::Arc;
 
@@ -25,6 +30,9 @@ use tessarikv_types::compare_internal;
 
 use super::table_blocks::TableBlocks;
 use super::tables;
+pub(super) use restore::restore_tables;
+
+use super::tables::blobs::BlobFile;
 use crate::Result;
 use crate::memtable::Memtable;
 use crate::tombstones::RangeTombstone;
@@ -38,6 +46,8 @@ pub(crate) struct View {
     files: Vec<TableFile>,
     /// The range deletes of the table files, by keyspace.
     deletes: Arc<[deletions::FileDeletes]>,
+    /// The files and bytes of each level, by keyspace.
+    levels: Arc<[(u32, levels::LevelFigures)]>,
     /// The keyspaces beside the default one, by id, with their names.
     names: Names,
     /// Above every keyspace id this view has held: ids are never handed out twice.
@@ -56,6 +66,9 @@ pub(crate) struct TableFile {
     pub(crate) blocks: Arc<TableBlocks>,
     /// The table's range deletes, read once when it was opened.
     pub(crate) tombstones: Arc<[RangeTombstone]>,
+    /// The blob files the table's entries point into, by number: held for as long as the
+    /// table is, so a blob file outlives every table and reader that can reach it.
+    pub(crate) blobs: Arc<[Arc<BlobFile>]>,
 }
 
 impl TableFile {
@@ -76,7 +89,30 @@ impl TableFile {
             table,
             blocks,
             tombstones: tombstones.into(),
+            blobs: Arc::new([]),
         })
+    }
+
+    /// The table file holding `blobs`, the blob files its table records, in its order.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Corruption`] when `blobs` are not the files the table records.
+    pub(crate) fn with_blobs(mut self, blobs: Arc<[Arc<BlobFile>]>) -> Result<Self> {
+        if !blobs
+            .iter()
+            .map(|blob| blob.id())
+            .eq(self.table.blob_files().iter().copied())
+        {
+            return Err(crate::Error::Corruption {
+                what: "table",
+                path: None,
+                offset: None,
+                detail: "a table's blob files are not the ones it records".to_owned(),
+            });
+        }
+        self.blobs = blobs;
+        Ok(self)
     }
 }
 
@@ -97,6 +133,7 @@ impl View {
             }],
             files: Vec::new(),
             deletes: Arc::new([]),
+            levels: Arc::new([]),
             names: Arc::new([]),
             next_keyspace: 1,
         }
@@ -127,6 +164,7 @@ impl View {
                     .collect(),
             }],
             deletes: deletions::gather(&files),
+            levels: levels::gather(&files),
             files,
             names,
             next_keyspace,
@@ -177,6 +215,7 @@ impl View {
         Self {
             tables: self.shared_tables(),
             deletes: deletions::gather(&files),
+            levels: levels::gather(&files),
             files,
             names: Arc::clone(&self.names),
             next_keyspace: self.next_keyspace,
@@ -240,7 +279,7 @@ impl View {
     }
 
     /// The files of `keyspace`, a contiguous run of the ordered list.
-    fn keyspace_files(&self, keyspace: u32) -> &[TableFile] {
+    pub(crate) fn keyspace_files(&self, keyspace: u32) -> &[TableFile] {
         let start = self
             .files
             .partition_point(|file| file.meta.keyspace < keyspace);

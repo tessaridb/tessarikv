@@ -35,6 +35,22 @@ fn options(cache_bytes: u64) -> DbOptions {
         .unwrap()
 }
 
+/// No block cache and no compaction, so every read of a block is a read of storage made by a
+/// reading task; blocks read on the reading task's thread when `on_worker` is set.
+fn options_reading(on_worker: bool) -> DbOptions {
+    let keyspace = KeyspaceOptions::builder()
+        .memtable_bytes(64 * 1024)
+        .disable_auto_compactions(true)
+        .build()
+        .unwrap();
+    DbOptions::builder()
+        .default_keyspace(keyspace)
+        .block_cache_bytes(0)
+        .block_reads_on_worker(on_worker)
+        .build()
+        .unwrap()
+}
+
 /// Every key, read back by point reads, one scan and a forward walk.
 async fn assert_all_readable(db: &Db) {
     let options = ReadOptions::default();
@@ -109,7 +125,7 @@ async fn a_read_that_asks_not_to_fill_the_cache_leaves_it_as_it_was() {
         1 << 20,
         tessarikv_constants::DEFAULT_BLOCK_BYTES,
     ));
-    let view = flushed(&cache);
+    let view = Arc::new(flushed(&cache));
     let (default, at) = (KeyspaceId::DEFAULT, SequenceNumber::new(100).unwrap());
     let options = ReadOptions {
         fill_cache: false,
@@ -162,7 +178,7 @@ async fn read_futures_can_move_between_threads() {
 async fn a_move_dropped_while_it_waits_for_storage_leaves_the_iterator_not_valid() {
     // No cache: every block a move reaches is read from storage.
     let cache = Arc::new(BlockCache::new(0, tessarikv_constants::DEFAULT_BLOCK_BYTES));
-    let view = flushed(&cache);
+    let view = Arc::new(flushed(&cache));
     let at = SequenceNumber::new(100).unwrap();
     let options = ReadOptions::default();
     let mut iterator = DbIterator::new(&view, KeyspaceId::DEFAULT, at, &options, None).unwrap();
@@ -192,6 +208,13 @@ async fn a_move_dropped_while_it_waits_for_storage_leaves_the_iterator_not_valid
 
 /// Reads of every key after a reopen with no block cache, through `storage`.
 async fn reopened_reads(storage: CountedStorage) -> (u64, u64) {
+    let (inline, blocking, _) = reopened_reads_with(storage, options(0)).await;
+    (inline, blocking)
+}
+
+/// As [`reopened_reads`], the database reopened with `reopen`; also the reads made on a thread
+/// of the runtime's pools.
+async fn reopened_reads_with(storage: CountedStorage, reopen: DbOptions) -> (u64, u64, u64) {
     let db = Db::open_with_storage(PATH, options(1024 * 1024), Arc::new(storage.clone()))
         .await
         .unwrap();
@@ -204,17 +227,19 @@ async fn reopened_reads(storage: CountedStorage) -> (u64, u64) {
     }
     until("tables flushed", || db.view.load().files(0).count() > 2).await;
     db.close().await.unwrap();
-    let db = Db::open_with_storage(PATH, options(0), Arc::new(storage.clone()))
+    let db = Db::open_with_storage(PATH, reopen, Arc::new(storage.clone()))
         .await
         .unwrap();
     // Relaxed: the counters are read on this task, after the reads they count.
     let reads = &storage.reads;
     let inline = reads.inline.load(Ordering::Relaxed);
     let blocking = reads.blocking.load(Ordering::Relaxed);
+    let pooled = reads.on_pool_threads.load(Ordering::Relaxed);
     assert_all_readable(&db).await;
     let made = (
         reads.inline.load(Ordering::Relaxed) - inline,
         reads.blocking.load(Ordering::Relaxed) - blocking,
+        reads.on_pool_threads.load(Ordering::Relaxed) - pooled,
     );
     db.close().await.unwrap();
     made
@@ -238,4 +263,21 @@ async fn blocks_that_must_be_read_where_blocking_is_allowed_are_read_on_one_thre
     let (inline, blocking) = reopened_reads(CountedStorage::new(false)).await;
     assert_eq!(inline, 0);
     assert!(blocking > 0, "no block read where blocking is allowed");
+}
+
+#[tokio::test]
+async fn a_block_read_that_may_block_runs_on_the_caller_when_reads_stay_on_the_worker() {
+    for on_worker in [false, true] {
+        let storage = CountedStorage::new(false);
+        let (_, blocking, pooled) = reopened_reads_with(storage, options_reading(on_worker)).await;
+        assert!(blocking > 0, "no block read where blocking is allowed");
+        if on_worker {
+            assert_eq!(
+                pooled, 0,
+                "{pooled} of {blocking} reads left the caller's thread"
+            );
+        } else {
+            assert!(pooled > 0, "every read stayed on the caller's thread");
+        }
+    }
 }

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use tessarikv_format::{KeyspaceRecord, ManifestEdit};
 use tessarikv_types::KeyspaceId;
 
 use tokio::sync::oneshot;
@@ -13,6 +14,8 @@ use super::installer::Flusher;
 use super::view::Names;
 use crate::memtable::Memtable;
 use crate::options::DEFAULT_NAME;
+use crate::version::Version;
+use crate::version::manifest::ManifestStore;
 use crate::{DbOptions, Error, KeyspaceOptions, Result};
 
 impl Db {
@@ -65,6 +68,7 @@ impl Db {
         name: &str,
         options: KeyspaceOptions,
     ) -> Result<KeyspaceId> {
+        self.refuse_read_only("creating a keyspace")?;
         check_new(name, std::iter::empty(), 0)?;
         let Some(installer) = &self.installer else {
             return self.create_in_memory(name, &options);
@@ -96,6 +100,7 @@ impl Db {
     /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work stopped,
     /// and the storage's error when recording the drop failed.
     pub async fn drop_keyspace(&self, keyspace: KeyspaceId) -> Result<()> {
+        self.refuse_read_only("dropping a keyspace")?;
         if keyspace == KeyspaceId::DEFAULT {
             return Err(Error::InvalidArgument {
                 what: "dropping a keyspace",
@@ -146,8 +151,7 @@ impl Db {
                 names.len(),
             )?;
             let id = current.next_keyspace();
-            let table = Memtable::sized(options.memtable_bytes());
-            let next = Arc::new(current.with_keyspace(id, name, table)?);
+            let next = Arc::new(current.with_keyspace(id, name, table_of(options))?);
             let previous = self.view.compare_and_swap(&current, next);
             if Arc::ptr_eq(&previous, &current) {
                 return Ok(KeyspaceId::new(id));
@@ -156,25 +160,26 @@ impl Db {
     }
 }
 
+/// An empty in-memory table for a keyspace with `options`: its size and its merge operator.
+pub(super) fn table_of(options: &KeyspaceOptions) -> Memtable {
+    Memtable::sized(options.memtable_bytes()).with_operator(options.merge_operator().cloned())
+}
+
 /// One empty table per keyspace, the default one first, each sized by its options, and the
 /// names of the keyspaces beside the default one; `held` gives their ids and names.
 pub(super) fn tables_for<'a>(
     options: &DbOptions,
     held: impl Iterator<Item = (u32, &'a str)>,
 ) -> (Vec<(u32, Memtable)>, Names) {
-    let mut tables = vec![(
-        0,
-        Memtable::sized(options.default_keyspace().memtable_bytes()),
-    )];
+    let mut tables = vec![(0, table_of(options.default_keyspace()))];
     let mut names = Vec::new();
     for (id, name) in held {
-        let bytes = options
+        let keyspace = options
             .keyspaces()
             .iter()
             .find(|(named, _)| named == name)
-            .map_or(options.default_keyspace(), |(_, keyspace)| keyspace)
-            .memtable_bytes();
-        tables.push((id, Memtable::sized(bytes)));
+            .map_or(options.default_keyspace(), |(_, keyspace)| keyspace);
+        tables.push((id, table_of(keyspace)));
         names.push((id, name.to_owned()));
     }
     (tables, Arc::from(names))
@@ -222,4 +227,59 @@ impl Flusher {
         std::iter::once((0, &self.keyspace))
             .chain(self.keyspaces.iter().map(|(id, options)| (*id, options)))
     }
+}
+
+/// The keyspaces `options` name that `version` does not hold; refuses options that leave out a
+/// keyspace it holds.
+pub(super) fn missing_keyspaces<'a>(
+    version: &Version,
+    options: &'a DbOptions,
+) -> Result<Vec<&'a str>> {
+    let named = |held: &str| options.keyspaces().iter().any(|(name, _)| name == held);
+    if version.keyspaces().any(|(_, held)| !named(held)) {
+        return Err(refused("it holds a keyspace the options do not name"));
+    }
+    Ok(options
+        .keyspaces()
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| !version.keyspaces().any(|(_, held)| held == *name))
+        .collect())
+}
+
+/// An open refused for `reason`.
+pub(super) fn refused(reason: &'static str) -> Error {
+    Error::InvalidArgument {
+        what: "opening a database",
+        reason,
+    }
+}
+
+/// Refuses options that leave out a keyspace the database holds, and adds the keyspaces they
+/// name that it does not hold when they ask for that, refusing them otherwise.
+pub(super) fn reconcile_keyspaces(manifest: &mut ManifestStore, options: &DbOptions) -> Result<()> {
+    let version = manifest.version();
+    let missing = missing_keyspaces(&version, options)?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    if !options.create_missing_keyspaces() {
+        return Err(refused("the options name a keyspace it does not hold"));
+    }
+    let mut next = version.next_keyspace().max(1);
+    let mut added = Vec::with_capacity(missing.len());
+    for name in missing {
+        added.push(KeyspaceRecord {
+            id: next,
+            name: name.to_owned(),
+        });
+        next = next
+            .checked_add(1)
+            .ok_or_else(|| refused("its keyspace ids are exhausted"))?;
+    }
+    manifest.append(&ManifestEdit {
+        added_keyspaces: added,
+        next_keyspace: Some(next),
+        ..ManifestEdit::default()
+    })
 }

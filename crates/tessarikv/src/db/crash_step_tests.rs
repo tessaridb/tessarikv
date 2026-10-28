@@ -22,10 +22,18 @@ const WRITES: u32 = 400;
 /// The keyspace beside the default one that flushes write as well.
 const USERS: &str = "users";
 
-/// Tiny memtables and a small manifest limit; with `compacting`, a level-0 trigger of two and small levels as well. The users
-/// keyspace is held either way and written only without `compacting`.
-fn options(compacting: bool) -> DbOptions {
+/// Tiny memtables and a small manifest limit; with `compacting`, a level-0 trigger of two and small levels as well; with
+/// `blobs`, every value in a blob file and every blob file emptied by the compaction passing it. The users keyspace is
+/// held either way and written only without `compacting`.
+fn options(compacting: bool, blobs: bool) -> DbOptions {
     let keyspace = KeyspaceOptions::builder().memtable_bytes(64 * 1024);
+    let keyspace = if blobs {
+        keyspace
+            .blob_threshold(1024)
+            .blob_gc_age_cutoff_percent(100)
+    } else {
+        keyspace
+    };
     let keyspace = if compacting {
         keyspace
             .level0_compaction_trigger(2)
@@ -48,8 +56,8 @@ fn options(compacting: bool) -> DbOptions {
         .expect("valid")
 }
 
-async fn open(storage: &FaultStorage, compacting: bool) -> Db {
-    Db::open_with_storage(PATH, options(compacting), Arc::new(storage.clone()))
+async fn open(storage: &FaultStorage, compacting: bool, blobs: bool) -> Db {
+    Db::open_with_storage(PATH, options(compacting, blobs), Arc::new(storage.clone()))
         .await
         .expect("opened")
 }
@@ -105,9 +113,9 @@ async fn prefix(db: &Db, keyspace: KeyspaceId, step: &str) -> u32 {
 
 /// Reopens `image` and checks that every written keyspace holds the same prefix of the writes,
 /// covering every write acknowledged before the image was taken.
-async fn check(image: CrashImage, compacting: bool) {
+async fn check(image: CrashImage, compacting: bool, blobs: bool) {
     let step = &image.step;
-    let db = Db::open_with_storage(PATH, options(compacting), Arc::new(image.storage))
+    let db = Db::open_with_storage(PATH, options(compacting, blobs), Arc::new(image.storage))
         .await
         .unwrap_or_else(|error| panic!("{step}: reopen failed: {error}"));
     let mut keyspaces = written(&db, compacting).into_iter();
@@ -130,9 +138,9 @@ async fn check(image: CrashImage, compacting: bool) {
 
 /// Writes with crash images captured at every durable step, then checks every image; returns
 /// the steps crashed at.
-async fn crash_everywhere(compacting: bool) -> Vec<String> {
+async fn crash_everywhere(compacting: bool, blobs: bool) -> Vec<String> {
     let storage = FaultStorage::default();
-    let db = open(&storage, compacting).await;
+    let db = open(&storage, compacting, blobs).await;
     let acknowledged = Arc::new(AtomicU64::new(0));
     storage.capture_steps(Path::new(PATH), Arc::clone(&acknowledged));
     write_counting(&db, &written(&db, compacting), &acknowledged).await;
@@ -151,14 +159,14 @@ async fn crash_everywhere(compacting: bool) -> Vec<String> {
     let images = storage.take_images();
     let steps: Vec<String> = images.iter().map(|image| image.step.clone()).collect();
     for image in images {
-        check(image, compacting).await;
+        check(image, compacting, blobs).await;
     }
     steps
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_crash_at_any_install_step_keeps_every_acknowledged_write() {
-    let steps = crash_everywhere(false).await;
+    let steps = crash_everywhere(false, false).await;
     // Every install step was crashed at.
     for (step, file) in [
         ("before syncing", ".sst"),
@@ -181,11 +189,31 @@ async fn a_crash_at_any_install_step_keeps_every_acknowledged_write() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_crash_at_any_compaction_step_keeps_every_acknowledged_write() {
-    let steps = crash_everywhere(true).await;
+    let steps = crash_everywhere(true, false).await;
     assert!(
         steps
             .iter()
             .any(|taken| taken.starts_with("removed") && taken.contains(".sst")),
         "no image after a compaction removed an input table"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crash_at_any_step_of_a_store_with_blob_files_keeps_every_acknowledged_write() {
+    let steps = crash_everywhere(false, true).await;
+    for step in ["before syncing", "after syncing"] {
+        assert!(
+            steps
+                .iter()
+                .any(|taken| taken.starts_with(step) && taken.contains(".blob")),
+            "no image {step} a blob file"
+        );
+    }
+    let steps = crash_everywhere(true, true).await;
+    assert!(
+        steps
+            .iter()
+            .any(|taken| taken.starts_with("removed") && taken.contains(".blob")),
+        "no image after a compaction removed an emptied blob file"
     );
 }

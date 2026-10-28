@@ -1,8 +1,11 @@
 //! The builder of [`KeyspaceOptions`]: every field settable, checked once by `build()`.
 
+use std::sync::Arc;
+
 use tessarikv_format::Compression;
 
 use super::compaction::CompactionStyle;
+use super::compaction_filter::{CompactionFilter, FilterHandle};
 use super::keyspace::KeyspaceOptions;
 use super::keyspace_bounds::validate;
 use crate::Result;
@@ -45,6 +48,13 @@ impl KeyspaceOptionsBuilder {
         self
     }
 
+    /// Sets [`KeyspaceOptions::filter_policy`]: table files written from then on keep that kind
+    /// of filter, and tables already written keep theirs.
+    pub const fn filter_policy(mut self, value: tessarikv_format::FilterPolicy) -> Self {
+        self.options.filter_policy = value;
+        self
+    }
+
     /// Sets [`KeyspaceOptions::level0_compaction_trigger`].
     pub const fn level0_compaction_trigger(mut self, value: u32) -> Self {
         self.options.level0_compaction_trigger = value;
@@ -66,6 +76,12 @@ impl KeyspaceOptionsBuilder {
     /// Sets [`KeyspaceOptions::max_compactions`].
     pub const fn max_compactions(mut self, value: u32) -> Self {
         self.options.max_compactions = value;
+        self
+    }
+
+    /// Sets [`KeyspaceOptions::compaction_filter`].
+    pub fn compaction_filter(mut self, filter: Arc<dyn CompactionFilter>) -> Self {
+        self.options.compaction_filter = Some(FilterHandle(filter));
         self
     }
 

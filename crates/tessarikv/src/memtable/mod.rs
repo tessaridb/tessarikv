@@ -22,6 +22,7 @@ mod tests;
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use tessarikv_format::key_hash;
 use tessarikv_sync::{ArenaError, ConcurrentBloom, KeyComparator, SkipList};
@@ -30,10 +31,14 @@ use tessarikv_types::{
     seek_trailer,
 };
 
+use crate::MergeOperator;
+use crate::expiry::{Seen, seen};
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
 
 pub(crate) use iter::{MemtableCursor, MemtableEntry, MemtableIter};
+
+mod operands;
 
 /// Orders encoded internal keys: user key ascending, then newest version first.
 pub(crate) struct InternalKeyComparator;
@@ -58,6 +63,9 @@ pub(crate) enum Lookup<'a> {
     Deleted,
     /// No version is visible here: older tables decide.
     Absent,
+    /// The newest visible version is a merge operand: the key's versions are read together
+    /// (see [`Memtable::versions`]).
+    Operand,
 }
 
 /// See the module documentation.
@@ -69,6 +77,8 @@ pub(crate) struct Memtable {
     keys: ConcurrentBloom,
     /// The bytes it holds before it is frozen: its keyspace's in-memory table size.
     budget: u64,
+    /// Its keyspace's merge operator, passed to its successors (see `operands`).
+    operator: Option<Arc<dyn MergeOperator>>,
 }
 
 /// Table bytes per filter bit: about 1.5 % of the table, some 19 bits per 150-byte entry.
@@ -89,7 +99,7 @@ impl Memtable {
 
     /// An empty table of this one's size and filter, to take its place.
     pub(crate) fn successor(&self) -> Self {
-        Self::with(self.keys.bits(), self.budget)
+        Self::with(self.keys.bits(), self.budget).with_operator(self.operator.clone())
     }
 
     fn with(bits: usize, budget: u64) -> Self {
@@ -98,6 +108,7 @@ impl Memtable {
             range_deletes: SkipList::new(InternalKeyComparator),
             keys: ConcurrentBloom::new(bits),
             budget,
+            operator: None,
         }
     }
 
@@ -120,9 +131,17 @@ impl Memtable {
         value: &[u8],
     ) -> Result<()> {
         let (list, value) = match kind {
-            ValueKind::Value => (&self.entries, value),
+            ValueKind::Value | ValueKind::ExpiringValue | ValueKind::Merge => {
+                (&self.entries, value)
+            }
             ValueKind::Delete => (&self.entries, &[][..]),
             ValueKind::RangeDelete => (&self.range_deletes, value),
+            // Values move to blob files only when tables are written.
+            ValueKind::BlobIndex => {
+                return Err(Error::Memtable {
+                    reason: "a blob index never enters an in-memory table",
+                });
+            }
         };
         if kind != ValueKind::RangeDelete {
             // Before the entry is linked: see the module documentation.
@@ -169,9 +188,14 @@ impl Memtable {
             return Lookup::Deleted;
         }
         match found.trailer().kind() {
-            Ok(ValueKind::Value) => Lookup::Value(cursor.value()),
-            Ok(ValueKind::Delete) => Lookup::Deleted,
             Ok(ValueKind::RangeDelete) | Err(_) => Lookup::Absent,
+            Ok(kind) => match seen(kind, cursor.value()) {
+                Seen::Value(value) => Lookup::Value(value),
+                Seen::Absent => Lookup::Deleted,
+                Seen::Operand(_) => Lookup::Operand,
+                // Never inserted: a batch holding one is refused when it is decoded.
+                Seen::Malformed => Lookup::Absent,
+            },
         }
     }
 

@@ -22,10 +22,16 @@ use super::compaction::Compactions;
 use super::compaction::manual::Request;
 use super::installer::Flusher;
 use super::view::View;
-use crate::memtable::Memtable;
 use crate::options::DEFAULT_NAME;
 use crate::version::Version;
 use crate::{Error, KeyspaceOptions, Result};
+
+mod ingest;
+
+pub(super) use ingest::{Ingest, Ingesting};
+mod set_options;
+
+pub(crate) use set_options::SetOptions;
 
 /// What the installer is asked to do.
 pub(crate) enum Command {
@@ -38,6 +44,13 @@ pub(crate) enum Command {
     /// Hand over the version and the view naming the same table files (see
     /// [`crate::Db::checkpoint`]).
     Checkpoint(oneshot::Sender<Pinned>),
+    /// Answer once no flush or compaction is running, queued or due (see
+    /// [`crate::Db::wait_for_compact`]).
+    Idle(oneshot::Sender<()>),
+    /// Replace a keyspace's options (see [`crate::Db::set_keyspace_options`]).
+    SetOptions(SetOptions),
+    /// Add tables built outside the database (see [`crate::Db::ingest`]).
+    Ingest(Ingest),
 }
 
 /// A version and the view naming its table files; the view keeps them from removal while held.
@@ -155,7 +168,7 @@ async fn created(flusher: &mut Flusher, create: Create) -> Result<bool> {
         },
     )
     .await?;
-    let table = Memtable::sized(options.memtable_bytes());
+    let table = super::keyspaces::table_of(&options);
     flusher.keyspaces.push((id, options));
     let current = flusher.view.load_full();
     flusher

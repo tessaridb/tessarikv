@@ -9,6 +9,7 @@
 //! so compaction catches up, or holding them until an install relieves the keyspace concerned. A
 //! failed flush or compaction is published once and refuses every later write.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,10 @@ use super::pressure::{Load, Pressure};
 use super::rate_limiter::RateLimiter;
 use super::view::View;
 use crate::memtable::Memtable;
+use crate::options::Reporter;
 use crate::{Error, Result};
+
+mod reports;
 
 /// Requests, wake-ups and the failure flag shared by writers and the installer.
 pub(super) struct FlushSignals {
@@ -46,6 +50,10 @@ pub(super) struct FlushSignals {
     delay: Option<RateLimiter>,
     /// What the levels ask of writers, as a [`Pressure`] code, published by the installer.
     pressure: AtomicU8,
+    /// What compaction owes each keyspace, by keyspace id, as of the installer's last step.
+    owed: ArcSwap<Vec<(u32, u64)>>,
+    /// Told when the pressure changes and when the installer fails.
+    events: Option<Arc<Reporter>>,
     /// The most compaction has owed, for tests to read.
     #[cfg(test)]
     peak_owed: AtomicU64,
@@ -76,6 +84,8 @@ impl FlushSignals {
             total_bytes,
             delay: RateLimiter::new(delayed_writes, SLOWDOWN_BURST),
             pressure: AtomicU8::new(Pressure::None.code()),
+            owed: ArcSwap::from_pointee(Vec::new()),
+            events: None,
             #[cfg(test)]
             peak_owed: AtomicU64::new(0),
         }
@@ -199,6 +209,9 @@ impl FlushSignals {
         let code = load.pressure.code();
         let before = self.pressure.swap(code, Ordering::Relaxed);
         if before != code {
+            if let Some(events) = &self.events {
+                events.listener().stall_changed(load.pressure.condition());
+            }
             self.installed.notify_waiters();
         }
         #[cfg(test)]
@@ -244,6 +257,9 @@ impl FlushSignals {
         };
         // Release: writers that see the flag see the failure's effects.
         self.failed.store(failure, Ordering::Release);
+        if let Some(events) = &self.events {
+            events.background_error(error);
+        }
         self.installed.notify_waiters();
     }
 

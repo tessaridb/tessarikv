@@ -34,6 +34,7 @@ impl Db {
         start: &[u8],
         end: Option<&[u8]>,
     ) -> Result<()> {
+        self.refuse_read_only("a compaction")?;
         self.check_keyspace(keyspace)?;
         let Some(installer) = &self.installer else {
             return Ok(());
@@ -54,5 +55,31 @@ impl Db {
             .await
             .map_err(|_| stopped())?;
         outcome.await.map_err(|_| stopped())?
+    }
+
+    /// Waits until the database has no flush or compaction running, queued or due: every
+    /// compaction its levels call for has run, and the last of them left nothing more to do.
+    /// Writes and reads go on meanwhile, and a write that fills a table may start more work,
+    /// which the wait then covers too. A database in memory returns at once.
+    ///
+    /// A compaction that keeps failing keeps the wait going, as it runs again after its back-off;
+    /// bound the wait with a timeout where that matters.
+    ///
+    /// # Errors
+    ///
+    /// The error that stopped the background work, when the database stopped while waiting, and
+    /// [`Error::Closed`] when it was closed.
+    pub async fn wait_for_compact(&self) -> Result<()> {
+        let Some(installer) = &self.installer else {
+            return Ok(());
+        };
+        let (reply, idle) = tokio::sync::oneshot::channel();
+        let stopped = || installer.signals.failure().unwrap_or(Error::Closed);
+        installer
+            .requests
+            .send(Command::Idle(reply))
+            .await
+            .map_err(|_| stopped())?;
+        idle.await.map_err(|_| stopped())
     }
 }

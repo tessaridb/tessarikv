@@ -98,6 +98,25 @@ fn a_store_written_before_the_format_was_recorded_opens() {
 }
 
 #[test]
+fn a_store_of_every_earlier_format_opens() {
+    for earlier in 1..STORE_FORMAT {
+        let storage = MemoryStorage::new();
+        write_manifest(
+            &storage,
+            &[encoded(&ManifestEdit {
+                store_format: Some(earlier),
+                next_file: Some(7),
+                ..ManifestEdit::default()
+            })],
+        );
+        let (version, _) = ManifestStore::recover(&storage, dir(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(version.next_file(), 7, "format {earlier}");
+    }
+}
+
+#[test]
 fn a_manifest_holding_no_edit_is_corruption_not_an_empty_store() {
     let storage = MemoryStorage::new();
     write_manifest(&storage, &[]);

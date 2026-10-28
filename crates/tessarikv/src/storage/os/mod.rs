@@ -8,8 +8,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{ReadableFile, Storage, StorageLock, WritableFile};
-use flush::{full_sync, sync_directory};
+use super::{FileSyncer, ReadableFile, Storage, StorageLock, WritableFile};
+use flush::{SYNCS_OVERLAP, full_sync, sync_directory};
 use positional::read_exact_at;
 
 mod flush;
@@ -27,8 +27,10 @@ impl Storage for OsStorage {
     fn create(&self, path: &Path) -> Result<Box<dyn WritableFile>> {
         let file = File::create(path).map_err(|error| Error::io("create", path, error))?;
         Ok(Box::new(OsWritable {
-            file,
-            path: path.to_path_buf(),
+            file: Arc::new(OsSyncer {
+                file,
+                path: path.to_path_buf(),
+            }),
             len: 0,
         }))
     }
@@ -100,17 +102,29 @@ impl Storage for OsStorage {
     }
 }
 
-struct OsWritable {
+/// The writer's open file, shared with the syncers it hands out: every sync goes through the same
+/// open file description as the appends, so a failed write-back is reported to one of them.
+struct OsSyncer {
     file: File,
     path: PathBuf,
+}
+
+impl FileSyncer for OsSyncer {
+    fn sync(&self) -> Result<()> {
+        full_sync(&self.file).map_err(|error| Error::io("sync", &self.path, error))
+    }
+}
+
+struct OsWritable {
+    file: Arc<OsSyncer>,
     len: u64,
 }
 
 impl WritableFile for OsWritable {
     fn append(&mut self, data: &[u8]) -> Result<()> {
-        self.file
+        (&self.file.file)
             .write_all(data)
-            .map_err(|error| Error::io("write", &self.path, error))?;
+            .map_err(|error| Error::io("write", &self.file.path, error))?;
         // A slice length always fits a u64 on supported targets; saturate rather than wrap.
         let added = u64::try_from(data.len()).unwrap_or(u64::MAX);
         self.len = self.len.saturating_add(added);
@@ -118,11 +132,16 @@ impl WritableFile for OsWritable {
     }
 
     fn sync(&mut self) -> Result<()> {
-        full_sync(&self.file).map_err(|error| Error::io("sync", &self.path, error))
+        self.file.sync()
     }
 
     fn len(&self) -> u64 {
         self.len
+    }
+
+    fn syncer(&self) -> Option<Arc<dyn FileSyncer>> {
+        let syncer: Arc<dyn FileSyncer> = self.file.clone();
+        SYNCS_OVERLAP.then_some(syncer)
     }
 }
 
@@ -147,8 +166,30 @@ impl ReadableFile for OsReadable {
         }
     }
 
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+    fn read_vec_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        match positional::read_vec_at(&self.file, offset, len) {
+            Ok(buf) => Ok(buf),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                let wanted = u64::try_from(len).unwrap_or(u64::MAX);
+                Err(Error::ShortRead {
+                    path: self.path.clone(),
+                    requested_end: offset.saturating_add(wanted),
+                    available: self.len()?,
+                })
+            }
+            Err(error) => Err(Error::io("read", &self.path, error)),
+        }
+    }
+
     fn try_read_at(&self, offset: u64, buf: &mut [u8]) -> Result<bool> {
         Ok(positional::read_exact_at_nowait(&self.file, offset, buf))
+    }
+
+    /// No read here promises not to wait: answer without allocating a buffer for nothing.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    fn try_read_vec_at(&self, _offset: u64, _len: usize) -> Result<Option<Vec<u8>>> {
+        Ok(None)
     }
 
     fn len(&self) -> Result<u64> {

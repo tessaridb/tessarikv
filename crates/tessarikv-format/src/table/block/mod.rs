@@ -127,7 +127,9 @@ impl BlockBuilder {
 /// A decoded block, ready to be searched. Cloning it shares its bytes.
 #[derive(Debug, Clone)]
 pub struct Block {
-    bytes: Arc<[u8]>,
+    /// The buffer the block was decoded from, kept as it is: a block read from a file is the
+    /// read's own buffer, never a copy of it.
+    bytes: Arc<Vec<u8>>,
     /// Where the entries end and the restart array begins.
     entries_end: usize,
     restart_count: usize,
@@ -182,7 +184,7 @@ impl Block {
             return Err(malformed("the first restart point is not the first entry"));
         }
         Ok(Self {
-            bytes: bytes.into(),
+            bytes: Arc::new(bytes),
             entries_end,
             restart_count,
             compare,

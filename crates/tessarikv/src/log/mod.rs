@@ -23,13 +23,23 @@
 //! nothing later. The segment being written is never removed.
 
 mod frame;
+mod gather;
+mod progress;
 mod segments;
+mod slot;
+mod syncs;
 mod writer;
 
 #[cfg(test)]
 pub(crate) mod fault;
 #[cfg(test)]
+mod gather_tests;
+#[cfg(test)]
+mod overlap_tests;
+#[cfg(test)]
 mod release_tests;
+#[cfg(test)]
+mod segments_tests;
 #[cfg(test)]
 mod sync_gate;
 #[cfg(test)]
@@ -48,8 +58,10 @@ use crate::storage::{Storage, StorageLock};
 use crate::{Error, Result};
 
 pub(crate) use frame::Frame;
+use progress::Progress;
+pub(crate) use slot::{OwnedSlot, Slot};
 pub(crate) use writer::LogRelease;
-use writer::{Progress, Released, Writer};
+use writer::{Released, Writer};
 
 /// The file of segment `log_number` in `dir`.
 pub(crate) fn segment_path(dir: &Path, log_number: u64) -> PathBuf {
@@ -96,27 +108,6 @@ struct Entry {
     durable: bool,
 }
 
-/// A reserved place in the queue to the log writer.
-pub(crate) struct Slot<'a>(mpsc::Permit<'a, Entry>);
-
-impl Slot<'_> {
-    /// Hands sequences `first..=last` and their record to the log writer, without waiting.
-    /// Returns what the writer should then wait for, if anything.
-    pub(crate) fn send(self, first: u64, last: u64, record: Record) -> Option<Wait> {
-        let (frame, wait) = match record {
-            Record::Frame { frame, wait } => (Some(frame), Some(wait)),
-            Record::Skip => (None, None),
-        };
-        self.0.send(Entry {
-            first,
-            last,
-            frame,
-            durable: wait == Some(Wait::Durable),
-        });
-        wait
-    }
-}
-
 /// The handle writers append through; the log writer task runs until it is closed.
 pub(crate) struct LogWriter {
     entries: mpsc::Sender<Entry>,
@@ -136,6 +127,10 @@ pub(crate) struct LogExtras {
     /// The directory lock, held until the writer task ends, which is after the handle is
     /// dropped: the frames already queued are still written.
     pub(crate) lock: Option<Arc<dyn StorageLock>>,
+    pub(crate) events: Option<Arc<crate::options::Reporter>>,
+    /// How long a sync made one at a time may wait for the writers the last one released;
+    /// [`tessarikv_constants::LOG_SYNC_GATHER_MICROS`] when `None`.
+    pub(crate) gather: Option<std::time::Duration>,
 }
 
 impl LogWriter {
@@ -162,6 +157,8 @@ impl LogWriter {
             seal,
             statistics,
             lock,
+            events,
+            gather,
         } = extras;
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Unsupported {
             what: "a database outside a tokio runtime",
@@ -179,7 +176,12 @@ impl LogWriter {
             Arc::clone(&released),
         )
         .with_seal_header(seal.as_ref().map(|(header, _)| header.encode()))
-        .with_statistics(statistics);
+        .with_statistics(statistics)
+        .with_events(events);
+        let writer = match gather {
+            Some(window) => writer.with_gather(window),
+            None => writer,
+        };
         let task = runtime.spawn(async move {
             let _held = lock;
             writer.run(receiver, publisher).await

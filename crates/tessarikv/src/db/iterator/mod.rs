@@ -2,11 +2,13 @@
 //! direction.
 
 mod backward;
+mod operands;
+#[cfg(test)]
+mod prefix_tests;
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
-use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
+use tessarikv_types::{KeyspaceId, SequenceNumber};
 
 use super::Db;
 use super::level_versions::{LevelVersions, Span};
@@ -14,9 +16,11 @@ use super::merge::{MergedVersions, Source};
 use super::snapshot::Snapshot;
 use super::table_versions::TableVersions;
 use super::view::View;
+use crate::db::read::operands::operator_of;
+use crate::expiry::{Seen, malformed, seen, written_value};
 use crate::memtable::MemtableCursor;
 use crate::tombstones::Deletions;
-use crate::{ReadOptions, Result};
+use crate::{MergeOperator, ReadOptions, Result};
 
 /// A walk over the live keys of one keyspace, in key order forward or backward, at one
 /// snapshot and inside the bounds of its [`ReadOptions`]. A deleted key is not shown.
@@ -69,6 +73,9 @@ pub struct DbIterator<'a> {
     /// Walking backward: the merge is already before the current key, whose value is `saved`.
     backward: bool,
     saved: Vec<u8>,
+    /// The keyspace and its merge operator; `merged` while the current value is in `saved`.
+    merging: (u32, Option<Arc<dyn MergeOperator>>),
+    merged: bool,
     /// The snapshot's registration, when the iterator took its own.
     _snapshot: Option<Snapshot<'a>>,
 }
@@ -98,7 +105,7 @@ impl Db {
 
 impl<'a> DbIterator<'a> {
     pub(super) fn new(
-        view: &View,
+        view: &Arc<View>,
         keyspace: KeyspaceId,
         snapshot: SequenceNumber,
         options: &ReadOptions,
@@ -110,21 +117,20 @@ impl<'a> DbIterator<'a> {
             low: options.lower_bound.as_deref(),
             high: options.upper_bound.as_deref(),
         };
-        let (level_zero, levels) = view.runs(keyspace.get());
+        let (level_zero, _) = view.runs(keyspace.get());
         let sources = view
             .shared_memtables(keyspace.get())
             .map(|table| Source::Shared(MemtableCursor::new(Arc::clone(table))))
             .chain(
                 level_zero
                     .iter()
-                    .filter(|file| span.touches(file))
+                    .filter(|file| span.admits(file))
                     .map(|file| {
                         let versions = TableVersions::new(file, options.fill_cache);
                         Source::Table(Box::new(versions))
                     }),
             )
-            .chain(levels.map(|level| {
-                let files = Cow::Owned(span.within(level).to_vec());
+            .chain(span.levels_of(view, keyspace.get()).map(|files| {
                 Source::Level(Box::new(LevelVersions::new(files, options.fill_cache)))
             }))
             .collect();
@@ -138,6 +144,8 @@ impl<'a> DbIterator<'a> {
             valid: false,
             backward: false,
             saved: Vec::new(),
+            merging: (keyspace.get(), operator_of(view, keyspace.get())),
+            merged: false,
             _snapshot: registration,
         })
     }
@@ -158,10 +166,12 @@ impl<'a> DbIterator<'a> {
         if !self.valid {
             return &[];
         }
-        if self.backward {
+        if self.backward || self.merged {
             return &self.saved;
         }
-        self.versions.entry().map_or(&[], |version| version.value)
+        self.versions
+            .entry()
+            .map_or(&[], |version| written_value(version.kind, version.value))
     }
 
     /// Moves to the least key, or to the lower bound.
@@ -228,6 +238,7 @@ impl<'a> DbIterator<'a> {
     /// versions of the current key are passed over: it has been decided.
     async fn settle(&mut self, mut skipping: bool) -> Result<()> {
         self.valid = false;
+        self.merged = false;
         while let Some(version) = self.versions.entry() {
             if self
                 .upper
@@ -242,9 +253,19 @@ impl<'a> DbIterator<'a> {
             if !passed {
                 self.key.clear();
                 self.key.extend_from_slice(version.user_key);
-                if version.kind == ValueKind::Value
-                    && !self.fragments.deletes(version.user_key, version.sequence)
-                {
+                let (live, operand) = match seen(version.kind, version.value) {
+                    Seen::Value(_) => (true, false),
+                    Seen::Absent => (false, false),
+                    Seen::Operand(_) => (true, true),
+                    Seen::Malformed => {
+                        self.key.clear();
+                        return Err(malformed());
+                    }
+                };
+                if live && !self.fragments.deletes(version.user_key, version.sequence) {
+                    if operand {
+                        self.merge_here().await?;
+                    }
                     self.valid = true;
                     break;
                 }

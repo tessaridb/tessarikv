@@ -24,6 +24,7 @@ fn keyspace_defaults_are_the_documented_constants() {
         options.bloom_bits_per_key(),
         limits::DEFAULT_BLOOM_BITS_PER_KEY
     );
+    assert_eq!(options.prefix_length(), None, "no prefix filter");
     assert_eq!(
         options.level0_compaction_trigger(),
         limits::DEFAULT_LEVEL0_COMPACTION_TRIGGER
@@ -54,7 +55,7 @@ fn keyspace_defaults_are_the_documented_constants() {
 
 #[test]
 fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
-    let edges: [Edge<KeyspaceOptions>; 13] = [
+    let edges: [Edge<KeyspaceOptions>; 14] = [
         (
             "keyspace.memtable_bytes",
             limits::MIN_MEMTABLE_BYTES,
@@ -94,6 +95,16 @@ fn keyspace_bounds_accept_the_edges_and_refuse_past_them() {
             |value| {
                 KeyspaceOptions::builder()
                     .bloom_bits_per_key(narrow(value))
+                    .build()
+            },
+        ),
+        (
+            "keyspace.prefix_length",
+            1,
+            u64::from(limits::MAX_PREFIX_LENGTH),
+            |value| {
+                KeyspaceOptions::builder()
+                    .prefix_length(narrow(value))
                     .build()
             },
         ),

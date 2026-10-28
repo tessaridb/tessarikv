@@ -12,7 +12,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::block::{Block, Compare};
-use super::handle::{BlockHandle, read_block, unseal};
+use super::handle::{BlockHandle, read_block};
+use super::unseal::{unseal, unseal_owned};
 use crate::error::{Error, Result};
 use crate::seal::FileSealer;
 
@@ -42,6 +43,21 @@ pub fn unseal_block(
     compare: Compare,
 ) -> Result<Block> {
     Block::new(unseal(sealed, at, sealer)?, compare)
+}
+
+/// As [`unseal_block`], taking the sealed block as a buffer of its own, as a read from a file
+/// returns it: a block stored uncompressed becomes the block in place, without a copy.
+///
+/// # Errors
+///
+/// As [`unseal_block`].
+pub fn unseal_block_owned(
+    sealed: Vec<u8>,
+    at: u64,
+    sealer: Option<&FileSealer>,
+    compare: Compare,
+) -> Result<Block> {
+    Block::new(unseal_owned(sealed, at, sealer)?, compare)
 }
 
 /// Why a table could not be opened through reads.

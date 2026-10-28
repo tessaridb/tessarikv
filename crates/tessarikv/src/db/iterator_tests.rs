@@ -71,7 +71,7 @@ proptest! {
     ) {
         let first = 1 + cuts.0.index(ops.len() - 2);
         let second = first + 1 + cuts.1.index(ops.len() - first - 1);
-        let view = view(&ops, first, second, flushed, capacity);
+        let view = Arc::new(view(&ops, first, second, flushed, capacity));
         let lower = bounds.0.map(|key| user_key(key).to_vec());
         let upper = bounds.1.map(|key| user_key(key).to_vec());
         let options = ReadOptions {
@@ -186,7 +186,7 @@ proptest! {
     ) {
         let first = 1 + cuts.0.index(ops.len() - 2);
         let second = first + 1 + cuts.1.index(ops.len() - first - 1);
-        let view = view(&ops, first, second, flushed, capacity);
+        let view = Arc::new(view(&ops, first, second, flushed, capacity));
         let lower = bounds.0.map(|key| user_key(key).to_vec());
         let upper = bounds.1.map(|key| user_key(key).to_vec());
         let options = ReadOptions {

@@ -250,3 +250,35 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_block_keeps_the_buffer_it_was_decoded_from() {
+    let bytes = build(&sample(), 4).bytes.to_vec();
+    let range = bytes.as_ptr_range();
+    let block = Block::new(bytes, bytewise).expect("a block");
+    let mut iter = block.iter();
+    iter.seek_to_first();
+    assert!(
+        range.contains(&iter.value().as_ptr()),
+        "the value lies in the original buffer"
+    );
+}
+
+#[test]
+fn a_restart_entry_that_shares_a_prefix_is_reported_by_a_seek() {
+    let model: BTreeMap<Vec<u8>, Vec<u8>> =
+        (0..6_u8).map(|key| (vec![b'k', key], vec![key])).collect();
+    let mut bytes = build(&model, 2).bytes.to_vec();
+    // The second restart point's entry claims to share a byte with a key it does not follow.
+    let restarts = bytes.len() - 4 - 3 * 4;
+    let second = usize::try_from(u32::from_le_bytes(
+        bytes[restarts + 4..restarts + 8].try_into().unwrap(),
+    ))
+    .unwrap();
+    bytes[second] = 1;
+    let block = Block::new(bytes, bytewise).expect("the trailer is intact");
+    let mut iter = block.iter();
+    iter.seek(&[b'k', 5]);
+    assert!(!iter.valid());
+    assert!(matches!(iter.status(), Err(Error::Malformed { .. })));
+}

@@ -6,6 +6,92 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-30
+
+### Added
+
+- `Db::changed_options` and `OptionChange`: each option an open runs with whose recorded value differs from the
+  previous open's options record, compared as text; empty in memory, read-only, or when nothing changed.
+- `ReadableFile::read_vec_at` and `ReadableFile::try_read_vec_at` read a block into a buffer of its own. Their
+  defaults use `read_at` and `try_read_at`; the OS storage reads into memory that is not zeroed first.
+- `WritableFile::syncer` and the `FileSyncer` trait: a handle that syncs a file from another thread while appends
+  go on. The default is `None`, and the log then syncs as before.
+- `WriteBatch::put_expiring`: a put that reads as absent from the time it names on, hiding the older versions of
+  its key as a delete would; compaction writes it out as a delete once that time has passed.
+- `CompactionFilter`, `FilterDecision` and `KeyspaceOptionsBuilder::compaction_filter`: compaction asks a
+  keyspace's filter about the newest value of each key it writes that no held snapshot can read, and a removed value
+  becomes a delete at its version. The options record names the filter.
+- `Db::properties` and `KeyspaceProperties`: a keyspace's files and bytes per level, the bytes compaction owes, an
+  estimate of its live bytes and its in-memory table bytes, read without walking the table files.
+- `EventListener` and `DbOptionsBuilder::event_listener`: the engine reports flushes and compactions once installed
+  (`FlushCompleted`, `CompactionCompleted`), each change of what it asks of writers (`StallCondition`), and, once,
+  the failure that stops the database.
+- `DbOptionsBuilder::block_reads_on_worker`: whether a block missing from the cache is read on the reading task's own
+  thread. On by default — a read of many tasks keeps a short tail (p99.9 about 9× lower at 16 readers) — at the cost
+  of holding the worker for a device read; off hands such reads to the runtime as before.
+- `KeyspaceOptionsBuilder::prefix_length`: tables of the keyspace keep a second filter over the first bytes of their
+  keys, and a scan or iterator whose bounds lie inside one such prefix passes over every table that holds none of
+  it (about 10× more scans of an absent prefix over 19 level-0 tables). Reads spanning prefixes read as before.
+  `Table::may_hold_prefix_range` answers for one table; a table written before this filter existed has none and is
+  read as before.
+- `KeyspaceOptionsBuilder::blob_threshold` and `blob_gc_age_cutoff_percent`: values at least that large move to blob
+  files when tables are written, and the table keeps a 24-byte index to each, so compaction moves the index instead of
+  the value (writes to tables and blob files fell from 3.9× to 1.3× the bytes written, 4 KiB values overwritten
+  three times). Compaction moves the values of the oldest blob files into new ones as it passes them, and a blob file
+  is removed once no table refers to it. Checkpoints, `Db::destroy` and `Db::verify_checksums` cover blob files;
+  `Table::blob_files` names those a table refers to.
+- `Transaction::get_for_update`: a read that holds its key for the commit — a write to it committed after the
+  transaction began refuses the commit with `Conflict`, as for a key the transaction writes. Nothing waits.
+- `WriteBatch::single_delete`: the delete of a key put exactly once; it reads as a delete.
+- `Db::wait_for_compact`: returns once no flush or compaction is running, queued or due.
+- `WriteBatch::merge`, `MergeOperator` and `KeyspaceOptionsBuilder::merge_operator`: a merge adds an operand to a
+  key, and every read combines the operands above the key's last put or delete through the keyspace's operator.
+  A merge to a keyspace without one is refused; operands the operator cannot combine read as `Error::MergeFailed`
+  (code `merge_failed`).
+- `Db::set_keyspace_options`: replaces a keyspace's options while the database runs; work starting afterwards
+  follows them. A change of compaction style or of in-memory table sizes is refused.
+- `tessarikv-inspect`, a command-line tool: `manifest`, `table` and `scan` print a database's manifest, a table
+  file's entries and its live keys, changing no file.
+- `FilterPolicy` and `KeyspaceOptionsBuilder::filter_policy`: a keyspace's tables can keep a ribbon filter in place
+  of the bloom filter — at ten bits per key about three quarters of the bytes (7.6 bits per key) with 0.77 % of
+  absent keys passing against 0.99 %, at a higher cost to build. Tables already written keep their filter.
+- `TableWriter` and `Db::ingest`: tables of puts and deletes built outside a database are added to a keyspace
+  whole, at one new sequence number newer than every write that returned before and older than every write after;
+  they are checked first and written again under the keyspace's options. Writes made meanwhile return once it is done.
+- `Db::open_read_only`: opens a database without a lock and reads it as its files hold it, the batches in its
+  log included; it changes no file, and every change is refused with the new `Error::ReadOnly` (code `read_only`).
+
+### Changed
+
+- Where the log syncs one at a time (macOS, Windows), a sync waits up to 200 µs after the previous one for the
+  writers that sync released, so their next synced writes share it; a lone writer never waits. Synced writes from
+  2 to 8 writers on macOS are about 1.9× faster.
+- An iterator reads the table files of each level through the view it was created on instead of copying the
+  level's list, so creating one costs the same however many files a level holds; scans from many tasks at once scale
+  further (100-entry scans at 4 readers about 1.5× faster on a store of one million keys).
+- Opening a keyspace that holds tables below level 0 with `CompactionStyle::Fifo` is refused with
+  `Error::InvalidOptions` for `keyspace.compaction`: first-in-first-out compaction never removes those tables. Every
+  other change of compaction style between opens is allowed.
+- The store format is 4, the write batch encoding version 4 and the table format 4, for expiring puts, blob files,
+  merge operands and ribbon filters. Format 1 to 3 databases open and are stamped 4; releases before this one refuse
+  a format 4 database at open.
+- A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed
+  block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
+  Readers missing blocks of the same table file no longer contend on its open handle.
+- A `Durability::Buffered` write whose log frames fit the open segment is appended by the log task itself instead of
+  on a blocking thread; a write that syncs, starts a new segment or removes one is still handed over.
+- A point read builds the key it seeks in table files once, not once per file it consults, and a table seek copies
+  its target only when it has to wait for a block.
+- On Linux a `Durability::Sync` write that arrives while the log is syncing starts a sync of its own instead of
+  waiting for that one to finish; up to four run at once, and a write is acknowledged only after every earlier sync
+  succeeded. macOS and Windows keep one sync at a time.
+
+### Fixed
+
+- A table block that claims to decompress to more than any data block can hold (the largest block size plus one
+  entry with the largest key and value) is refused before anything is allocated; a crafted Zstandard or Deflate
+  block could otherwise make a read allocate up to 4 GiB.
+
 ## [0.1.2] - 2026-10-27
 
 ### Changed
@@ -247,7 +333,8 @@ The first release with a stable on-disk file format: a database written by 0.1.0
   `Db::keyspace` and `Db::keyspaces` look them up. Each keyspace flushes, compacts and paces writes by its own options; a batch spanning keyspaces is
   recovered whole or not at all.
 
-[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tessaridb/tessarikv/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/tessaridb/tessarikv/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/tessaridb/tessarikv/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/tessaridb/tessarikv/compare/v0.0.2...v0.1.0

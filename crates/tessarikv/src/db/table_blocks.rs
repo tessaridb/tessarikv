@@ -4,7 +4,9 @@
 //! A table's walk asks [`TableBlocks`] for each data block it reaches. A block in the cache is
 //! answered at once, on the caller's thread; a block that is not makes the walk wait, and the
 //! reader then calls [`TableBlocks::load`]. The block is read on the caller's thread when the
-//! storage can read it without blocking (memory, or a page the file system already holds).
+//! storage can read it without blocking (memory, or a page the file system already holds), and
+//! by default any other read too (see [`crate::DbOptions::block_reads_on_worker`]): a page-cache
+//! read then costs no thread hand-off, and a device read holds the worker for its latency.
 //! Otherwise a worker of a multi-thread runtime reads it in place after handing its other tasks
 //! to another thread, and any other caller hands the read to a blocking thread, so no task waits
 //! behind a device read. A hand-off read whose caller is dropped still finishes its one block on
@@ -14,19 +16,15 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tessarikv_constants::LEVELS;
 use tessarikv_format::{
     Block, BlockHandle, BlockSource, FileKind, FileSealer, OpenError, SEAL_HEADER_BYTES, Table,
-    TableIter, unseal_block,
+    TableIter, unseal_block_owned,
 };
 use tessarikv_types::compare_internal;
 
 use super::block_cache::{BlockCache, BlockKey};
-use super::flush_job::table_path;
 use super::tables::{format_error, user_key};
-use super::view::TableFile;
 use crate::storage::{ReadableFile, Storage};
-use crate::version::Version;
 use crate::{Error, Result};
 
 /// The data blocks of one open table file.
@@ -60,8 +58,9 @@ impl BlockSource for TableBlocks {
 impl TableBlocks {
     /// The block at `handle`, read from storage and verified, and kept in the cache unless
     /// `fill_cache` is false. A read the storage can make without blocking is made here, on the
-    /// caller's thread; any other is made in place on a multi-thread runtime's worker, and on a
-    /// blocking thread elsewhere.
+    /// caller's thread, and so is any other when the database reads blocks on its workers;
+    /// otherwise it is made in place on a multi-thread runtime's worker, and on a blocking thread
+    /// elsewhere.
     ///
     /// # Errors
     ///
@@ -74,8 +73,10 @@ impl TableBlocks {
     ) -> Result<Block> {
         let block = match self.read_inline(handle)? {
             Some(block) => block,
-            // A worker of a multi-thread runtime reads in place, its other tasks moving to another
-            // thread meanwhile; any other caller hands the read to a blocking thread.
+            // Read on this task's thread when the database asks for it; otherwise a worker of a
+            // multi-thread runtime reads in place, its other tasks moving to another thread
+            // meanwhile, and any other caller hands the read to a blocking thread.
+            None if self.cache.reads_on_worker() => self.read(handle)?,
             None if multi_thread() => tokio::task::block_in_place(|| self.read(handle))?,
             None => {
                 let blocks = Arc::clone(self);
@@ -124,37 +125,40 @@ impl TableBlocks {
 
     /// Reads and verifies the block at `handle`. Runs on a blocking thread.
     fn read(&self, handle: BlockHandle) -> Result<Block> {
-        let mut sealed = self.buffer(handle)?;
-        let file = match &self.file {
-            Some(file) => Arc::clone(file),
-            None => self.cache.file(self.id, &self.path)?,
+        let len = self.checked_len(handle)?;
+        // The kept handle is borrowed, not cloned: its count is shared by every reader of the file.
+        let sealed = match &self.file {
+            Some(file) => file.read_vec_at(handle.offset(), len)?,
+            None => self
+                .cache
+                .file(self.id, &self.path)?
+                .read_vec_at(handle.offset(), len)?,
         };
-        file.read_at(handle.offset(), &mut sealed)?;
-        self.unseal(handle, &sealed)
+        self.unseal(handle, sealed)
     }
 
     /// Reads and verifies the block at `handle` if the storage can do it without blocking;
     /// `None` when it cannot.
     fn read_inline(&self, handle: BlockHandle) -> Result<Option<Block>> {
-        // A file let go is opened again only where blocking is allowed.
-        let Some(file) = self
-            .file
-            .clone()
-            .or_else(|| self.cache.cached_file(self.id))
-        else {
+        let len = self.checked_len(handle)?;
+        let sealed = match &self.file {
+            Some(file) => file.try_read_vec_at(handle.offset(), len)?,
+            // A file let go is opened again only where blocking is allowed.
+            None => match self.cache.cached_file(self.id) {
+                Some(file) => file.try_read_vec_at(handle.offset(), len)?,
+                None => None,
+            },
+        };
+        let Some(sealed) = sealed else {
             return Ok(None);
         };
-        let mut sealed = self.buffer(handle)?;
-        if !file.try_read_at(handle.offset(), &mut sealed)? {
-            return Ok(None);
-        }
-        self.unseal(handle, &sealed).map(Some)
+        self.unseal(handle, sealed).map(Some)
     }
 
-    /// A buffer for the sealed block at `handle`. The handle comes from a verified index, but
+    /// The length of the sealed block at `handle`. The handle comes from a verified index, but
     /// the file is still untrusted: nothing is allocated for a block that does not fit inside it.
-    fn buffer(&self, handle: BlockHandle) -> Result<Vec<u8>> {
-        let size = handle
+    fn checked_len(&self, handle: BlockHandle) -> Result<usize> {
+        handle
             .offset()
             .checked_add(handle.size())
             .filter(|end| *end <= self.len)
@@ -164,12 +168,11 @@ impl TableBlocks {
                 path: Some(self.path.clone()),
                 offset: Some(handle.offset()),
                 detail: "a block handle points past the file".to_owned(),
-            })?;
-        Ok(vec![0; size])
+            })
     }
 
-    fn unseal(&self, handle: BlockHandle, sealed: &[u8]) -> Result<Block> {
-        unseal_block(
+    fn unseal(&self, handle: BlockHandle, sealed: Vec<u8>) -> Result<Block> {
+        unseal_block_owned(
             sealed,
             handle.offset(),
             self.sealer.as_deref(),
@@ -187,7 +190,7 @@ impl TableBlocks {
 }
 
 /// Whether the caller runs on a multi-thread runtime, where a worker may block in place.
-fn multi_thread() -> bool {
+pub(super) fn multi_thread() -> bool {
     tokio::runtime::Handle::try_current()
         .is_ok_and(|runtime| runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
 }
@@ -258,34 +261,4 @@ pub(crate) fn open_table(
         OpenError::Read(error) => error,
     })?;
     Ok((table, blocks))
-}
-
-/// Opens every table file `version` names, newest first, reading their data blocks through
-/// `cache`, and removes the table files it does not name: those a crash left between writing a
-/// table and naming it in the manifest. Runs on a blocking thread.
-pub(super) fn restore_tables(
-    storage: &dyn Storage,
-    dir: &Path,
-    version: &Version,
-    cache: &Arc<BlockCache>,
-) -> Result<Vec<TableFile>> {
-    let mut files = Vec::new();
-    let keyspaces = std::iter::once(0).chain(version.keyspaces().map(|(id, _)| id));
-    for keyspace in keyspaces {
-        for meta in (0..LEVELS).flat_map(|level| version.tables(keyspace, level)) {
-            let path = table_path(dir, meta.id);
-            let (table, blocks) = open_table(storage, &path, meta.id, cache, None)?;
-            files.push(TableFile::new(Arc::clone(meta), table, blocks)?);
-        }
-    }
-    for name in storage.list(dir)? {
-        let named = name
-            .strip_suffix(".sst")
-            .and_then(|stem| stem.parse::<u64>().ok())
-            .map(|id| files.iter().any(|file| file.meta.id == id));
-        if named == Some(false) {
-            storage.remove(&dir.join(&name))?;
-        }
-    }
-    Ok(files)
 }

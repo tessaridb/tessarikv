@@ -10,6 +10,7 @@ use tessarikv_format::{ManifestEdit, TableMeta, TableOptions};
 
 use super::block_cache::BlockCache;
 use super::table_blocks::open_table;
+use super::tables::blobs::{BlobFile, BlobWriter};
 use super::tables::build;
 use super::view::TableFile;
 use crate::memtable::Memtable;
@@ -22,8 +23,9 @@ use crate::{Error, KeyspaceOptions, Result};
 pub(super) struct Job {
     pub(super) storage: Arc<dyn Storage>,
     pub(super) dir: PathBuf,
-    /// The frozen tables, one per keyspace, with the layout each keyspace's tables take.
-    pub(super) tables: Vec<(u32, TableOptions, Arc<Memtable>)>,
+    /// The frozen tables, one per keyspace, with the layout each keyspace's tables take and
+    /// the size from which their values move to a blob file.
+    pub(super) tables: Vec<(u32, TableOptions, Option<u64>, Arc<Memtable>)>,
     pub(super) flushed: u64,
     pub(super) numbers: Arc<FileNumbers>,
     /// The cache the new table file reads its data blocks through.
@@ -40,7 +42,7 @@ impl Job {
             ..ManifestEdit::default()
         };
         let mut written = Vec::new();
-        for (keyspace, options, table) in &self.tables {
+        for (keyspace, options, threshold, table) in &self.tables {
             let mut versions = table.iter();
             versions.seek_to_first();
             if versions.entry().is_none() && !table.has_tombstones() {
@@ -49,9 +51,23 @@ impl Job {
             let id = self.numbers.take()?;
             let path = table_path(&self.dir, id);
             let mut file = self.storage.create(&path)?;
-            let built = build(table, *options, self.cache.sealing(), &mut |piece| {
-                file.append(piece)
-            })?;
+            let mut blobs = BlobWriter::new(
+                Arc::clone(&self.storage),
+                &self.dir,
+                Arc::clone(&self.numbers),
+                Arc::clone(&self.cache),
+                *threshold,
+                options.compression,
+            );
+            let built = build(
+                table,
+                *options,
+                self.cache.sealing(),
+                Some(&mut blobs),
+                &mut |piece| file.append(piece),
+            )?;
+            // The blob file is synced with the table, before the edit naming the table.
+            let blob = blobs.finish()?;
             file.sync()?;
             drop(file);
             let meta = TableMeta {
@@ -65,12 +81,12 @@ impl Job {
                 max_sequence: built.max_sequence,
             };
             edit.added.push(meta.clone());
-            written.push((meta, path, built));
+            written.push((meta, path, built, blob));
         }
         if let Some(statistics) = self.cache.statistics() {
-            let bytes = written
-                .iter()
-                .fold(0_u64, |total, (meta, _, _)| total.saturating_add(meta.size));
+            let bytes = written.iter().fold(0_u64, |total, (meta, _, _, _)| {
+                total.saturating_add(meta.size)
+            });
             statistics.record(Ticker::FlushBytes, bytes);
         }
         if !written.is_empty() {
@@ -79,7 +95,7 @@ impl Job {
         }
         manifest.append(&edit)?;
         let mut files = Vec::with_capacity(written.len());
-        for (meta, path, built) in written {
+        for (meta, path, built, blob) in written {
             // The metadata comes from the tail just written; data blocks from the file.
             let (table, blocks) = open_table(
                 self.storage.as_ref(),
@@ -88,7 +104,8 @@ impl Job {
                 &self.cache,
                 Some((built.tail_offset, &built.tail)),
             )?;
-            files.push(TableFile::new(Arc::new(meta), table, blocks)?);
+            let blobs: Arc<[Arc<BlobFile>]> = blob.into_iter().collect();
+            files.push(TableFile::new(Arc::new(meta), table, blocks)?.with_blobs(blobs)?);
         }
         Ok(files)
     }
@@ -154,6 +171,8 @@ pub(super) fn table_options(keyspace: &KeyspaceOptions, level: usize) -> Result<
         restart_interval: usize::try_from(keyspace.block_restart_interval())
             .map_err(|_| invalid("keyspace.block_restart_interval"))?,
         bloom_bits_per_key: keyspace.bloom_bits_per_key(),
+        filter: keyspace.filter_policy(),
         compression: keyspace.compression_at(level),
+        prefix_length: keyspace.prefix_length(),
     })
 }

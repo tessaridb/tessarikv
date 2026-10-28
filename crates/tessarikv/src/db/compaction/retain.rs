@@ -11,6 +11,9 @@
 //! so it is dropped too, unless an older version of the key may remain in a level below the
 //! compaction's output, which the delete must go on hiding.
 //!
+//! A merge operand hides nothing: the versions below it in its stripe are kept down to the first
+//! that is not an operand, which readers combine with it.
+//!
 //! A version a range delete hides is dropped when no reader can tell: the range delete is newer
 //! and in the same stripe (see [`super::job`]). A range delete in the oldest stripe is dropped
 //! once nothing outside the compaction can hold a version under it.
@@ -22,6 +25,8 @@ use tessarikv_types::ValueKind;
 pub(crate) struct Retention {
     /// The snapshots and the visible sequence, ascending, without repeats.
     boundaries: Vec<u64>,
+    /// The newest snapshot given, including one at or above the visible sequence.
+    newest_snapshot: Option<u64>,
 }
 
 /// The decisions for the versions of one key, newest first.
@@ -30,6 +35,9 @@ pub(crate) struct KeyRetention<'a> {
     retention: &'a Retention,
     /// The stripe of the last version kept or dropped at or below the visible sequence.
     last_stripe: Option<usize>,
+    /// Whether the last version kept was a merge operand, whose older versions in its stripe
+    /// are read with it and kept down to the first that is not one.
+    under_operand: bool,
 }
 
 impl Retention {
@@ -43,7 +51,19 @@ impl Retention {
         boundaries.push(visible);
         boundaries.sort_unstable();
         boundaries.dedup();
-        Self { boundaries }
+        Self {
+            boundaries,
+            newest_snapshot: snapshots.iter().copied().max(),
+        }
+    }
+
+    /// Whether no snapshot can read the version at `sequence` and it is at or below the visible
+    /// sequence: the versions a compaction filter may be shown.
+    pub(crate) fn past_every_snapshot(&self, sequence: u64) -> bool {
+        !self.above_visible(self.stripe(sequence))
+            && self
+                .newest_snapshot
+                .is_none_or(|snapshot| sequence > snapshot)
     }
 
     /// The stripe of `sequence`: the index of the least boundary at or above it, which is the
@@ -63,11 +83,20 @@ impl Retention {
         KeyRetention {
             retention: self,
             last_stripe: None,
+            under_operand: false,
         }
     }
 }
 
 impl KeyRetention<'_> {
+    /// Whether the version at `sequence`, the next older version of the key, is the newest of
+    /// its stripe at or below the visible sequence: the one [`Self::keeps`] writes out, unless
+    /// it is a delete in the oldest stripe.
+    pub(crate) fn newest_in_stripe(&self, sequence: u64) -> bool {
+        let stripe = self.retention.stripe(sequence);
+        !self.retention.above_visible(stripe) && self.last_stripe != Some(stripe)
+    }
+
     /// Whether the version at `sequence` of kind `kind`, the next older version of the key, is
     /// written out. `deeper_holds_key` answers whether a level below the output may hold an
     /// older version of the key; it is asked only for a delete in the oldest stripe.
@@ -84,9 +113,14 @@ impl KeyRetention<'_> {
             return true;
         }
         if self.last_stripe == Some(stripe) {
-            return false;
+            if !self.under_operand {
+                return false;
+            }
+            self.under_operand = kind == ValueKind::Merge;
+            return true;
         }
         self.last_stripe = Some(stripe);
+        self.under_operand = kind == ValueKind::Merge;
         !(kind == ValueKind::Delete && stripe == 0 && !deeper_holds_key())
     }
 }

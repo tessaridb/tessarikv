@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 use super::Db;
+use super::catalog::Ingesting;
 use super::flush_job::{Job, table_options};
 use super::flush_signals::FlushSignals;
 use super::installer::Flusher;
@@ -14,14 +15,38 @@ use super::view::TableFile;
 use crate::log::LogWriter;
 use crate::memtable::Memtable;
 use crate::version::manifest::ManifestStore;
-use crate::{Error, Result};
+use crate::{Error, FlushCompleted, Result};
 
 /// The frozen tables of an epoch, one per keyspace, waiting for their flush.
 pub(super) struct Frozen {
     epoch: u8,
     tables: Vec<(u32, Arc<Memtable>)>,
-    /// The last sequence of its epoch.
+    /// The last sequence of its epoch, or an ingest's sequence.
     flushed: u64,
+    /// An ingest waiting behind the epochs frozen before it, in place of an epoch's tables.
+    ingest: Option<Ingesting>,
+}
+
+impl Frozen {
+    /// An ingest at `sequence`, flushed once every epoch before it is.
+    pub(super) fn ingest(sequence: u64, ingesting: Ingesting) -> Self {
+        Self {
+            epoch: 0,
+            tables: Vec::new(),
+            flushed: sequence,
+            ingest: Some(ingesting),
+        }
+    }
+
+    /// The newest epoch's tables, frozen up to `flushed`.
+    pub(super) fn epoch(epoch: u8, tables: Vec<(u32, Arc<Memtable>)>, flushed: u64) -> Self {
+        Self {
+            epoch,
+            tables,
+            flushed,
+            ingest: None,
+        }
+    }
 }
 
 /// What a finished flush hands back: the manifest, and the table files or why there are none.
@@ -50,27 +75,28 @@ impl Flusher {
         self.view.store(Arc::new(current.with_next_table()));
         let flushed = self.sequencer.switch().boundary().saturating_sub(1);
         self.switched = flushed;
-        frozen.push_back(Frozen {
-            epoch,
-            tables,
-            flushed,
-        });
+        frozen.push_back(Frozen::epoch(epoch, tables, flushed));
     }
 
     /// Starts flushing `oldest` (steps 1 to 3 of the module documentation).
     pub(super) fn start_flush(
         &mut self,
-        oldest: &Frozen,
+        oldest: &mut Frozen,
         signals: &Arc<FlushSignals>,
     ) -> Result<JoinHandle<Result<Flushed>>> {
+        if let Some(ingesting) = oldest.ingest.as_mut() {
+            return self.start_ingest(ingesting, oldest.flushed);
+        }
         // A keyspace dropped since the epoch froze has nothing to flush: its writes go with it.
         let tables = oldest
             .tables
             .iter()
             .filter(|(keyspace, _)| self.holds(*keyspace))
             .map(|(keyspace, table)| {
-                let options = table_options(self.keyspace_options(*keyspace), 0)?;
-                Ok((*keyspace, options, Arc::clone(table)))
+                let keyspace_options = self.keyspace_options(*keyspace);
+                let options = table_options(keyspace_options, 0)?;
+                let threshold = keyspace_options.blob_threshold();
+                Ok((*keyspace, options, threshold, Arc::clone(table)))
             })
             .collect::<Result<Vec<_>>>()?;
         let mut manifest = self.manifest.take().ok_or(Error::FlushFailed)?;
@@ -104,21 +130,38 @@ impl Flusher {
     }
 
     /// Publishes the view in which the flushed file replaces the oldest frozen table, and
-    /// releases the log it covers; returns the sequence now on table files.
+    /// releases the log it covers; returns what it installed.
     pub(super) fn install(
         &mut self,
         frozen: &mut VecDeque<Frozen>,
         flushed: Flushed,
-    ) -> Result<u64> {
+    ) -> Result<FlushCompleted> {
         let (manifest, written) = flushed;
         self.manifest = Some(manifest);
         let files = written?;
+        let completed = FlushCompleted {
+            tables: u32::try_from(files.len()).unwrap_or(u32::MAX),
+            bytes: files
+                .iter()
+                .fold(0, |bytes: u64, file| bytes.saturating_add(file.meta.size)),
+            flushed_sequence: 0,
+        };
         let oldest = frozen.pop_front().ok_or(Error::FlushFailed)?;
         let current = self.view.load_full();
-        self.view
-            .store(Arc::new(current.after_flush(oldest.epoch, files)?));
+        let next = match oldest.ingest {
+            Some(_) => current.with_ingested(files),
+            None => current.after_flush(oldest.epoch, files)?,
+        };
+        self.view.store(Arc::new(next));
         self.log.release_through(oldest.flushed);
-        Ok(oldest.flushed)
+        // Only now may readers see the ingest's sequence: completing it is the last step.
+        if let Some(ingesting) = oldest.ingest {
+            ingesting.installed();
+        }
+        Ok(FlushCompleted {
+            flushed_sequence: oldest.flushed,
+            ..completed
+        })
     }
 }
 
@@ -132,6 +175,7 @@ impl Db {
     ///
     /// [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background work stopped.
     pub async fn flush(&self) -> Result<()> {
+        self.refuse_read_only("a flush")?;
         let Some(installer) = &self.installer else {
             return Ok(());
         };
@@ -149,6 +193,7 @@ impl Db {
     ///
     /// [`Error::LogFailed`] when the log stopped or the sync failed.
     pub async fn sync_wal(&self) -> Result<()> {
+        self.refuse_read_only("a log sync")?;
         match &self.log {
             Some(log) => log.sync().await,
             None => Ok(()),

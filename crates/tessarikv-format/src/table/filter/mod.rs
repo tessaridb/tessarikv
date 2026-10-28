@@ -16,6 +16,12 @@
 #[cfg(test)]
 mod tests;
 
+mod kind;
+mod ribbon;
+
+pub use kind::FilterPolicy;
+pub(crate) use kind::{FilterBuilder, TableFilter};
+
 use crate::error::{Error, Result};
 
 /// Bytes of one line.

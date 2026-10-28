@@ -47,7 +47,7 @@ pub(super) fn start(storage: &FaultStorage, segment_bytes: u64) -> LogWriter {
 }
 
 /// The payloads of one segment and whether it ended cleanly.
-fn decode(bytes: &[u8], log_number: u64) -> Vec<Vec<u8>> {
+pub(super) fn decode(bytes: &[u8], log_number: u64) -> Vec<Vec<u8>> {
     let mut reader = FrameReader::new(bytes, log_number);
     let mut payloads = Vec::new();
     loop {

@@ -125,6 +125,24 @@ pub trait WritableFile: Send {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// A handle that syncs this file from another thread while appends go on, when the backend
+    /// has one; `None` (the default) when a sync must go through [`WritableFile::sync`].
+    fn syncer(&self) -> Option<Arc<dyn FileSyncer>> {
+        None
+    }
+}
+
+/// Syncs a file from any thread while its writer goes on appending.
+pub trait FileSyncer: Send + Sync {
+    /// Makes everything appended to the file before the call durable against power loss; bytes
+    /// appended while it runs may or may not be included.
+    ///
+    /// # Errors
+    ///
+    /// As [`WritableFile::sync`]: after a failure the data's durability is unknown, and the
+    /// caller must recover, never retry and continue.
+    fn sync(&self) -> Result<()>;
 }
 
 /// A file read by position from any number of threads at once.
@@ -135,6 +153,19 @@ pub trait ReadableFile: Send + Sync {
     ///
     /// [`crate::Error::ShortRead`] when the file ends first; the backend's I/O failure otherwise.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()>;
+
+    /// Reads `len` bytes from `offset` into a buffer of their own, as a block read needs one.
+    /// The default fills a zeroed buffer with [`ReadableFile::read_at`]; a backend that can read
+    /// into memory not yet written skips the zeroing.
+    ///
+    /// # Errors
+    ///
+    /// As [`ReadableFile::read_at`].
+    fn read_vec_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let mut buf = vec![0; len];
+        self.read_at(offset, &mut buf)?;
+        Ok(buf)
+    }
 
     /// Fills `buf` from `offset` only if that cannot wait for a device, and says whether it did.
     /// `false` means the read could block, or the backend cannot tell: the caller then reads with
@@ -148,6 +179,19 @@ pub trait ReadableFile: Send + Sync {
     fn try_read_at(&self, offset: u64, buf: &mut [u8]) -> Result<bool> {
         let _ = (offset, buf);
         Ok(false)
+    }
+
+    /// Reads `len` bytes from `offset` into a buffer of their own only if that cannot wait for
+    /// a device, as [`ReadableFile::try_read_at`] does; `None` when it could. The default fills a
+    /// zeroed buffer with `try_read_at`; a backend that can never promise such a read answers
+    /// `None` without allocating.
+    ///
+    /// # Errors
+    ///
+    /// As [`ReadableFile::try_read_at`].
+    fn try_read_vec_at(&self, offset: u64, len: usize) -> Result<Option<Vec<u8>>> {
+        let mut buf = vec![0; len];
+        Ok(self.try_read_at(offset, &mut buf)?.then_some(buf))
     }
 
     /// The file's current length.

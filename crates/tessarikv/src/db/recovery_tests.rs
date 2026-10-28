@@ -238,6 +238,7 @@ async fn recovery_reports_each_segment_with_the_last_sequence_it_holds() {
         WalRecovery::PointInTime,
         0,
         None,
+        true,
     )
     .expect("recovered");
     let found: Vec<(u64, u64)> = recovered

@@ -3,12 +3,10 @@
 //! keyspace the installer no longer serves.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use tokio::sync::oneshot;
 
 use super::Compactions;
-use crate::db::flush_job::table_path;
 use crate::db::installer::Flusher;
 use crate::db::view::TableFile;
 use crate::{Error, Result};
@@ -66,12 +64,8 @@ impl Compactions {
     /// Removes `files`, in `dir`, once no view reads them: a dropped keyspace's tables, or the
     /// outputs of a compaction of one.
     pub(crate) fn retire(&mut self, files: Vec<TableFile>, dir: &Path) {
-        self.obsolete.extend(files.iter().map(|file| {
-            (
-                Arc::downgrade(&file.blocks),
-                file.meta.id,
-                table_path(dir, file.meta.id),
-            )
-        }));
+        for file in &files {
+            self.retire_file(file, dir);
+        }
     }
 }

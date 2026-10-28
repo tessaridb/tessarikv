@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tessarikv_constants::MEMORY_FILE_CHUNK_BYTES;
 use tessarikv_sync::{AppendReader, AppendWriter, BufferError, append_buffer};
 
-use super::{ReadableFile, Storage, StorageLock, WritableFile};
+use super::{FileSyncer, ReadableFile, Storage, StorageLock, WritableFile};
 use crate::{Error, Result};
 
 /// A file system in memory. Cheap to clone; clones share the same files.
@@ -165,8 +165,21 @@ impl WritableFile for MemoryWritable {
         Ok(())
     }
 
+    fn syncer(&self) -> Option<Arc<dyn FileSyncer>> {
+        Some(Arc::new(MemorySyncer))
+    }
+
     fn len(&self) -> u64 {
         self.writer.len()
+    }
+}
+
+/// Syncs a memory file, which has nothing to flush.
+struct MemorySyncer;
+
+impl FileSyncer for MemorySyncer {
+    fn sync(&self) -> Result<()> {
+        Ok(())
     }
 }
 

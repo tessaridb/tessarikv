@@ -81,6 +81,8 @@ pub struct Transaction<'db> {
     writes: WriteSet,
     /// What it read from its snapshot, when it is serializable.
     reads: Option<Reads>,
+    /// The keys it read for update, checked at commit as the keys it writes are.
+    for_update: Vec<(KeyspaceId, Vec<u8>)>,
 }
 
 impl Db {
@@ -115,6 +117,7 @@ impl Db {
             snapshot: self.snapshot()?,
             writes: WriteSet::default(),
             reads,
+            for_update: Vec::new(),
         })
     }
 }
@@ -148,6 +151,29 @@ impl Transaction<'_> {
                 self.snapshot.get(keyspace, key, options).await
             }
         }
+    }
+
+    /// The value of `key` in `keyspace` as [`Transaction::get`] reads it, with the key held for
+    /// the commit: a write to it committed after the transaction began refuses the commit, as a
+    /// write to a key the transaction writes does, whatever the isolation.
+    ///
+    /// No lock is taken and nothing waits: where another engine would make a second writer wait
+    /// for this transaction, here the later of the two to commit is refused with
+    /// [`Error::Conflict`] and runs again. The key stays held after a
+    /// [`Transaction::rollback_to`] to an earlier savepoint.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::get`].
+    pub async fn get_for_update(
+        &mut self,
+        keyspace: KeyspaceId,
+        key: &[u8],
+        options: &ReadOptions,
+    ) -> Result<Option<Vec<u8>>> {
+        let value = self.get(keyspace, key, options).await?;
+        self.for_update.push((keyspace, key.to_vec()));
+        Ok(value)
     }
 
     /// The values of `keys` in `keyspace`, in the order given, each as [`Transaction::get`]
@@ -229,8 +255,8 @@ impl Transaction<'_> {
     }
 
     /// Writes everything the transaction wrote as one atomic batch, under `options`, unless a
-    /// write committed after the transaction began touched one of its keys. Returns the sequence
-    /// number of its last entry.
+    /// write committed after the transaction began touched one of its keys or a key it read for
+    /// update. Returns the sequence number of its last entry.
     ///
     /// # Errors
     ///
@@ -241,6 +267,7 @@ impl Transaction<'_> {
         let check = Check {
             snapshot: self.snapshot.sequence().get(),
             reads: self.reads.as_ref(),
+            for_update: &self.for_update,
         };
         self.db.commit_batch(&batch, options, Some(check)).await
     }

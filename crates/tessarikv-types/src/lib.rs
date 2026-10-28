@@ -18,12 +18,14 @@
 )]
 
 mod error;
+mod expiry;
 mod ids;
 mod internal_key;
 mod sequence;
 mod value_kind;
 
 pub use error::{Error, Result};
+pub use expiry::{EXPIRY_STAMP_BYTES, split_expiring};
 pub use ids::{FileNumber, KeyspaceId};
 pub use internal_key::{InternalKeyRef, Trailer, compare_internal, encode_internal, seek_trailer};
 pub use sequence::SequenceNumber;

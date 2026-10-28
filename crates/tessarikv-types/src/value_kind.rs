@@ -14,6 +14,16 @@ pub enum ValueKind {
     Value = 1,
     /// Every key in `[this key, the entry's value)` is absent from this version on.
     RangeDelete = 2,
+    /// The key holds the entry's value until the time its expiry stamp names (see
+    /// [`split_expiring`](crate::split_expiring)), and is absent from then on: an expired
+    /// version hides the older ones like a delete.
+    ExpiringValue = 3,
+    /// The key holds a value kept in a blob file; the entry's value says where (see
+    /// `tessarikv_format::BlobIndex`). Only table files hold it: writes never carry it.
+    BlobIndex = 4,
+    /// An operand of the keyspace's merge operator: the key holds what the operator makes of
+    /// the older versions' value and every operand up to this one. It hides no older version.
+    Merge = 5,
 }
 
 impl ValueKind {
@@ -27,6 +37,9 @@ impl ValueKind {
             Self::Delete => 0,
             Self::Value => 1,
             Self::RangeDelete => 2,
+            Self::ExpiringValue => 3,
+            Self::BlobIndex => 4,
+            Self::Merge => 5,
         }
     }
 
@@ -40,6 +53,9 @@ impl ValueKind {
             0 => Ok(Self::Delete),
             1 => Ok(Self::Value),
             2 => Ok(Self::RangeDelete),
+            3 => Ok(Self::ExpiringValue),
+            4 => Ok(Self::BlobIndex),
+            5 => Ok(Self::Merge),
             other => Err(Error::UnknownValueKind(other)),
         }
     }

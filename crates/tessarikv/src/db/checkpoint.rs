@@ -10,6 +10,7 @@ use super::catalog::{Command, Pinned};
 use super::flush_job::table_path;
 use super::key_check::KEY_CHECK;
 use super::open::IDENTITY;
+use super::tables::blobs::blob_path;
 use crate::sealing::Sealing;
 use crate::storage::Storage;
 use crate::version::manifest::ManifestStore;
@@ -22,11 +23,11 @@ impl Db {
     /// Writes a copy of the database into `dir` on the same storage, holding every batch
     /// committed before the call; the copy opens as a database of its own, with the same options
     /// (and the same key provider, when encrypted). The batches still in memory are flushed
-    /// first, then the table files of that moment are copied with a manifest naming them, so the
-    /// copy needs no log; where the storage can, a table file is linked under a second name
-    /// instead of copied (a table file is never written again). Reads and writes go on meanwhile;
-    /// writes after the call are not in the copy. The table files copied are kept from removal
-    /// until the copy is done.
+    /// first, then the table files of that moment and the blob files they hold are copied with a
+    /// manifest naming them, so the copy needs no log; where the storage can, a file is linked
+    /// under a second name instead of copied (neither is ever written again). Reads and writes go
+    /// on meanwhile; writes after the call are not in the copy. The files copied are kept from
+    /// removal until the copy is done.
     ///
     /// # Errors
     ///
@@ -34,6 +35,7 @@ impl Db {
     /// holds anything, [`Error::FlushFailed`] or [`Error::CompactionFailed`] when the background
     /// work stopped, and the storage's error for a failed read or write.
     pub async fn checkpoint(&self, dir: impl AsRef<Path>) -> Result<()> {
+        self.refuse_read_only("a checkpoint")?;
         let Some(installer) = &self.installer else {
             return Err(Error::Unsupported {
                 what: "a checkpoint of a database in memory",
@@ -70,7 +72,7 @@ struct Copy {
 }
 
 impl Copy {
-    /// Copies the table files `pinned` names, the key check when there is one, and the
+    /// Copies the table files `pinned` names and their blob files, the key check when there is one, and the
     /// database's identity, then writes a manifest of the version and makes it current. Runs on a
     /// blocking thread; `pinned` keeps the files from removal until it returns.
     fn run(&self, pinned: &Pinned) -> Result<()> {
@@ -89,6 +91,19 @@ impl Copy {
             let id = file.meta.id;
             let (from, to) = (table_path(&self.from, id), table_path(&self.to, id));
             // A table file is never written again, so a second name serves as well as a copy.
+            if !self.storage.link(&from, &to) {
+                self.copy(&from, &to)?;
+            }
+        }
+        let mut blobs: Vec<u64> = view
+            .all_files()
+            .iter()
+            .flat_map(|file| file.blobs.iter().map(|blob| blob.id()))
+            .collect();
+        blobs.sort_unstable();
+        blobs.dedup();
+        for id in blobs {
+            let (from, to) = (blob_path(&self.from, id), blob_path(&self.to, id));
             if !self.storage.link(&from, &to) {
                 self.copy(&from, &to)?;
             }

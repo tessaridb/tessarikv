@@ -25,7 +25,8 @@ pub struct TableIter {
     error: Option<Error>,
 }
 
-/// Where in a data block a move lands once the block is at hand.
+/// Where in a data block a waiting move lands once the block is at hand; the owned form of
+/// [`Land`], made only when a move has to wait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Want {
     /// Its first entry, then onward.
@@ -36,6 +37,42 @@ enum Want {
     Last,
     /// Its last entry not greater than the target, then backward.
     ForPrev(Vec<u8>),
+}
+
+/// Where in a data block a move lands, borrowing its target: a move whose block is at hand never
+/// copies the target.
+#[derive(Debug, Clone, Copy)]
+enum Land<'a> {
+    /// As [`Want::First`].
+    First,
+    /// As [`Want::Seek`].
+    Seek(&'a [u8]),
+    /// As [`Want::Last`].
+    Last,
+    /// As [`Want::ForPrev`].
+    ForPrev(&'a [u8]),
+}
+
+impl Land<'_> {
+    fn to_want(self) -> Want {
+        match self {
+            Self::First => Want::First,
+            Self::Seek(target) => Want::Seek(target.to_vec()),
+            Self::Last => Want::Last,
+            Self::ForPrev(target) => Want::ForPrev(target.to_vec()),
+        }
+    }
+}
+
+impl Want {
+    fn land(&self) -> Land<'_> {
+        match self {
+            Self::First => Land::First,
+            Self::Seek(target) => Land::Seek(target),
+            Self::Last => Land::Last,
+            Self::ForPrev(target) => Land::ForPrev(target),
+        }
+    }
 }
 
 impl TableIter {
@@ -96,7 +133,7 @@ impl TableIter {
     /// may then wait again, for a later block. Without a waiting move this does nothing.
     pub fn resume(&mut self, block: Block) {
         if let Some((_, want)) = self.pending.take() {
-            self.enter(block, want);
+            self.enter(block, want.land());
         }
     }
 
@@ -104,14 +141,14 @@ impl TableIter {
     pub fn seek_to_first(&mut self) {
         self.reset();
         self.index.seek_to_first();
-        self.load(Want::First);
+        self.load(Land::First);
     }
 
     /// Moves to the first entry whose key is not less than `target`.
     pub fn seek(&mut self, target: &[u8]) {
         self.reset();
         self.index.seek(target);
-        self.load(Want::Seek(target.to_vec()));
+        self.load(Land::Seek(target));
     }
 
     /// Moves to the next entry. Waiting, or past the end, it does nothing.
@@ -129,7 +166,7 @@ impl TableIter {
     pub fn seek_to_last(&mut self) {
         self.reset();
         self.index.seek_to_last();
-        self.load(Want::Last);
+        self.load(Land::Last);
     }
 
     /// Moves to the last entry whose key is not greater than `target`.
@@ -139,10 +176,10 @@ impl TableIter {
         // predecessor does; past every block, the answer is the last entry.
         self.index.seek(target);
         if self.index.valid() {
-            self.load(Want::ForPrev(target.to_vec()));
+            self.load(Land::ForPrev(target));
         } else if self.index.status().is_ok() {
             self.index.seek_to_last();
-            self.load(Want::Last);
+            self.load(Land::Last);
         }
     }
 
@@ -166,7 +203,7 @@ impl TableIter {
 
     /// Opens the data block the index is on and lands in it as `want` says, or waits for it;
     /// past the last block there is none.
-    fn load(&mut self, want: Want) {
+    fn load(&mut self, land: Land<'_>) {
         self.data = None;
         if self.error.is_some() || !self.index.valid() {
             return;
@@ -179,29 +216,29 @@ impl TableIter {
             }
         };
         match self.source.block(handle) {
-            Ok(Some(block)) => self.enter(block, want),
-            Ok(None) => self.pending = Some((handle, want)),
+            Ok(Some(block)) => self.enter(block, land),
+            Ok(None) => self.pending = Some((handle, land.to_want())),
             Err(error) => self.error = Some(error),
         }
     }
 
-    /// Lands in `block` as `want` says and moves on past finished blocks.
-    fn enter(&mut self, block: Block, want: Want) {
+    /// Lands in `block` as `land` says and moves on past finished blocks.
+    fn enter(&mut self, block: Block, land: Land<'_>) {
         let mut data = block.iter();
-        let forward = match &want {
-            Want::First => {
+        let forward = match land {
+            Land::First => {
                 data.seek_to_first();
                 true
             }
-            Want::Seek(target) => {
+            Land::Seek(target) => {
                 data.seek(target);
                 true
             }
-            Want::Last => {
+            Land::Last => {
                 data.seek_to_last();
                 false
             }
-            Want::ForPrev(target) => {
+            Land::ForPrev(target) => {
                 data.seek(target);
                 if !data.valid() {
                     if data.status().is_ok() {
@@ -225,7 +262,7 @@ impl TableIter {
     fn forward(&mut self) {
         while self.finished() {
             self.index.next();
-            self.load(Want::First);
+            self.load(Land::First);
         }
     }
 
@@ -233,7 +270,7 @@ impl TableIter {
     fn backward(&mut self) {
         while self.finished() {
             self.index.prev();
-            self.load(Want::Last);
+            self.load(Land::Last);
         }
     }
 

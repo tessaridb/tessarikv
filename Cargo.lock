@@ -796,7 +796,7 @@ dependencies = [
 
 [[package]]
 name = "tessarikv"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "papaya",
@@ -813,11 +813,11 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-constants"
-version = "0.1.2"
+version = "0.2.0"
 
 [[package]]
 name = "tessarikv-format"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -837,8 +837,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessarikv-inspect"
+version = "0.2.0"
+dependencies = [
+ "tempfile",
+ "tessarikv",
+ "tessarikv-format",
+ "tessarikv-types",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "tessarikv-sync"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "crossbeam-utils",
  "loom",
@@ -848,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-types"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "tessarikv-constants",

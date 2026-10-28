@@ -9,7 +9,7 @@ use tessarikv_format::{FRAME_HEADER_BYTES, SEAL_HEADER_BYTES, frame_header};
 
 use super::{FinishedSegment, Frame, segment_path};
 use crate::statistics::{Statistics, Ticker};
-use crate::storage::{Storage, WritableFile};
+use crate::storage::{FileSyncer, Storage, WritableFile};
 use crate::{Error, Result};
 
 /// The segment files: the current one, and where the next one goes.
@@ -57,9 +57,9 @@ impl Segments {
         }
     }
 
-    /// Appends `frames` in order, rolling to a new segment where the limit requires, then syncs
-    /// the current segment when `sync`. Runs on a blocking thread.
-    pub(super) fn write(&mut self, frames: Vec<(Frame, u64)>, sync: bool) -> Result<()> {
+    /// Appends `frames` in order, rolling to a new segment where the limit requires; a finished
+    /// segment is synced as it is rolled away from.
+    pub(super) fn write(&mut self, frames: Vec<(Frame, u64)>) -> Result<()> {
         for (frame, last) in frames {
             let mut bytes = frame.bytes;
             let size = u64::try_from(bytes.len()).map_err(|_| Error::LogFailed)?;
@@ -87,12 +87,34 @@ impl Segments {
             self.buffer.extend_from_slice(&bytes);
             self.current_last = last;
         }
-        self.append()?;
-        if sync && let Some(file) = self.file.as_mut() {
+        self.append()
+    }
+
+    /// A handle that syncs the current segment beside later appends, when its storage has one.
+    pub(super) fn syncer(&self) -> Option<Arc<dyn FileSyncer>> {
+        self.file.as_ref().and_then(|file| file.syncer())
+    }
+
+    /// Syncs the current segment here, for a storage without a [`FileSyncer`].
+    pub(super) fn sync_current(&mut self) -> Result<()> {
+        if let Some(file) = self.file.as_mut() {
             file.sync()?;
             self.count(Ticker::WalSyncs, 1);
         }
         Ok(())
+    }
+
+    /// Whether `bytes` more of frames are a plain append to the open segment: it takes them
+    /// without rolling, and nothing released through `through` is to be removed. Such a write
+    /// neither syncs nor creates nor removes a file.
+    pub(super) fn appends_in_place(&self, bytes: u64, through: u64) -> bool {
+        self.file.is_some()
+            && !self.has_removable(through)
+            && self
+                .used()
+                .ok()
+                .and_then(|used| used.checked_add(bytes))
+                .is_some_and(|total| total <= self.limit)
     }
 
     /// Bytes in the current segment, gathered ones included.

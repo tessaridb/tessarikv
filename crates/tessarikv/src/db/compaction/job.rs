@@ -13,20 +13,23 @@
 use std::sync::Arc;
 
 use tessarikv_constants::LEVELS;
-use tessarikv_format::{TableIter, TableMeta};
+use tessarikv_format::TableMeta;
 use tessarikv_types::{
     InternalKeyRef, SequenceNumber, ValueKind, compare_internal, encode_internal, seek_trailer,
 };
 
 use super::below::{Outside, deeper, deeper_holds};
+use super::blob_values::BlobInputs;
 use super::hidden::Hidden;
 use super::output::{self, Destination, Outputs};
 use super::pick::Pick;
+use super::removal::Removing;
 use super::retain::Retention;
 use super::split;
+use super::walk::{Walk, corrupt, settle};
 use crate::db::flush_job::table_options;
 use crate::db::installer::Flusher;
-use crate::db::tables::{format_error, user_key};
+use crate::db::tables::user_key;
 use crate::db::view::TableFile;
 use crate::tombstones::RangeTombstone;
 use crate::{Error, Result};
@@ -43,12 +46,8 @@ pub(crate) struct Job {
     pub(crate) retention: Retention,
     /// Parts the merge is split into at most.
     pub(crate) parts: usize,
-}
-
-/// One input's walk.
-struct Walk<'a> {
-    versions: TableIter,
-    file: &'a TableFile,
+    pub(crate) removing: Removing,
+    pub(crate) blobs: BlobInputs,
 }
 
 impl Job {
@@ -100,7 +99,9 @@ impl Job {
                 keyspace,
                 level: u8::try_from(pick.output_level).map_err(|_| Error::CompactionFailed)?,
                 limiter: flusher.limiter.clone(),
+                blob_threshold: options.blob_threshold(),
             },
+            blobs: BlobInputs::of(current.files(keyspace), &inputs, options),
             inputs,
             deeper: deeper(pick, levels, &wanted),
             outside: Outside::of(current.files(keyspace), &wanted),
@@ -112,6 +113,7 @@ impl Job {
             } else {
                 usize::try_from(options.max_subcompactions()).unwrap_or(1)
             },
+            removing: Removing::of(options),
         })
     }
 
@@ -178,7 +180,7 @@ impl Job {
             failed = Some(error);
         }
         if let Some(error) = failed {
-            output::discard(&self.to, written);
+            output::discard(&self.to, written, &self.blobs.files);
             return Err(error);
         }
         if let Some(statistics) = self.to.cache.statistics() {
@@ -240,6 +242,7 @@ impl Job {
         }
         let mut key: Vec<u8> = Vec::new();
         let mut decisions = self.retention.key();
+        let mut removal = self.removing.with(&self.retention);
         let mut first = true;
         // The inputs are few (level 0 and the tables it touches), so the least is found by a scan.
         while let Some(walk) = walks
@@ -261,31 +264,20 @@ impl Job {
                 first = false;
             }
             let sequence = parsed.trailer().sequence().get();
-            let keep = decisions.keeps(sequence, kind, || deeper_holds(&self.deeper, &key))
-                && !hidden.hides(&self.retention, &key, sequence);
-            if keep && matches!(kind, ValueKind::Value | ValueKind::Delete) {
-                outputs.add(stored, starts_key, walk.versions.value())?;
+            let value = walk.versions.value();
+            let version = self.blobs.version(kind, value)?;
+            let (written, hides) =
+                removal.kind_of(&decisions, hidden, version.kind, &parsed, &version.value)?;
+            let keep =
+                decisions.keeps(sequence, written, || deeper_holds(&self.deeper, &key)) && !hides;
+            if keep && written != version.kind {
+                outputs.add(removal.delete_key(&parsed), starts_key, &[])?;
+            } else if keep && kind != ValueKind::RangeDelete {
+                version.write(outputs, stored, &parsed, value, starts_key)?;
             }
             walk.versions.next();
             settle(walk.file, &mut walk.versions)?;
         }
         Ok(())
-    }
-}
-
-/// Loads the blocks the last move of `versions` waits for, and reports a damaged block.
-fn settle(file: &TableFile, versions: &mut TableIter) -> Result<()> {
-    file.blocks.complete_blocking(versions)?;
-    versions
-        .status()
-        .map_err(|error| format_error(&error, None))
-}
-
-fn corrupt() -> Error {
-    Error::Corruption {
-        what: "table",
-        path: None,
-        offset: None,
-        detail: "a stored key has no trailer or a kind this build does not read".to_owned(),
     }
 }

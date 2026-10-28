@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tessarikv_sync::{Sequencer, SnapshotRegistry};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::block_cache::BlockCache;
@@ -43,6 +43,7 @@ use super::flushes::{Flushed, wait};
 use super::rate_limiter::RateLimiter;
 use super::view::View;
 use crate::log::LogRelease;
+use crate::options::Reporter;
 use crate::storage::{Storage, StorageLock};
 use crate::version::manifest::ManifestStore;
 use crate::{Error, KeyspaceOptions, Result};
@@ -73,6 +74,8 @@ pub(super) struct Flusher {
     pub(super) total_memtable_bytes: u64,
     /// Every sequence up to this one is in a frozen table or on table files.
     pub(super) switched: u64,
+    /// Told about flushes, compactions, stalls and the failure that stops the database.
+    pub(super) events: Option<Arc<Reporter>>,
     /// The directory lock, held until the task ends: a database dropped without closing lets
     /// its running flush and compaction finish, and they still write the directory.
     pub(super) _lock: Arc<dyn StorageLock>,
@@ -100,11 +103,14 @@ impl Installer {
             .map(|(_, options)| options.max_immutable_memtables())
             .min()
             .unwrap_or(1);
-        let signals = Arc::new(FlushSignals::new(
-            max_frozen,
-            flusher.delayed_writes,
-            flusher.total_memtable_bytes,
-        ));
+        let signals = Arc::new(
+            FlushSignals::new(
+                max_frozen,
+                flusher.delayed_writes,
+                flusher.total_memtable_bytes,
+            )
+            .with_events(flusher.events.clone()),
+        );
         // Everything at or below the last switch is on table files when the database opens.
         signals.set_flushed(flusher.switched);
         let (shutdown, stop) = watch::channel(false);
@@ -152,6 +158,8 @@ async fn run(
     let mut compactions = Compactions::default();
     let mut catalog = Catalog::default();
     let mut stopping = false;
+    // Waiters for a database with nothing to flush or compact.
+    let mut idle: Vec<oneshot::Sender<()>> = Vec::new();
     let cache = Arc::clone(&flusher.cache);
     // Levels recovered past a trigger compact now: no write may come to wake the installer
     // while the levels hold writes.
@@ -165,7 +173,12 @@ async fn run(
             finished = wait(&mut running), if running.is_some() => {
                 running = None;
                 match finished.and_then(|flushed| flusher.install(&mut frozen, flushed)) {
-                    Ok(through) => signals.set_flushed(through),
+                    Ok(flushed) => {
+                        signals.set_flushed(flushed.flushed_sequence);
+                        if let Some(events) = &flusher.events {
+                            events.listener().flush_completed(&flushed);
+                        }
+                    }
                     Err(error) => {
                         signals.fail(&error);
                         return Err(error);
@@ -183,6 +196,9 @@ async fn run(
                 Command::Create(create) => catalog.create(create),
                 Command::Drop(drop) => catalog.drop_keyspace(drop),
                 Command::Checkpoint(reply) => catalog.checkpoint(reply),
+                Command::Idle(reply) => idle.push(reply),
+                Command::SetOptions(set) => flusher.set_options(set),
+                Command::Ingest(ingest) => flusher.ingest(ingest, &signals, &mut frozen),
             },
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
@@ -207,9 +223,15 @@ async fn run(
         signals.take_request();
         flusher.switch_if_full(&signals, &mut frozen);
         if running.is_none()
-            && let Some(oldest) = frozen.front()
+            && let Some(oldest) = frozen.front_mut()
         {
             running = Some(flusher.start_flush(oldest, &signals)?);
+        }
+        // The step just taken started nothing, so nothing is due either.
+        if running.is_none() && frozen.is_empty() && compactions.is_idle() {
+            for waiter in idle.drain(..) {
+                let _ = waiter.send(());
+            }
         }
     }
 }
@@ -239,6 +261,7 @@ async fn settle(
     match stepped.await {
         Ok(published) => {
             signals.set_load(flusher.load());
+            signals.set_owed(flusher.owed_by_keyspace());
             if published {
                 signals.installed();
             }

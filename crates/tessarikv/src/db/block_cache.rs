@@ -43,6 +43,8 @@ pub(crate) struct BlockCache {
     sealing: Option<Arc<Sealing>>,
     /// Where block reads are counted, when the database keeps statistics.
     statistics: Option<Arc<Statistics>>,
+    /// Whether a block read that may block is made on the reading task's own thread.
+    reads_on_worker: bool,
 }
 
 /// Open table files by file id, at most [`crate::DbOptions::max_open_files`] of them: a read
@@ -65,7 +67,20 @@ impl BlockCache {
             files: None,
             sealing: None,
             statistics: None,
+            reads_on_worker: false,
         }
+    }
+
+    /// Reads blocks that may block on the reading task's thread when `on_worker` is set (see
+    /// [`crate::DbOptions::block_reads_on_worker`]).
+    pub(crate) fn with_reads_on_worker(mut self, on_worker: bool) -> Self {
+        self.reads_on_worker = on_worker;
+        self
+    }
+
+    /// Whether a block read that may block is made on the reading task's own thread.
+    pub(crate) fn reads_on_worker(&self) -> bool {
+        self.reads_on_worker
     }
 
     /// Keeps at most `max_open_files` table files open, opened through `storage`; zero keeps

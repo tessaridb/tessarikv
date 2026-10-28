@@ -4,13 +4,22 @@
 //! has. Defaults that a user may change are the starting values of the options in the
 //! `tessarikv` crate; limits are hard bounds the format or the engine relies on.
 
+mod blobs;
+mod log;
+
+pub use blobs::{DEFAULT_BLOB_GC_AGE_CUTOFF_PERCENT, MIN_BLOB_THRESHOLD};
+pub use log::{
+    DEFAULT_WAL_SEGMENT_BYTES, LOG_QUEUE_ENTRIES, LOG_SYNC_GATHER_MICROS, LOG_SYNCS_IN_FLIGHT,
+    MAX_WAL_SEGMENT_BYTES, MIN_WAL_SEGMENT_BYTES,
+};
+
 /// The store format this build writes, recorded at the start of every manifest.
 ///
 /// It names the set of file layouts a database may hold. A build opens a store of this format
 /// or older, and refuses a later one at open, before reading its tables or logs. Format 0 is a
 /// store from before the format was recorded. A release that writes a layout an older build
 /// cannot read raises it; one that only adds a field older builds may skip does not.
-pub const STORE_FORMAT: u32 = 1;
+pub const STORE_FORMAT: u32 = 4;
 
 /// How many bits of an internal key's trailer hold the sequence number.
 ///
@@ -88,6 +97,10 @@ pub const DEFAULT_BLOOM_BITS_PER_KEY: u32 = 10;
 ///
 /// Zero bits per key means no filter.
 pub const MAX_BLOOM_BITS_PER_KEY: u32 = 64;
+
+/// Longest key prefix a keyspace may filter tables by: the leading bytes of a key that a prefix
+/// filter records. A longer prefix would cost a filter entry per key without excluding more.
+pub const MAX_PREFIX_LENGTH: u32 = 256;
 
 /// The highest Deflate level a keyspace may compress its tables with.
 pub const MAX_DEFLATE_LEVEL: u8 = 10;
@@ -192,15 +205,6 @@ pub const MAX_TARGET_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Default block cache capacity (512 MiB).
 pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Default size at which a log segment is closed and a new one started (64 MiB).
-pub const DEFAULT_WAL_SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
-
-/// Smallest log segment (1 MiB): a smaller one rolls over on every few commits.
-pub const MIN_WAL_SEGMENT_BYTES: u64 = 1024 * 1024;
-
-/// Largest log segment (4 GiB): an offset inside one segment fits in 32 bits.
-pub const MAX_WAL_SEGMENT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-
 /// Default size past which the manifest is replaced by one holding the whole version (64 MiB).
 pub const DEFAULT_MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -289,10 +293,6 @@ pub const SKIPLIST_MAX_HEIGHT: usize = 12;
 
 /// Each skiplist level holds about one in this many of the level below.
 pub const SKIPLIST_BRANCHING: u32 = 4;
-
-/// Committed batches that may wait in the queue to the log writer; a writer that finds it full
-/// waits for room. Also the most the log writer takes from the queue for one write.
-pub const LOG_QUEUE_ENTRIES: usize = 1024;
 
 /// Longest keyspace name, in bytes.
 pub const MAX_KEYSPACE_NAME_BYTES: usize = 255;

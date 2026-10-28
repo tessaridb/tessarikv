@@ -1,9 +1,11 @@
 //! Reading and writing batch entries; every read is bounds-checked.
 
 use tessarikv_constants::{MAX_KEY_BYTES, MAX_VALUE_BYTES};
-use tessarikv_types::{KeyspaceId, ValueKind};
+use tessarikv_types::{EXPIRY_STAMP_BYTES, KeyspaceId, ValueKind};
 
-use super::{BatchEntry, FORMAT_VERSION_1, check_size, empty_range};
+use super::{
+    BatchEntry, FORMAT_VERSION_1, FORMAT_VERSION_2, FORMAT_VERSION_3, check_size, empty_range,
+};
 use crate::{Error, Result};
 
 /// Bytes of an entry with `key` and, for a put, `value`.
@@ -17,12 +19,14 @@ pub(super) fn entry_bytes(key: &[u8], value: Option<&[u8]>) -> Option<usize> {
     }
 }
 
-/// Appends one entry; the caller has checked every bound.
+/// Appends one entry, its value preceded by `stamp` when there is one; the caller has checked
+/// every bound.
 pub(super) fn write_entry(
     rep: &mut Vec<u8>,
     keyspace: KeyspaceId,
     kind: ValueKind,
     key: &[u8],
+    stamp: Option<&[u8; EXPIRY_STAMP_BYTES]>,
     value: Option<&[u8]>,
 ) -> Result<()> {
     rep.push(kind.to_byte());
@@ -30,7 +34,10 @@ pub(super) fn write_entry(
     rep.extend_from_slice(&length_field("key", key.len())?.to_le_bytes());
     rep.extend_from_slice(key);
     if let Some(value) = value {
-        rep.extend_from_slice(&length_field("value", value.len())?.to_le_bytes());
+        let stamp: &[u8] = stamp.map_or(&[], |stamp| stamp);
+        let stored = value.len().saturating_add(stamp.len());
+        rep.extend_from_slice(&length_field("value", stored)?.to_le_bytes());
+        rep.extend_from_slice(stamp);
         rep.extend_from_slice(value);
     }
     Ok(())
@@ -43,18 +50,40 @@ pub(super) fn read_entry(rep: &[u8], at: usize, version: u8) -> Result<(BatchEnt
     let kind = match ValueKind::from_byte(kind_byte) {
         Ok(kind @ (ValueKind::Value | ValueKind::Delete)) => kind,
         Ok(ValueKind::RangeDelete) if version != FORMAT_VERSION_1 => ValueKind::RangeDelete,
+        Ok(ValueKind::ExpiringValue) if !matches!(version, FORMAT_VERSION_1 | FORMAT_VERSION_2) => {
+            ValueKind::ExpiringValue
+        }
+        Ok(ValueKind::Merge)
+            if !matches!(
+                version,
+                FORMAT_VERSION_1 | FORMAT_VERSION_2 | FORMAT_VERSION_3
+            ) =>
+        {
+            ValueKind::Merge
+        }
         _ => {
             return Err(Error::Malformed {
                 what: "write batch entry kind",
-                reason: "not a put, a delete or a range delete of this version",
+                reason: "not a put, an expiring put, a merge, a delete or a range delete of this version",
             });
         }
     };
     let keyspace = KeyspaceId::new(read_u32(rep, offset(at, 1)?, "write batch entry")?);
     let (key, mut next) = read_bytes(rep, offset(at, 5)?, "key", MAX_KEY_BYTES)?;
     let value = match kind {
-        ValueKind::Value => {
+        ValueKind::Value | ValueKind::Merge => {
             let (value, after) = read_bytes(rep, next, "value", MAX_VALUE_BYTES)?;
+            next = after;
+            Some(value)
+        }
+        ValueKind::ExpiringValue => {
+            let (value, after) = read_bytes(rep, next, "value", MAX_VALUE_BYTES)?;
+            if value.len() < EXPIRY_STAMP_BYTES {
+                return Err(Error::Malformed {
+                    what: "write batch expiring put",
+                    reason: "its value is shorter than its expiry stamp",
+                });
+            }
             next = after;
             Some(value)
         }
@@ -67,6 +96,13 @@ pub(super) fn read_entry(rep: &[u8], at: usize, version: u8) -> Result<(BatchEnt
             Some(end)
         }
         ValueKind::Delete => None,
+        // Refused with every kind a batch does not carry, above.
+        ValueKind::BlobIndex => {
+            return Err(Error::Malformed {
+                what: "write batch entry kind",
+                reason: "not a put, an expiring put, a merge, a delete or a range delete of this version",
+            });
+        }
     };
     Ok((
         BatchEntry {

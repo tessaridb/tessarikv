@@ -19,13 +19,18 @@
 pub mod block;
 pub mod filter;
 
+mod blob;
 mod builder;
 mod codec;
 mod handle;
 mod iter;
+mod prefix;
 mod reader;
 mod source;
+mod unseal;
 
+#[cfg(test)]
+mod blob_tests;
 #[cfg(test)]
 mod codec_tests;
 #[cfg(test)]
@@ -33,28 +38,41 @@ mod hostile_tests;
 #[cfg(test)]
 mod offset_tests;
 #[cfg(test)]
+mod prefix_tests;
+#[cfg(test)]
 mod sealed_tests;
 #[cfg(test)]
 mod source_tests;
 #[cfg(test)]
 mod tests;
 
+pub use blob::{BlobBuilder, BlobIndex, open_blob};
 pub use builder::TableBuilder;
 pub use codec::Compression;
+pub use filter::FilterPolicy;
 pub use handle::{BlockHandle, FOOTER_BYTES};
 pub use iter::TableIter;
 pub use reader::Table;
-pub use source::{BlockSource, OpenError, unseal_block};
+pub use source::{BlockSource, OpenError, unseal_block, unseal_block_owned};
 
 /// How a table is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableOptions {
-    /// A data block is closed once its entries take this many bytes.
+    /// A data block is closed once its entries take this many bytes. Readers refuse a block
+    /// holding more than `MAX_BLOCK_BYTES` plus one largest entry, so keep it at or below
+    /// `tessarikv_constants::MAX_BLOCK_BYTES`.
     pub block_bytes: usize,
     /// Entries between restart points in a data block.
     pub restart_interval: usize,
-    /// Bits of filter per key; about one absent key in a hundred passes at ten.
+    /// Bits of filter per key; about one absent key in a hundred passes a bloom filter at ten.
     pub bloom_bits_per_key: u32,
+    /// The kind of whole-key filter the table keeps.
+    pub filter: FilterPolicy,
     /// How data blocks are stored.
     pub compression: Compression,
+    /// Length of the key prefixes a second filter records, at most
+    /// `tessarikv_constants::MAX_PREFIX_LENGTH`; `None` writes no prefix filter. The filter lets
+    /// a read whose bounds lie inside one prefix pass over a table that holds no key with it
+    /// (see [`Table::may_hold_prefix_range`]).
+    pub prefix_length: Option<u32>,
 }

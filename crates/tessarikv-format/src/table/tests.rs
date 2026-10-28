@@ -8,20 +8,22 @@ use super::handle::Footer;
 use super::*;
 use crate::error::{Error, Result};
 
-fn bytewise(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+pub(super) fn bytewise(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
     left.cmp(right)
 }
 
-fn whole(key: &[u8]) -> &[u8] {
+pub(super) fn whole(key: &[u8]) -> &[u8] {
     key
 }
 
-fn options(compression: Compression) -> TableOptions {
+pub(super) fn options(compression: Compression) -> TableOptions {
     TableOptions {
         block_bytes: 64,
         restart_interval: 4,
         bloom_bits_per_key: 10,
+        filter: crate::table::FilterPolicy::Bloom,
         compression,
+        prefix_length: None,
     }
 }
 
@@ -140,8 +142,8 @@ fn a_truncated_file_or_an_unknown_version_is_refused() {
         Err(Error::Truncated { .. })
     ));
     assert!(matches!(
-        open(with_version(&bytes, 4)),
-        Err(Error::UnsupportedVersion { version: 4, .. })
+        open(with_version(&bytes, 5)),
+        Err(Error::UnsupportedVersion { version: 5, .. })
     ));
     // The first version, which has no range deletes, still opens.
     assert!(open(with_version(&bytes, 1)).is_ok());
@@ -155,6 +157,7 @@ fn the_format_version_decides_how_the_filter_is_probed() {
             .unwrap()
             .probing
     };
+    assert_eq!(probing(4), Probing::Remixed);
     assert_eq!(probing(3), Probing::Remixed);
     assert_eq!(probing(2), Probing::Stepped);
     assert_eq!(probing(1), Probing::Stepped);

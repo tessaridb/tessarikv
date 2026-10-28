@@ -52,6 +52,8 @@ fn samples() -> Vec<Error> {
             found: 2,
             newest: 1,
         },
+        Error::ReadOnly { what: "a write" },
+        Error::MergeFailed { keyspace: 0 },
     ]
 }
 
@@ -81,6 +83,8 @@ fn every_variant_maps_to_its_category() {
             ErrorCategory::ShutDown,
             ErrorCategory::Conflict,
             ErrorCategory::Validation,
+            ErrorCategory::ReadOnly,
+            ErrorCategory::Corruption,
         ]
     );
 }
@@ -110,7 +114,9 @@ fn codes_are_stable_strings() {
             "already_exists",
             "closed",
             "conflict",
-            "unsupported_format"
+            "unsupported_format",
+            "read_only",
+            "merge_failed"
         ]
     );
 }
@@ -122,7 +128,7 @@ fn only_transient_failures_are_retryable() {
         retryable,
         [
             false, false, true, false, false, false, false, false, false, false, false, false,
-            false, false, true, false, false, true, false
+            false, false, true, false, false, true, false, false, false
         ]
     );
     let interrupted = Error::Io {
