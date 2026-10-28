@@ -1,7 +1,7 @@
 [package]
 name = "tessarikv-inspect"
 description = "Inspect TessariKV databases and table files: the manifest, a table's entries, live keys"
-version = "0.1.2"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ name = "tessarikv-inspect"
 path = "src/main.rs"
 
 [dependencies]
-tessarikv = { path = "../tessarikv", version = "0.1.2" }
+tessarikv = { path = "../tessarikv", version = "0.2.0" }
 tessarikv-format.workspace = true
 tessarikv-types.workspace = true
 thiserror.workspace = true

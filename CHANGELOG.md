@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-30
+
 ### Added
 
 - `Db::changed_options` and `OptionChange`: each option an open runs with whose recorded value differs from the
@@ -75,6 +77,7 @@ All notable changes to this project are documented here. The format follows
   a format 4 database at open.
 - A point read that misses the block cache reads the block without zeroing a buffer first, and an uncompressed
   block becomes the cached block without being copied. A seek inside a block compares restart keys in place.
+  Readers missing blocks of the same table file no longer contend on its open handle.
 - A `Durability::Buffered` write whose log frames fit the open segment is appended by the log task itself instead of
   on a blocking thread; a write that syncs, starts a new segment or removes one is still handed over.
 - A point read builds the key it seeks in table files once, not once per file it consults, and a table seek copies
@@ -330,7 +333,8 @@ The first release with a stable on-disk file format: a database written by 0.1.0
   `Db::keyspace` and `Db::keyspaces` look them up. Each keyspace flushes, compacts and paces writes by its own options; a batch spanning keyspaces is
   recovered whole or not at all.
 
-[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/tessaridb/tessarikv/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tessaridb/tessarikv/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/tessaridb/tessarikv/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/tessaridb/tessarikv/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/tessaridb/tessarikv/compare/v0.0.2...v0.1.0
