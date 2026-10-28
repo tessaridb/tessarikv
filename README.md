@@ -25,7 +25,7 @@ It has no C or C++ dependency, exposes an async API on tokio, and runs on macOS,
 
 ## Status
 
-First release (0.1). The on-disk file format is stable from 0.1.0 (see [File format](#file-format)); the API may
+Release 0.2. The on-disk file format is stable from 0.1.0 (see [File format](#file-format)); the API may
 still change in a minor release before 1.0.
 
 | Part | State |
