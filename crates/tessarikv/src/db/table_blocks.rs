@@ -126,26 +126,30 @@ impl TableBlocks {
     /// Reads and verifies the block at `handle`. Runs on a blocking thread.
     fn read(&self, handle: BlockHandle) -> Result<Block> {
         let len = self.checked_len(handle)?;
-        let file = match &self.file {
-            Some(file) => Arc::clone(file),
-            None => self.cache.file(self.id, &self.path)?,
+        // The kept handle is borrowed, not cloned: its count is shared by every reader of the file.
+        let sealed = match &self.file {
+            Some(file) => file.read_vec_at(handle.offset(), len)?,
+            None => self
+                .cache
+                .file(self.id, &self.path)?
+                .read_vec_at(handle.offset(), len)?,
         };
-        let sealed = file.read_vec_at(handle.offset(), len)?;
         self.unseal(handle, sealed)
     }
 
     /// Reads and verifies the block at `handle` if the storage can do it without blocking;
     /// `None` when it cannot.
     fn read_inline(&self, handle: BlockHandle) -> Result<Option<Block>> {
-        // A file let go is opened again only where blocking is allowed.
-        let Some(file) = self
-            .file
-            .clone()
-            .or_else(|| self.cache.cached_file(self.id))
-        else {
-            return Ok(None);
+        let len = self.checked_len(handle)?;
+        let sealed = match &self.file {
+            Some(file) => file.try_read_vec_at(handle.offset(), len)?,
+            // A file let go is opened again only where blocking is allowed.
+            None => match self.cache.cached_file(self.id) {
+                Some(file) => file.try_read_vec_at(handle.offset(), len)?,
+                None => None,
+            },
         };
-        let Some(sealed) = file.try_read_vec_at(handle.offset(), self.checked_len(handle)?)? else {
+        let Some(sealed) = sealed else {
             return Ok(None);
         };
         self.unseal(handle, sealed).map(Some)
