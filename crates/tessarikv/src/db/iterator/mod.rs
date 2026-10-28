@@ -6,7 +6,6 @@ mod operands;
 #[cfg(test)]
 mod prefix_tests;
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use tessarikv_types::{KeyspaceId, SequenceNumber};
@@ -106,7 +105,7 @@ impl Db {
 
 impl<'a> DbIterator<'a> {
     pub(super) fn new(
-        view: &View,
+        view: &Arc<View>,
         keyspace: KeyspaceId,
         snapshot: SequenceNumber,
         options: &ReadOptions,
@@ -118,7 +117,7 @@ impl<'a> DbIterator<'a> {
             low: options.lower_bound.as_deref(),
             high: options.upper_bound.as_deref(),
         };
-        let (level_zero, levels) = view.runs(keyspace.get());
+        let (level_zero, _) = view.runs(keyspace.get());
         let sources = view
             .shared_memtables(keyspace.get())
             .map(|table| Source::Shared(MemtableCursor::new(Arc::clone(table))))
@@ -131,8 +130,7 @@ impl<'a> DbIterator<'a> {
                         Source::Table(Box::new(versions))
                     }),
             )
-            .chain(levels.map(|level| {
-                let files = Cow::Owned(span.files_in(level).into_owned());
+            .chain(span.levels_of(view, keyspace.get()).map(|files| {
                 Source::Level(Box::new(LevelVersions::new(files, options.fill_cache)))
             }))
             .collect();

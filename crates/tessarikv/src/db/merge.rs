@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 
 use tessarikv_types::{KeyspaceId, SequenceNumber, ValueKind};
 
-use super::level_versions::{LevelVersions, Span};
+use super::level_versions::{LevelFiles, LevelVersions, Span};
 use super::table_versions::TableVersions;
 use super::view::View;
 use crate::memtable::{MemtableCursor, MemtableEntry, MemtableIter};
@@ -237,7 +237,10 @@ pub(super) fn sources<'a>(
         )
         .chain(levels.map(|level| {
             let files = span.files_in(level);
-            Source::Level(Box::new(LevelVersions::new(files, fill_cache)))
+            Source::Level(Box::new(LevelVersions::new(
+                LevelFiles::Listed(files),
+                fill_cache,
+            )))
         }))
         .collect()
 }

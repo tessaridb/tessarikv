@@ -279,7 +279,7 @@ impl View {
     }
 
     /// The files of `keyspace`, a contiguous run of the ordered list.
-    fn keyspace_files(&self, keyspace: u32) -> &[TableFile] {
+    pub(crate) fn keyspace_files(&self, keyspace: u32) -> &[TableFile] {
         let start = self
             .files
             .partition_point(|file| file.meta.keyspace < keyspace);

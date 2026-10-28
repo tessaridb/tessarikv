@@ -61,6 +61,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- An iterator reads the table files of each level through the view it was created on instead of copying the
+  level's list, so creating one costs the same however many files a level holds; scans from many tasks at once scale
+  further (100-entry scans at 4 readers about 1.5× faster on a store of one million keys).
 - Opening a keyspace that holds tables below level 0 with `CompactionStyle::Fifo` is refused with
   `Error::InvalidOptions` for `keyspace.compaction`: first-in-first-out compaction never removes those tables. Every
   other change of compaction style between opens is allowed.
