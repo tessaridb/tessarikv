@@ -17,3 +17,8 @@ pub const LOG_QUEUE_ENTRIES: usize = 1024;
 /// running gets a sync of its own instead of waiting for that one to finish. Their results are
 /// still taken in the order they started.
 pub const LOG_SYNCS_IN_FLIGHT: usize = 4;
+
+/// Microseconds a sync made one at a time (storage whose syncs do not overlap) may wait, after
+/// the previous one ends, for the writers that sync released to hand in their next entries, so
+/// they share it. Ends early once every such writer is back; a lone writer never waits.
+pub const LOG_SYNC_GATHER_MICROS: u64 = 200;

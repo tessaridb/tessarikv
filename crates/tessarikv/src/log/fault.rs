@@ -25,6 +25,8 @@ struct State {
     synced: papaya::HashMap<PathBuf, u64>,
     fail_sync: AtomicBool,
     fail_table_writes: AtomicBool,
+    /// Files hand out no syncer, as on storage whose syncs do not overlap.
+    serial_syncs: AtomicBool,
     /// Holds syncs while paused.
     gate: SyncGate,
     /// When armed, crash images are taken around every durable step outside the log.
@@ -62,6 +64,12 @@ impl FaultStorage {
     pub(crate) fn fail_table_writes(&self, fail: bool) {
         // SeqCst: a test flag, read by compaction threads.
         self.state.fail_table_writes.store(fail, Ordering::SeqCst);
+    }
+
+    /// Files opened from now on hand out no syncer, so the log syncs one at a time on its task.
+    pub(crate) fn serial_syncs(&self) {
+        // SeqCst: a test flag, read by the log writer on another thread.
+        self.state.serial_syncs.store(true, Ordering::SeqCst);
     }
 
     /// Every later sync waits until [`FaultStorage::resume_syncs`].

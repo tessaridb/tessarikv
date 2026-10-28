@@ -4,59 +4,21 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
-use tessarikv_constants::LOG_QUEUE_ENTRIES;
+use tessarikv_constants::{LOG_QUEUE_ENTRIES, LOG_SYNC_GATHER_MICROS};
 use tessarikv_format::SEAL_HEADER_BYTES;
 use tokio::sync::{Notify, mpsc, watch};
 
+use super::gather::Gather;
+use super::progress::Progress;
 use super::segments::Segments;
 use super::syncs::{Syncs, durable, sync_beside};
-use super::{Entry, FinishedSegment, Wait};
+use super::{Entry, FinishedSegment};
 use crate::options::Reporter;
 use crate::statistics::Statistics;
 use crate::storage::Storage;
 use crate::{Error, Result};
-
-/// How far the log has got, in sequence numbers.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct Progress {
-    /// Every sequence up to this one is written or skipped.
-    written: u64,
-    /// Every frame up to this sequence is on stable storage.
-    durable: u64,
-    /// The log stopped after a failed write or sync.
-    pub(super) failed: bool,
-}
-
-impl Progress {
-    /// Nothing written yet; the first entry is expected at `next_sequence`.
-    pub(super) fn new(next_sequence: u64) -> Self {
-        let before = next_sequence.saturating_sub(1);
-        Self {
-            written: before,
-            durable: before,
-            failed: false,
-        }
-    }
-
-    /// Every sequence up to this one is written or skipped.
-    pub(super) fn written(&self) -> u64 {
-        self.written
-    }
-
-    /// Every frame through `through` is on stable storage; an earlier sync never lowers it.
-    pub(super) fn durable_through(&mut self, through: u64) {
-        self.durable = self.durable.max(through);
-    }
-
-    /// Whether a frame ending at `last` has reached `wait`.
-    pub(super) fn covers(&self, last: u64, wait: Wait) -> bool {
-        match wait {
-            Wait::Written => self.written >= last,
-            Wait::Durable => self.durable >= last,
-        }
-    }
-}
 
 /// How far the log may remove finished segments, and the notices that wake the task.
 #[derive(Default)]
@@ -98,6 +60,8 @@ pub(super) struct Writer {
     released: Arc<Released>,
     /// Told when the log stops on a failure.
     events: Option<Arc<Reporter>>,
+    /// The writers a sync made one at a time released, waited for before the next.
+    gather: Gather,
 }
 
 impl Writer {
@@ -122,6 +86,7 @@ impl Writer {
             )),
             released,
             events: None,
+            gather: Gather::new(Duration::from_micros(LOG_SYNC_GATHER_MICROS)),
         }
     }
 
@@ -138,6 +103,13 @@ impl Writer {
         if let Some(segments) = self.segments.as_mut() {
             segments.statistics = statistics;
         }
+        self
+    }
+
+    /// Lets the next sync made one at a time wait at most `window` for the writers the last one
+    /// released.
+    pub(super) fn with_gather(mut self, window: Duration) -> Self {
+        self.gather = Gather::new(window);
         self
     }
 
@@ -178,7 +150,7 @@ impl Writer {
                 // which syncs and removes too.
                 biased;
                 () = released.sync.notified() => {
-                    self.write_ready(progress, &mut syncs, true).await?;
+                    self.write_ready(entries, progress, &mut syncs, true).await?;
                 }
                 through = syncs.oldest(), if !syncs.is_empty() => durable(progress, through?),
                 entry = entries.recv() => {
@@ -187,16 +159,20 @@ impl Writer {
                     // Take whatever else is already queued, so one write and one sync serve all
                     // of it; bounded, so a steady stream of writers cannot postpone the write
                     // forever.
+                    let mut taken = 1_usize;
                     for _ in 1..LOG_QUEUE_ENTRIES {
                         let Ok(entry) = entries.try_recv() else { break };
                         self.pending.insert(entry.first, entry);
+                        taken = taken.saturating_add(1);
                     }
-                    self.write_ready(progress, &mut syncs, false).await?;
+                    self.gather.arrived(taken);
+                    self.write_ready(entries, progress, &mut syncs, false).await?;
                 }
                 () = released.notice.notified() => self.remove_released().await?,
             }
         }
-        self.write_ready(progress, &mut syncs, true).await?;
+        self.write_ready(entries, progress, &mut syncs, true)
+            .await?;
         while !syncs.is_empty() {
             durable(progress, syncs.oldest().await?);
         }
@@ -230,24 +206,58 @@ impl Writer {
 
     /// Writes the entries that continue the log without a gap; syncs when one of them waits
     /// for durability, or when `force_sync` (closing, or a sync asked for). Where the storage can
-    /// sync beside the writes, the sync is started and left running in `syncs`.
+    /// sync beside the writes, the sync is started and left running in `syncs`. Otherwise it is
+    /// made here, and the entries queued meanwhile are taken and written next, once the writers
+    /// it released are back (see [`Gather`]).
     async fn write_ready(
         &mut self,
+        entries: &mut mpsc::Receiver<Entry>,
         progress: &watch::Sender<Progress>,
         syncs: &mut Syncs,
         force_sync: bool,
     ) -> Result<()> {
+        let mut force_sync = force_sync;
+        loop {
+            if !force_sync && self.pending.values().any(|entry| entry.durable) {
+                self.gather.wait(entries, &mut self.pending).await;
+            }
+            let Some(released) = self.write_next(progress, syncs, force_sync).await? else {
+                return Ok(());
+            };
+            let mut queued = 0_usize;
+            for _ in 0..LOG_QUEUE_ENTRIES {
+                let Ok(entry) = entries.try_recv() else { break };
+                self.pending.insert(entry.first, entry);
+                queued = queued.saturating_add(1);
+            }
+            self.gather.ended(released, queued);
+            if queued == 0 {
+                return Ok(());
+            }
+            force_sync = false;
+        }
+    }
+
+    /// One round of [`Writer::write_ready`]: the durable writers a sync made here released.
+    async fn write_next(
+        &mut self,
+        progress: &watch::Sender<Progress>,
+        syncs: &mut Syncs,
+        force_sync: bool,
+    ) -> Result<Option<usize>> {
         let mut frames = Vec::new();
         let mut sync = force_sync;
         let mut last = None;
+        let mut durable_entries = 0_usize;
         while let Some(entry) = self.pending.remove(&self.next) {
             self.next = entry.last.checked_add(1).ok_or(Error::SequenceExhausted)?;
             sync |= entry.durable;
+            durable_entries = durable_entries.saturating_add(usize::from(entry.durable));
             last = Some(entry.last);
             frames.extend(entry.frame.map(|frame| (frame, entry.last)));
         }
         if last.is_none() && !force_sync {
-            return Ok(());
+            return Ok(None);
         }
         let through = self.released_through();
         let mut segments = self.segments.take().ok_or(Error::LogFailed)?;
@@ -278,12 +288,12 @@ impl Writer {
         written?;
         progress.send_modify(|progress| {
             if let Some(last) = last {
-                progress.written = last;
+                progress.written_through(last);
             }
         });
-        if sync {
-            sync_beside(&mut self.segments, progress, syncs).await?;
+        if sync && sync_beside(&mut self.segments, progress, syncs).await? {
+            return Ok(Some(durable_entries));
         }
-        Ok(())
+        Ok(None)
     }
 }

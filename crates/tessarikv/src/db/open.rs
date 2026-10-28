@@ -178,6 +178,7 @@ impl Db {
                 statistics: statistics.clone(),
                 lock: Some(Arc::clone(&lock)),
                 events: events.clone(),
+                gather: None,
             },
         )?;
         if replayed {

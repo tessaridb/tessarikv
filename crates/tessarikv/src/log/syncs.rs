@@ -14,8 +14,8 @@ use tessarikv_constants::LOG_SYNCS_IN_FLIGHT;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use super::progress::Progress;
 use super::segments::Segments;
-use super::writer::Progress;
 use crate::statistics::{Statistics, Ticker};
 use crate::storage::FileSyncer;
 use crate::{Error, Result};
@@ -71,7 +71,8 @@ impl Syncs {
 
 /// Starts a sync of everything written so far beside the log task, after taking the oldest
 /// result when as many syncs as allowed are running. A writer asking for durability then does
-/// not wait for a sync that started before its frame was written.
+/// not wait for a sync that started before its frame was written. Returns whether the sync was
+/// made here instead, one at a time, for a storage without a [`FileSyncer`].
 ///
 /// # Errors
 ///
@@ -81,7 +82,7 @@ pub(super) async fn sync_beside(
     slot: &mut Option<Segments>,
     progress: &watch::Sender<Progress>,
     syncs: &mut Syncs,
-) -> Result<()> {
+) -> Result<bool> {
     if syncs.len() >= LOG_SYNCS_IN_FLIGHT {
         durable(progress, syncs.oldest().await?);
     }
@@ -89,7 +90,7 @@ pub(super) async fn sync_beside(
     let segments = slot.as_ref().ok_or(Error::LogFailed)?;
     if let Some(syncer) = segments.syncer() {
         syncs.start(through, syncer, segments.statistics.clone());
-        return Ok(());
+        return Ok(false);
     }
     // A storage that cannot sync beside the writes, or no segment open: every running sync is
     // taken first, so nothing is reported out of order, then this one is made on a blocking
@@ -107,7 +108,7 @@ pub(super) async fn sync_beside(
     *slot = Some(segments);
     synced?;
     durable(progress, through);
-    Ok(())
+    Ok(true)
 }
 
 /// Publishes that every frame through `through` is on stable storage.

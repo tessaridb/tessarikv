@@ -61,6 +61,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Where the log syncs one at a time (macOS, Windows), a sync waits up to 200 µs after the previous one for the
+  writers that sync released, so their next synced writes share it; a lone writer never waits. Synced writes from
+  2 to 8 writers on macOS are about 1.9× faster.
 - An iterator reads the table files of each level through the view it was created on instead of copying the
   level's list, so creating one costs the same however many files a level holds; scans from many tasks at once scale
   further (100-entry scans at 4 readers about 1.5× faster on a store of one million keys).

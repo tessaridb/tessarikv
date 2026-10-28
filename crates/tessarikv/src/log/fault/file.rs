@@ -61,6 +61,9 @@ impl WritableFile for FaultFile {
     }
 
     fn syncer(&self) -> Option<Arc<dyn FileSyncer>> {
+        if self.storage.state.serial_syncs.load(Ordering::SeqCst) {
+            return None;
+        }
         Some(Arc::new(FaultSyncer {
             path: self.path.clone(),
             storage: self.storage.clone(),
