@@ -122,6 +122,29 @@ fn a_claim_in_a_new_epoch_sees_what_preceded_the_switch() {
     });
 }
 
+/// A claiming switch owns its boundary: a racing writer's sequences lie below it in the old
+/// epoch or above it in the new one, never on it.
+#[test]
+fn a_claiming_switch_never_shares_its_boundary() {
+    loom::model(|| {
+        let sequencer = Arc::new(Sequencer::new(0, 4));
+        let switcher_sequencer = Arc::clone(&sequencer);
+        let switcher = loom::thread::spawn(move || switcher_sequencer.switch_claiming().unwrap());
+        let claim = sequencer.claim(2).unwrap();
+        let (switch, own) = switcher.join().unwrap();
+        assert_eq!(
+            (own.first(), own.last()),
+            (switch.boundary(), switch.boundary())
+        );
+        assert_eq!(own.epoch(), switch.epoch());
+        let below = claim.last() < switch.boundary() && claim.epoch() != switch.epoch();
+        let above = claim.first() > switch.boundary() && claim.epoch() == switch.epoch();
+        assert!(below || above, "a writer shared the boundary");
+        sequencer.complete(own);
+        sequencer.complete(claim);
+    });
+}
+
 /// A watcher and the completer that reaches its target never miss each other: either the watch
 /// sees the target reached, or the completion reports reaching it (the store-then-load pair).
 #[test]

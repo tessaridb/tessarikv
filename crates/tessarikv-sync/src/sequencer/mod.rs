@@ -31,6 +31,7 @@ use crate::shim::{AtomicU64, Ordering};
 /// |---|---|---|
 /// | `claim` | the `fetch_add` on the next sequence | wait-free |
 /// | `switch` | the `fetch_add` that starts the next epoch | wait-free |
+/// | `switch_claiming` | the `fetch_add` that starts the next epoch and claims its boundary | wait-free |
 /// | `complete` | the store marking the batch's ring slot ready; the batch becomes visible at the compare-and-swap on `visible` that passes it, by this thread or a later completer | lock-free once the slot is free |
 /// | `visible` | the Acquire load of `visible` | wait-free |
 /// | `watch` | the read-modify-write on `visible` | wait-free |
@@ -152,6 +153,8 @@ const SEQUENCE_FIELD_BITS: u32 = 57;
 const SEQUENCE_FIELD: u64 = (1 << SEQUENCE_FIELD_BITS) - 1;
 /// Adds one to the counter's epoch; the epoch wraps with the counter.
 const EPOCH_STEP: u64 = 1 << SEQUENCE_FIELD_BITS;
+/// What a claiming switch adds: the next epoch and one sequence.
+const CLAIMING_SWITCH_STEP: u64 = EPOCH_STEP + 1;
 /// Keeps an epoch inside the counter's seven epoch bits.
 const EPOCH_MASK: u8 = 0x7f;
 
@@ -233,6 +236,26 @@ impl Sequencer {
             epoch: next_epoch(epoch),
             boundary,
         }
+    }
+
+    /// Starts the next epoch, as [`Sequencer::switch`], and claims its boundary in the same step:
+    /// every other claim lies below the boundary in the old epoch or above it in the new one.
+    /// `None` when the boundary would pass the largest sequence number. One caller at a time,
+    /// with [`Sequencer::switch`].
+    pub fn switch_claiming(&self) -> Option<(Switch, Claim)> {
+        // AcqRel: Release as a switch (publishes what the switcher did before, see `switch`),
+        // Acquire as a claim (continues the latest switch's release sequence, see `claim`).
+        let word = self.next.fetch_add(CLAIMING_SWITCH_STEP, Ordering::AcqRel);
+        let (epoch, boundary) = unpack(word);
+        let epoch = next_epoch(epoch);
+        (boundary <= MAX_SEQUENCE).then_some((
+            Switch { epoch, boundary },
+            Claim {
+                epoch,
+                first: boundary,
+                last: boundary,
+            },
+        ))
     }
 
     /// The largest sequence number every earlier sequence of which is in a completed batch.

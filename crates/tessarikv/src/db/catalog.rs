@@ -26,6 +26,9 @@ use crate::options::DEFAULT_NAME;
 use crate::version::Version;
 use crate::{Error, KeyspaceOptions, Result};
 
+mod ingest;
+
+pub(super) use ingest::{Ingest, Ingesting};
 mod set_options;
 
 pub(crate) use set_options::SetOptions;
@@ -46,6 +49,8 @@ pub(crate) enum Command {
     Idle(oneshot::Sender<()>),
     /// Replace a keyspace's options (see [`crate::Db::set_keyspace_options`]).
     SetOptions(SetOptions),
+    /// Add tables built outside the database (see [`crate::Db::ingest`]).
+    Ingest(Ingest),
 }
 
 /// A version and the view naming its table files; the view keeps them from removal while held.

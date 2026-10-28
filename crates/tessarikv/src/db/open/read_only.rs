@@ -126,7 +126,7 @@ impl Db {
         };
         Ok(Self {
             sequencer: Arc::new(Sequencer::new(last_sequence, COMMIT_RING_SLOTS)),
-            visibility: tokio::sync::Notify::new(),
+            visibility: Arc::new(tokio::sync::Notify::new()),
             commits: Commits::new(serializable),
             view: Arc::new(arc_swap::ArcSwap::from_pointee(view)),
             snapshots: Arc::new(SnapshotRegistry::new()),

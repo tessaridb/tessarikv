@@ -198,6 +198,7 @@ async fn run(
                 Command::Checkpoint(reply) => catalog.checkpoint(reply),
                 Command::Idle(reply) => idle.push(reply),
                 Command::SetOptions(set) => flusher.set_options(set),
+                Command::Ingest(ingest) => flusher.ingest(ingest, &signals, &mut frozen),
             },
             () = signals.requested(), if !stopping => {}
             () = tokio::time::sleep(compaction::SWEEP_INTERVAL), if compactions.has_obsolete() => {}
@@ -222,7 +223,7 @@ async fn run(
         signals.take_request();
         flusher.switch_if_full(&signals, &mut frozen);
         if running.is_none()
-            && let Some(oldest) = frozen.front()
+            && let Some(oldest) = frozen.front_mut()
         {
             running = Some(flusher.start_flush(oldest, &signals)?);
         }

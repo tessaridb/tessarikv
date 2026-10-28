@@ -51,6 +51,9 @@ All notable changes to this project are documented here. The format follows
 - `FilterPolicy` and `KeyspaceOptionsBuilder::filter_policy`: a keyspace's tables can keep a ribbon filter in place
   of the bloom filter — at ten bits per key about three quarters of the bytes (7.6 bits per key) with 0.77 % of
   absent keys passing against 0.99 %, at a higher cost to build. Tables already written keep their filter.
+- `TableWriter` and `Db::ingest`: tables of puts and deletes built outside a database are added to a keyspace
+  whole, at one new sequence number newer than every write that returned before and older than every write after;
+  they are checked first and written again under the keyspace's options. Writes made meanwhile return once it is done.
 - `Db::open_read_only`: opens a database without a lock and reads it as its files hold it, the batches in its
   log included; it changes no file, and every change is refused with the new `Error::ReadOnly` (code `read_only`).
 

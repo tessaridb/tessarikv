@@ -167,3 +167,21 @@ fn a_wait_over_reused_slots_returns() {
     sequencer.wait_published(0, pending.first());
     sequencer.complete(pending);
 }
+
+#[test]
+fn a_claiming_switch_takes_the_boundary_for_itself() {
+    let sequencer = Sequencer::new(44, 8);
+    let (switch, claim) = sequencer.switch_claiming().unwrap();
+    assert_eq!((switch.epoch(), switch.boundary()), (1, 45));
+    assert_eq!((claim.epoch(), claim.first(), claim.last()), (1, 45, 45));
+    let next = sequencer.claim(2).unwrap();
+    assert_eq!((next.epoch(), next.first()), (1, 46));
+    sequencer.complete(next);
+    assert_eq!(
+        sequencer.visible(),
+        44,
+        "the boundary holds later batches back"
+    );
+    sequencer.complete(claim);
+    assert_eq!(sequencer.visible(), 47);
+}

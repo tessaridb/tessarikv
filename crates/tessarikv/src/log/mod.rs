@@ -24,6 +24,7 @@
 
 mod frame;
 mod segments;
+mod slot;
 mod syncs;
 mod writer;
 
@@ -53,6 +54,7 @@ use crate::storage::{Storage, StorageLock};
 use crate::{Error, Result};
 
 pub(crate) use frame::Frame;
+pub(crate) use slot::{OwnedSlot, Slot};
 pub(crate) use writer::LogRelease;
 use writer::{Progress, Released, Writer};
 
@@ -99,27 +101,6 @@ struct Entry {
     last: u64,
     frame: Option<Frame>,
     durable: bool,
-}
-
-/// A reserved place in the queue to the log writer.
-pub(crate) struct Slot<'a>(mpsc::Permit<'a, Entry>);
-
-impl Slot<'_> {
-    /// Hands sequences `first..=last` and their record to the log writer, without waiting.
-    /// Returns what the writer should then wait for, if anything.
-    pub(crate) fn send(self, first: u64, last: u64, record: Record) -> Option<Wait> {
-        let (frame, wait) = match record {
-            Record::Frame { frame, wait } => (Some(frame), Some(wait)),
-            Record::Skip => (None, None),
-        };
-        self.0.send(Entry {
-            first,
-            last,
-            frame,
-            durable: wait == Some(Wait::Durable),
-        });
-        wait
-    }
 }
 
 /// The handle writers append through; the log writer task runs until it is closed.

@@ -121,20 +121,31 @@ impl View {
             .into_iter()
             .filter(|kept| kept.epoch != epoch)
             .collect();
+        Ok(self.adding(tables, flushed))
+    }
+
+    /// This view with `ingested` on top of level 0 of their keyspaces, newer than every table
+    /// file before them and older than every in-memory table.
+    pub(crate) fn with_ingested(&self, ingested: Vec<TableFile>) -> Self {
+        self.adding(self.shared_tables(), ingested)
+    }
+
+    /// A view of `tables` and of this view's files with `flushed` on top of level 0.
+    fn adding(&self, tables: Vec<EpochTables>, flushed: Vec<TableFile>) -> Self {
         let mut files = self.files.clone();
         for file in flushed {
             let keyspace = file.meta.keyspace;
             let front = files.partition_point(|older| older.meta.keyspace < keyspace);
             files.insert(front, file);
         }
-        Ok(Self {
+        Self {
             tables,
             deletes: super::deletions::gather(&files),
             levels: super::levels::gather(&files),
             files,
             names: Arc::clone(&self.names),
             next_keyspace: self.next_keyspace,
-        })
+        }
     }
 
     /// The table of `keyspace` holding the writes of `epoch`.

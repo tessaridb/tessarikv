@@ -15,6 +15,7 @@
 mod db;
 mod error;
 mod expiry;
+mod ingest;
 mod log;
 mod memtable;
 mod options;
@@ -28,6 +29,7 @@ mod version;
 pub use db::view::properties::KeyspaceProperties;
 pub use db::{Db, DbIterator, ScanPage, ScanRange, Snapshot};
 pub use error::{Error, ErrorCategory, Result};
+pub use ingest::TableWriter;
 pub use options::{
     CompactionCompleted, CompactionFilter, CompactionStyle, DbOptions, DbOptionsBuilder,
     Durability, Encryption, EventListener, FilterDecision, FlushCompleted, Isolation, KeyProvider,

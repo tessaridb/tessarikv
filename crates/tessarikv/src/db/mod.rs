@@ -197,7 +197,7 @@ pub use snapshot::Snapshot;
 pub struct Db {
     sequencer: Arc<Sequencer>,
     /// Wakes writers waiting for their batch to become visible (see `visibility`).
-    visibility: tokio::sync::Notify,
+    visibility: Arc<tokio::sync::Notify>,
     /// What each commit wrote, for transactions' conflict checks.
     commits: commits::Commits,
     /// The tables reads consult and writes land in.
